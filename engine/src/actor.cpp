@@ -51,8 +51,15 @@ void actor_init_all() {
         a.anim_speed = 0;
         a.anim_progress = 0;
         a.frame = a.init_frame;
-        // identity palette
-        for (int c = 0; c < 32; c++) a.palette[c] = (uint8_t)c;
+        // Default palette: 0xFF in every entry — sentinel "use the costume's
+        // own palette[i]". Mirrors ScummEngine::Actor::setActorCostume
+        // (actor.cpp:3702-3703) for v4/v5 (non-GF_OLD_BUNDLE):
+        //   for (i = 0; i < 32; i++) _palette[i] = 0xFF;
+        // op_actorOps sub-op 11 (SO_PALETTE) overrides specific entries
+        // with explicit color indices. The costume render falls back to
+        // cost->palette[i] whenever actor.palette[i] == 0xFF (matching
+        // ClassicCostumeRenderer::setPalette in cost.cpp:817-823).
+        for (int c = 0; c < 32; c++) a.palette[c] = 0xFF;
         // Initialize costume anim slots to "empty"
         for (int l = 0; l < 16; l++) {
             a.cost.anim_type[l] = 0;
@@ -352,7 +359,7 @@ static int cmp_actor_y(const void *pa, const void *pb) {
 }
 
 void actor_render_all(uint8_t *vscreen_main, int pitch,
-                      const WalkboxGraph *wbg) {
+                      const WalkboxGraph *wbg, int x_off) {
     if (!vscreen_main) return;
 
     // Build sorted pointer list
@@ -365,6 +372,7 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
         sorted[nvis++] = &a;
     }
     if (nvis == 0) return;
+    (void)x_off;  // legitimately used below
 
     qsort(sorted, nvis, sizeof(sorted[0]), cmp_actor_y);
 
@@ -411,7 +419,7 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
             }
 
             costume_render_limb(&cd, l, cel,
-                                a.x, a.y - a.elevation,
+                                a.x - x_off, a.y - a.elevation,
                                 a.scalex, a.scaley,
                                 flip,
                                 a.palette,

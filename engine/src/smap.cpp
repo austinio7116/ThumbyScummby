@@ -144,21 +144,7 @@ bool smap_decode_bm(Span bm_payload, int width, int height,
     uint32_t zplane_offs = read_le32(base);
     (void)zplane_offs;
 
-    // Diagnostic: dump first 4 strip offsets and the compression code at each
-    if (num_strips >= 4) {
-        platform::log("smap: smapLen=0x%X bm_size=%zu, first strip offsets:\n",
-                      zplane_offs, bm_payload.size);
-        for (int i = 0; i < 4 && i < num_strips; i++) {
-            uint32_t off = read_le32(base + 4 + i * 4);
-            uint8_t  code = (off < bm_payload.size) ? base[off] : 0xFF;
-            platform::log("  strip[%d] off=0x%X code=%u (0x%02X) first 8 bytes:",
-                          i, off, code, code);
-            for (int j = 0; j < 8 && off + j < bm_payload.size; j++) {
-                platform::log(" %02x", base[off + j]);
-            }
-            platform::log("\n");
-        }
-    }
+    (void)zplane_offs;
 
     // Strip offsets follow. Offset[i] points to start of strip i's data.
     // Each strip is 8 pixels wide. We output into a buffer of pitch
@@ -203,8 +189,7 @@ bool smap_decode_bm(Span bm_payload, int width, int height,
                     dst[y * out_pitch + x] = (uint8_t)(0xE0 + (code & 0xF));
                 }
             }
-            if (s == 0)
-                platform::log("smap: unknown strip code %u in strip %d\n", code, s);
+            platform::log("smap: unknown strip code %u in strip %d\n", code, s);
         }
     }
     return true;

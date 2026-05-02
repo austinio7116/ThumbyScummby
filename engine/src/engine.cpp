@@ -24,10 +24,39 @@
 namespace tsb {
 
 // Static state (no heap allocation). Sized for the device target budget.
+//
+// Two-tier screen buffer (mirrors ScummVM's `_virtscr[kMainVirtScreen]`
+// and the visible window in `_compositeBuf` -- gfx.cpp:630-705):
+//   vscreen_room = ROOM_BUFFER_W × 200 — full room-width composite of the
+//                  background + objects. Populated once on room load.
+//   vscreen_main = 320 × 200 — visible viewport, computed per frame by
+//                  blitting strips [screenStartStrip..+39] from vscreen_room
+//                  and then drawing actors on top in viewport-relative coords.
+//
+// Camera state (mirrors `camera._cur.x` / `_screenStartStrip` / `_screenEndStrip`
+// in camera.cpp). VAR_CAMERA_MIN_X / VAR_CAMERA_MAX_X are set on room load
+// to (screenWidth/2, roomWidth - screenWidth/2) per room.cpp:202-205.
+struct Camera {
+    int      cur_x;        // mirrors camera._cur.x (room x in pixels)
+    int      dest_x;       // mirrors camera._dest.x — where panCameraTo wants
+    int      last_x;
+    uint8_t  mode;         // 1 = normal, 2 = follow_actor, 3 = panning
+    uint8_t  movingToActor;
+    int      follows;      // actor index when in follow mode
+    int      leftTrigger;  // mirrors camera._leftTrigger (in strips, gfx.h:143)
+    int      rightTrigger; // mirrors camera._rightTrigger
+    int      screenStartStrip;
+    int      screenEndStrip;
+};
+constexpr uint8_t kNormalCameraMode      = 1;
+constexpr uint8_t kFollowActorCameraMode = 2;
+constexpr uint8_t kPanningCameraMode     = 3;
+
 struct EngineState {
-    // 320x200x8bpp working virtual screen. Pixels are palette indices.
+    uint8_t  vscreen_room[ROOM_BUFFER_W * VIRTUAL_SCREEN_H];
     uint8_t  vscreen_main[VIRTUAL_SCREEN_W * VIRTUAL_SCREEN_H];
-    uint8_t  vscreen_back[VIRTUAL_SCREEN_W * VIRTUAL_SCREEN_H];
+
+    Camera   camera;
 
     // Active palette: 256 RGB triplets, scaled to 0..255.
     uint8_t  palette[256 * 3];
@@ -137,24 +166,175 @@ bool engine_change_room(int new_room) {
     }
     g.current_room_id = new_room;
     g.room_loaded = true;
-    // Clear the framebuffer so any old room content can't bleed through if
-    // the new background doesn't span the full 320x200.
-    memset(g.vscreen_main, 0, sizeof(g.vscreen_main));
+    // Composite the room-wide backbuffer (background + objects). vscreen_main
+    // is computed per-frame in engine_tick from a viewport into this.
+    memset(g.vscreen_room, 0, sizeof(g.vscreen_room));
     room_load_palette(g.room, g.palette);
-    room_render_background(g.room, g.vscreen_main, VIRTUAL_SCREEN_W);
+    room_render_background(g.room, g.vscreen_room, ROOM_BUFFER_W);
     object_load_from_room(g.room.room_chunk, &g_object_table);
     refresh_object_states(&g_object_table);
-    object_render_all(&g_object_table, g.vscreen_main, VIRTUAL_SCREEN_W);
-    memcpy(g.vscreen_back, g.vscreen_main, sizeof(g.vscreen_main));
+    object_render_all(&g_object_table, g.vscreen_room, ROOM_BUFFER_W);
     if (!g.room.boxd_payload.empty()) {
         walkbox_load(g.room.boxd_payload, Span{nullptr, 0}, &g.walkboxes);
     } else {
         memset(&g.walkboxes, 0, sizeof(g.walkboxes));
     }
-    platform::log("room transition -> %d (%dx%d)\n",
-                  new_room, g.room.width, g.room.height);
+
+    // Camera + camera vars — mirror ScummEngine::startScene
+    // (room.cpp:202-216). Center the camera on screen-half, set MIN_X/MAX_X
+    // bounds. cameraMoved() will be invoked by the per-frame loop.
+    g.camera.mode    = kNormalCameraMode;
+    g.camera.cur_x   = VIRTUAL_SCREEN_W / 2;
+    g.camera.dest_x  = g.camera.cur_x;
+    g.camera.last_x  = g.camera.cur_x;
+    g.camera.movingToActor = 0;
+    g.camera.follows = 0;
+    g_vm.globals[VAR_CAMERA_MIN_X] = VIRTUAL_SCREEN_W / 2;
+    g_vm.globals[VAR_CAMERA_MAX_X] = g.room.width - VIRTUAL_SCREEN_W / 2;
+    if (g_vm.globals[VAR_CAMERA_MAX_X] < g_vm.globals[VAR_CAMERA_MIN_X])
+        g_vm.globals[VAR_CAMERA_MAX_X] = g_vm.globals[VAR_CAMERA_MIN_X];
+    // Trigger band — ScummVM scumm.cpp:2060-2064: camera._leftTrigger=10,
+    // _rightTrigger=30 for v4+. (V0 uses 6/21.)
+    g.camera.leftTrigger  = 10;
+    g.camera.rightTrigger = 30;
+
+    platform::log("room transition -> %d (%dx%d) camera=[%d..%d]\n",
+                  new_room, g.room.width, g.room.height,
+                  (int)g_vm.globals[VAR_CAMERA_MIN_X],
+                  (int)g_vm.globals[VAR_CAMERA_MAX_X]);
     g_vm.room_change_pending = false;
     return true;
+}
+
+// Mirrors ScummEngine::cameraMoved (camera.cpp:169-193). Clamps cur_x and
+// recomputes screenStartStrip / screenEndStrip and VAR_CAMERA_POS_X.
+static void camera_moved() {
+    int half_w = VIRTUAL_SCREEN_W / 2;
+    if (g.camera.cur_x < half_w)
+        g.camera.cur_x = half_w;
+    else if (g.room_loaded && g.camera.cur_x > g.room.width - half_w)
+        g.camera.cur_x = g.room.width - half_w;
+    g.camera.screenStartStrip = g.camera.cur_x / 8 - NUM_STRIPS / 2;
+    g.camera.screenEndStrip   = g.camera.screenStartStrip + NUM_STRIPS - 1;
+    if (g.camera.screenStartStrip < 0) g.camera.screenStartStrip = 0;
+    g_vm.globals[VAR_CAMERA_POS_X] = g.camera.cur_x;
+}
+
+// Mirrors ScummEngine::setCameraAt (camera.cpp:40-60). Clamps to MIN/MAX.
+void engine_camera_set_at(int pos_x) {
+    if (g.camera.mode != kFollowActorCameraMode ||
+        (pos_x - g.camera.cur_x > VIRTUAL_SCREEN_W/2) ||
+        (g.camera.cur_x - pos_x > VIRTUAL_SCREEN_W/2)) {
+        g.camera.cur_x = pos_x;
+    }
+    g.camera.dest_x = pos_x;
+    if (g.camera.cur_x < g_vm.globals[VAR_CAMERA_MIN_X])
+        g.camera.cur_x = g_vm.globals[VAR_CAMERA_MIN_X];
+    if (g.camera.cur_x > g_vm.globals[VAR_CAMERA_MAX_X])
+        g.camera.cur_x = g_vm.globals[VAR_CAMERA_MAX_X];
+    camera_moved();
+}
+
+// Mirrors ScummEngine::panCameraTo (camera.cpp:195-199).
+void engine_camera_pan_to(int x) {
+    g.camera.dest_x = x;
+    g.camera.mode = kPanningCameraMode;
+    g.camera.movingToActor = 0;
+}
+
+// Mirrors ScummEngine::setCameraFollows (camera.cpp:62-86). Switches the
+// camera into follow-actor mode. If the actor isn't in the current room,
+// triggers a room change (we issue a normal change_room). After the room
+// is loaded, jumps the camera to the actor if the actor's strip is outside
+// the trigger band, OR if `force` is set.
+void engine_camera_set_follows(int actor_num, bool force) {
+    g.camera.mode = kFollowActorCameraMode;
+    g.camera.follows = actor_num;
+
+    Actor *a = actor_get(actor_num);
+    if (!a) return;
+
+    if (a->room != g.current_room_id) {
+        engine_change_room(a->room);
+        g.camera.mode = kFollowActorCameraMode;
+        g.camera.cur_x = a->x;
+        engine_camera_set_at(g.camera.cur_x);
+    }
+
+    int t = a->x / 8 - g.camera.screenStartStrip;
+    if (t < g.camera.leftTrigger || t > g.camera.rightTrigger || force) {
+        engine_camera_set_at(a->x);
+    }
+
+    // ScummVM also marks every actor in the current room as needing redraw
+    // and runs runInventoryScript(0) here. We composite every actor every
+    // frame so the redraw flag is implicit; the inventory script is
+    // out-of-scope until inventory rendering is wired up.
+}
+
+// Mirrors ScummEngine::moveCamera (camera.cpp:93-167). Walks cur_x toward
+// dest_x in 8-px increments. In follow-actor mode, sets dest_x from the
+// followed actor whenever the actor strays outside the trigger band.
+static void camera_move_tick() {
+    int pos = g.camera.cur_x;
+    Actor *a = nullptr;
+    int min_x = g_vm.globals[VAR_CAMERA_MIN_X];
+    int max_x = g_vm.globals[VAR_CAMERA_MAX_X];
+
+    g.camera.cur_x &= ~7;   // align to 8
+
+    if (g.camera.cur_x < min_x) {
+        g.camera.cur_x += 8;
+        camera_moved();
+        return;
+    }
+    if (g.camera.cur_x > max_x) {
+        g.camera.cur_x -= 8;
+        camera_moved();
+        return;
+    }
+
+    if (g.camera.mode == kFollowActorCameraMode) {
+        a = actor_get(g.camera.follows);
+        if (a && a->room == g.current_room_id) {
+            int actorx = a->x;
+            int t = actorx / 8 - g.camera.screenStartStrip;
+            if (t < g.camera.leftTrigger || t > g.camera.rightTrigger) {
+                g.camera.movingToActor = 1;
+            }
+        }
+    }
+
+    if (g.camera.movingToActor) {
+        a = actor_get(g.camera.follows);
+        if (a && a->room == g.current_room_id) {
+            g.camera.dest_x = a->x;
+        }
+    }
+
+    if (g.camera.dest_x < min_x) g.camera.dest_x = min_x;
+    if (g.camera.dest_x > max_x) g.camera.dest_x = max_x;
+
+    if (g.camera.cur_x < g.camera.dest_x) g.camera.cur_x += 8;
+    if (g.camera.cur_x > g.camera.dest_x) g.camera.cur_x -= 8;
+
+    if (g.camera.movingToActor && a &&
+        (g.camera.cur_x / 8) == (a->x / 8)) {
+        g.camera.movingToActor = 0;
+    }
+
+    camera_moved();
+
+    // VAR_SCROLL_SCRIPT support — when set non-zero, runs that script
+    // each time camera moves with VAR_CAMERA_POS_X = cur_x.
+    if (pos != g.camera.cur_x) {
+        int scroll_script = g_vm.globals[VAR_SCROLL_SCRIPT];
+        if (scroll_script) {
+            g_vm.globals[VAR_CAMERA_POS_X] = g.camera.cur_x;
+            int32_t args[1] = {0};
+            vm_start_script(&g_vm, scroll_script, args, 0, false, false);
+        }
+    }
 }
 
 bool engine_init() {
@@ -201,6 +381,24 @@ bool engine_init() {
                           i, g.master.rooms[i].disk, g.master.rooms[i].offset);
     }
 
+    // Populate _objectStateTable / _objectOwnerTable from the global object
+    // entries in 000.LFL. Mirrors ScummEngine_v4::readGlobalObjects
+    // (resource_v4.cpp:241-275). Without this, every room object
+    // defaults to state=0 in our table — but ScummVM ships with the
+    // pre-set initial states encoded into the master index (e.g. cliff
+    // clouds ON for room 10's title scene).
+    int n_globals = g.master.num_global_objects;
+    if (n_globals > NUM_GLOBAL_OBJECTS) n_globals = NUM_GLOBAL_OBJECTS;
+    int nonzero = 0;
+    for (int i = 0; i < n_globals; i++) {
+        const GlobalObject &go = g.master.global_objects[i];
+        g_object_state[i] = global_object_state(go);
+        g_object_owner[i] = global_object_owner(go);
+        if (g_object_state[i]) nonzero++;
+    }
+    platform::log("global objects: %d total, %d with non-zero initial state\n",
+                  n_globals, nonzero);
+
     // Initialize actor pool before any boot script can manipulate them.
     actor_init_all();
 
@@ -221,8 +419,7 @@ bool engine_init() {
                 ObjectData *o = &g_object_table.objects[i];
                 if (o->obj_id > 0) o->state = 1;
             }
-            object_render_all(&g_object_table, g.vscreen_main, VIRTUAL_SCREEN_W);
-            memcpy(g.vscreen_back, g.vscreen_main, sizeof(g.vscreen_main));
+            object_render_all(&g_object_table, g.vscreen_room, ROOM_BUFFER_W);
         }
     }
     g.skip_boot_script = freeze_at_initial;
@@ -408,12 +605,33 @@ bool engine_tick() {
         palette_cycle_tick(g.room.color_cycle, g.palette);
     }
 
-    // Refresh main screen from background each frame, then composite
-    // objects + actors on top.
+    // Tick the camera (panCameraTo / clamp). Mirrors ScummEngine::moveCamera
+    // (camera.cpp:93-167) called once per scummLoop_handleActors / scumm.cpp.
     if (g.room_loaded) {
-        memcpy(g.vscreen_main, g.vscreen_back, sizeof(g.vscreen_main));
+        camera_move_tick();
+    }
+
+    // Per-frame composite: blit a 320-px viewport from the room-wide buffer
+    // into vscreen_main, then draw actors on top in viewport-relative
+    // coords. Mirrors ScummEngine::drawStripToScreen (gfx.cpp:630-705):
+    // strips [_screenStartStrip..+39] from the main VirtScreen are blitted
+    // to the real screen.
+    if (g.room_loaded) {
+        int x0 = g.camera.screenStartStrip * 8;
+        if (x0 < 0) x0 = 0;
+        if (x0 > ROOM_BUFFER_W - VIRTUAL_SCREEN_W)
+            x0 = ROOM_BUFFER_W - VIRTUAL_SCREEN_W;
+        for (int y = 0; y < VIRTUAL_SCREEN_H; y++) {
+            memcpy(g.vscreen_main + y * VIRTUAL_SCREEN_W,
+                   g.vscreen_room + y * ROOM_BUFFER_W + x0,
+                   VIRTUAL_SCREEN_W);
+        }
+        // Actors are stored in room coordinates. actor_render_all subtracts
+        // x_off from each actor's draw position so it lands in vscreen_main
+        // at viewport-relative x.
         actor_render_all(g.vscreen_main, VIRTUAL_SCREEN_W,
-                         g.walkboxes.valid ? &g.walkboxes : nullptr);
+                         g.walkboxes.valid ? &g.walkboxes : nullptr,
+                         x0);
     }
 
     g.frame++;
@@ -432,6 +650,21 @@ bool engine_tick() {
                 fwrite(g.palette + idx*3, 3, 1, f);
             }
             fclose(f);
+        }
+        // Also dump the full room-wide buffer for diagnosing strip layout.
+        FILE *fr = fopen("/tmp/tsb_room.ppm", "wb");
+        if (fr) {
+            fprintf(fr, "P6\n%d %d\n255\n",
+                    g.room_loaded ? g.room.width : ROOM_BUFFER_W,
+                    VIRTUAL_SCREEN_H);
+            int rw = g.room_loaded ? g.room.width : ROOM_BUFFER_W;
+            for (int y = 0; y < VIRTUAL_SCREEN_H; y++) {
+                for (int x = 0; x < rw; x++) {
+                    uint8_t idx = g.vscreen_room[y * ROOM_BUFFER_W + x];
+                    fwrite(g.palette + idx*3, 3, 1, fr);
+                }
+            }
+            fclose(fr);
         }
     }
 #endif

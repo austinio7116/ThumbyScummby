@@ -177,7 +177,8 @@ static void byle_rle_decode(
     int scale_x, int scale_y,
     int x_step,                         // +1 for normal, -1 for flipped
     int shr, int mask_bits,
-    const uint8_t *palette,
+    const uint8_t *actor_palette,       // 32-byte; 0xFF = "use cost palette"
+    const uint8_t *cost_palette,        // costume's intrinsic palette
     const uint8_t *mask_buf, int num_strips,
     uint8_t *vscreen, int vscreen_pitch,
     int clip_w, int clip_h,
@@ -230,7 +231,12 @@ static void byle_rle_decode(
                         masked = (mask_buf[y * num_strips + bx] & bb) != 0;
                     }
                     if (!masked) {
-                        uint8_t out_pix = palette[run_color];
+                        // Mirrors ScummVM ClassicCostumeRenderer::setPalette
+                        // (cost.cpp:817-823): when actor's per-color override
+                        // is 0xFF, fall back to the costume's palette entry.
+                        uint8_t out_pix = actor_palette ? actor_palette[run_color] : 0xFF;
+                        if (out_pix == 0xFF && cost_palette)
+                            out_pix = cost_palette[run_color];
                         if (out_pix != transparent_color) {
                             vscreen[y * vscreen_pitch + x] = out_pix;
                         }
@@ -333,16 +339,13 @@ void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
     int start_x = flip_x ? (dx - rx) : (dx + rx);
     int start_y = dy + ry;
 
-    // Choose palette: actor remap if provided, else costume palette.
-    const uint8_t *pal = actor_palette ? actor_palette : cost->palette;
-
     byle_rle_decode(src, res_end,
                     cw, ch,
                     start_x, start_y,
                     scale_x, scale_y,
                     x_step,
                     shr, mask_bits,
-                    pal,
+                    actor_palette, cost->palette,
                     mask_buf, num_strips,
                     vscreen, vscreen_pitch,
                     VIRTUAL_SCREEN_W, VIRTUAL_SCREEN_H,

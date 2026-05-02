@@ -58,4 +58,10 @@ void    engine_put_object_state(int obj_id, uint8_t state);
 uint8_t engine_get_object_owner(int obj_id);
 void    engine_put_object_owner(int obj_id, uint8_t owner);
 
+// Camera control — mirrors ScummEngine setCameraAt / panCameraTo /
+// setCameraFollows. Called from the matching opcode handlers.
+void engine_camera_set_at(int pos_x);
+void engine_camera_pan_to(int x);
+void engine_camera_set_follows(int actor_num, bool force);
+
 }  // namespace tsb

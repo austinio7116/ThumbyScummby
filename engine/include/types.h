@@ -47,8 +47,10 @@ struct Span {
 };
 
 // Constants
-constexpr int VIRTUAL_SCREEN_W = 320;
-constexpr int VIRTUAL_SCREEN_H = 200;
+constexpr int VIRTUAL_SCREEN_W = 320;       // visible viewport (matches ScummVM _screenWidth for v4)
+constexpr int VIRTUAL_SCREEN_H = 200;       // viewport height
+constexpr int ROOM_BUFFER_W    = 1024;      // room-wide backbuffer; max v4 room is 800
+constexpr int NUM_STRIPS       = VIRTUAL_SCREEN_W / 8;   // 40 strips visible at once
 constexpr int DISPLAY_W        = 128;
 constexpr int DISPLAY_H        = 128;
 constexpr int MAX_ACTORS       = 16;

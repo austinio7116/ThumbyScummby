@@ -91,7 +91,11 @@ void   actor_face_object(int actor_num, int object);
 // `wbg` is the current room's walkbox graph (may be nullptr if the room has
 // no walkboxes — e.g. inventory/title screens).
 void   actor_tick_all(const WalkboxGraph *wbg);
+// Renders all visible actors. `x_off` is subtracted from each actor's
+// draw position, mapping room x → viewport x. Mirrors the way ScummVM
+// processActors writes to the main VirtScreen using positions relative
+// to camera/_screenStartStrip.
 void   actor_render_all(uint8_t *vscreen_main, int pitch,
-                        const WalkboxGraph *wbg);
+                        const WalkboxGraph *wbg, int x_off = 0);
 
 }  // namespace tsb

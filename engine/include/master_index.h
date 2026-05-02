@@ -29,9 +29,24 @@ struct ResourceEntry {
 };
 
 // Global object metadata (state + owner + class).
+// v4 on-disk layout (4 bytes per object, see scummvm-upstream
+// resource_v4.cpp:241-275):
+//   bytes 0..2  uint24 LE   classData bits
+//   byte  3     packed: high nibble = state, low nibble = owner
+// Stored here as a single LE32 = byte0 | byte1<<8 | byte2<<16 | byte3<<24.
 struct GlobalObject {
-    uint32_t classes_state_owner;  // packed: top byte=state, next=owner, low 24=class bits
+    uint32_t classes_state_owner;
 };
+
+inline uint8_t global_object_state(const GlobalObject &g) {
+    return (uint8_t)((g.classes_state_owner >> 28) & 0x0F);
+}
+inline uint8_t global_object_owner(const GlobalObject &g) {
+    return (uint8_t)((g.classes_state_owner >> 24) & 0x0F);
+}
+inline uint32_t global_object_classdata(const GlobalObject &g) {
+    return g.classes_state_owner & 0x00FFFFFFu;
+}
 
 struct MasterIndex {
     int  num_rooms;

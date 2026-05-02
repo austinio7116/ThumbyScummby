@@ -1460,19 +1460,23 @@ static void op_pickupObject(VM *vm) {
     platform::log("[stub] pickupObject(%d, %d)\n", obj, room);
 }
 
+// 0x12 / 0x92 — panCameraTo. Mirrors o5_panCameraTo (script_v5.cpp:1534).
 static void op_panCameraTo(VM *vm) {
     int x = vm_get_var_or_word(vm, 0x80);
-    platform::log("[stub] panCameraTo(%d)\n", x);
+    engine_camera_pan_to(x);
 }
 
+// 0x32 / 0xB2 — setCameraAt. Mirrors o5_setCameraAt (script_v5.cpp:2025).
 static void op_setCameraAt(VM *vm) {
     int x = vm_get_var_or_word(vm, 0x80);
-    platform::log("[stub] setCameraAt(%d)\n", x);
+    engine_camera_set_at(x);
 }
 
+// 0x52 / 0xD2 — actorFollowCamera. Mirrors o5_actorFollowCamera
+// (script_v5.cpp:480). For v<7 this calls setCameraFollows.
 static void op_actorFollowCamera(VM *vm) {
     int act = vm_get_var_or_byte(vm, 0x80);
-    platform::log("[stub] actorFollowCamera(%d)\n", act);
+    engine_camera_set_follows(act, /*force=*/false);
 }
 
 static void op_startSound(VM *vm) {
