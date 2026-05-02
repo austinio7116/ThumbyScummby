@@ -400,6 +400,14 @@ bool engine_tick() {
     // is up-to-date.
     actor_tick_all(g.walkboxes.valid ? &g.walkboxes : nullptr);
 
+    // Advance palette cycles (mirrors ScummEngine::cyclePalette, called
+    // once per scumm loop). Sparkle / waterfall / lava effects rely on
+    // this. Operates on g.palette directly; the next platform::present
+    // picks up the rotated colors.
+    if (g.room_loaded) {
+        palette_cycle_tick(g.room.color_cycle, g.palette);
+    }
+
     // Refresh main screen from background each frame, then composite
     // objects + actors on top.
     if (g.room_loaded) {

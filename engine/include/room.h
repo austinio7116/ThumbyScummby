@@ -9,6 +9,17 @@
 
 namespace tsb {
 
+// Per-room palette cycle entry — mirrors ScummVM ColorCycle (gfx.h:279).
+// In v4 small_header, the CYCL chunk ('CC' tag) holds exactly 16 entries
+// of (BE16 delay, u8 start, u8 end). counter is initialised at load time
+// to `start` if delay != 0 && delay != 0x0AAA (palette.cpp:618).
+struct ColorCycle {
+    uint16_t delay;
+    uint16_t counter;
+    uint8_t  start;
+    uint8_t  end;
+};
+
 // Information about a parsed room. Pointers into XIP-resident data — never
 // owns memory.
 struct Room {
@@ -16,6 +27,7 @@ struct Room {
     int      width;
     int      height;
     int      num_objects;
+    ColorCycle color_cycle[16];
 
     // The top-of-room ROOM chunk and its commonly-needed sub-chunk payloads.
     Span     room_chunk;       // entire ROOM small-chunk payload
@@ -65,5 +77,12 @@ bool room_render_background(const Room &room, uint8_t *out_buf, int out_pitch);
 // Convert the room's PALS payload into 256 RGB888 triplets in `out_palette`
 // (768 bytes). Handles 6-bit→8-bit upscaling.
 bool room_load_palette(const Room &room, uint8_t *out_palette);
+
+// Advance every active cycle by one tick. For each cycle whose counter is
+// non-zero, increments the counter (wrapping start..end), and rotates the
+// RGB triplets at indices [start..end] left by one. Mirrors the v4 path
+// of ScummEngine::cyclePalette (palette.cpp:741-768) using direct palette
+// rotation rather than ScummVM's _shadowPalette indirection.
+void palette_cycle_tick(ColorCycle cycles[16], uint8_t *palette);
 
 }  // namespace tsb

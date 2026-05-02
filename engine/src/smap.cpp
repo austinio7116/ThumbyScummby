@@ -161,7 +161,15 @@ bool smap_decode_bm(Span bm_payload, int width, int height,
     }
 
     // Strip offsets follow. Offset[i] points to start of strip i's data.
+    // Each strip is 8 pixels wide. We output into a buffer of pitch
+    // out_pitch — strips whose left edge >= out_pitch are off-screen and
+    // must NOT be written or they wrap into the next row, producing the
+    // "noise band" we used to see at the top of the Lucasfilm screen.
+    // (ScummVM keeps a separate room-width backbuffer and blits a
+    // viewport-sized window from it; we go direct to the screen so we
+    // clip here instead.)
     for (int s = 0; s < num_strips; s++) {
+        if (s * 8 >= out_pitch) break;
         uint32_t off = read_le32(base + 4 + s * 4);
         if (off == 0 || off >= bm_payload.size) {
             // Empty / out-of-bounds strip — leave blank

@@ -126,6 +126,25 @@ bool room_load(int room_id, const MasterIndex &master, Room *out) {
         out->boxd_payload = c.payload;
     }
 
+    // CYCL ('CC' in v4) — palette cycle table. Mirrors
+    // ScummEngine::initCycl, GF_SMALL_HEADER branch (palette.cpp:605-620):
+    // 16 entries, each (BE16 delay, u8 start, u8 end). counter is set to
+    // `start` if delay != 0 && delay != 0x0AAA.
+    memset(out->color_cycle, 0, sizeof(out->color_cycle));
+    if (small_find(room_chunk.payload, small_tag('C','C'), &c) &&
+        c.payload.size >= 16 * 4) {
+        const uint8_t *p = c.payload.data;
+        for (int i = 0; i < 16; i++, p += 4) {
+            uint16_t delay = (uint16_t)((p[0] << 8) | p[1]);   // BE
+            out->color_cycle[i].delay   = delay;
+            out->color_cycle[i].start   = p[2];
+            out->color_cycle[i].end     = p[3];
+            out->color_cycle[i].counter = 0;
+            if (delay && delay != 0x0AAA)
+                out->color_cycle[i].counter = p[2];
+        }
+    }
+
     // Room entry / exit code (ENCD / EXCD). The offset is relative to the
     // ROOM resource base — we use room_chunk.full (which starts at the
     // 6-byte small-chunk header) so it matches ScummVM's roomResPtr from
@@ -200,6 +219,38 @@ bool room_load_palette(const Room &room, uint8_t *out_palette) {
         out_palette[i*3 + 2] = p[i*3 + 2];
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Palette cycle tick. Mirrors the v4 (GF_SMALL_HEADER) branch of
+// ScummEngine::cyclePalette in palette.cpp:741-768, using direct rotation
+// of the RGB triplets at indices [start..end] rather than ScummVM's
+// _shadowPalette indirection. Counter advances by 1 each call (one pixel
+// position per frame); ScummVM's cyclePalette runs at the same cadence.
+// ---------------------------------------------------------------------------
+void palette_cycle_tick(ColorCycle cycles[16], uint8_t *palette) {
+    for (int i = 0; i < 16; i++) {
+        ColorCycle &c = cycles[i];
+        if (!c.counter) continue;
+        c.counter++;
+        if (c.counter > c.end) c.counter = c.start;
+        if (c.start >= c.end) continue;
+
+        // Rotate palette[start..end] left by 1 (RGB triplet step).
+        uint8_t saved[3] = {
+            palette[c.start * 3 + 0],
+            palette[c.start * 3 + 1],
+            palette[c.start * 3 + 2]
+        };
+        for (int j = c.start; j < c.end; j++) {
+            palette[j * 3 + 0] = palette[(j + 1) * 3 + 0];
+            palette[j * 3 + 1] = palette[(j + 1) * 3 + 1];
+            palette[j * 3 + 2] = palette[(j + 1) * 3 + 2];
+        }
+        palette[c.end * 3 + 0] = saved[0];
+        palette[c.end * 3 + 1] = saved[1];
+        palette[c.end * 3 + 2] = saved[2];
+    }
 }
 
 // ---------------------------------------------------------------------------
