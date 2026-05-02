@@ -75,11 +75,19 @@ uint16_t vm_fetch_uword(VM *vm) {
 //   - bit 0x4000 set: local var (per-slot)
 //   - bit 0x2000 set: room var (some games)
 //   - else: global
+// readVar / writeVar: the var ID encoding is (matching ScummVM):
+//   (var & 0xF000) == 0    -> global var (index = var)
+//   var & 0x8000           -> bit var (index = var & 0x7FFF)
+//   var & 0x4000           -> per-slot local var (index = var & 0x0FFF)
+// The 0x2000 bit is NEVER seen here — it's consumed by getResultPos for
+// indirect array writes, which strip it before calling read/writeVar.
 int32_t vm_read_var(VM *vm, uint16_t var) {
-    if (var & 0x2000) {
-        // Either var via local (rare in v5; treat as local for safety)
-        var &= 0x0FFF;
-        return vm->locals[vm->cur_slot][var < VM_NUM_LOCALS ? var : 0];
+    if ((var & 0xF000) == 0) {
+        if (var >= VM_NUM_GLOBALS) {
+            platform::log("vm: read out-of-range global %u\n", var);
+            return 0;
+        }
+        return vm->globals[var];
     }
     if (var & 0x8000) {
         uint16_t idx = var & 0x7FFF;
@@ -91,17 +99,16 @@ int32_t vm_read_var(VM *vm, uint16_t var) {
         if (idx >= VM_NUM_LOCALS) return 0;
         return vm->locals[vm->cur_slot][idx];
     }
-    if (var >= VM_NUM_GLOBALS) {
-        platform::log("vm: read out-of-range global %u\n", var);
-        return 0;
-    }
-    return vm->globals[var];
+    return 0;
 }
 
 void vm_write_var(VM *vm, uint16_t var, int32_t val) {
-    if (var & 0x2000) {
-        var &= 0x0FFF;
-        if (var < VM_NUM_LOCALS) vm->locals[vm->cur_slot][var] = val;
+    if ((var & 0xF000) == 0) {
+        if (var >= VM_NUM_GLOBALS) {
+            platform::log("vm: write out-of-range global %u\n", var);
+            return;
+        }
+        vm->globals[var] = val;
         return;
     }
     if (var & 0x8000) {
@@ -116,11 +123,6 @@ void vm_write_var(VM *vm, uint16_t var, int32_t val) {
         if (idx < VM_NUM_LOCALS) vm->locals[vm->cur_slot][idx] = val;
         return;
     }
-    if (var >= VM_NUM_GLOBALS) {
-        platform::log("vm: write out-of-range global %u\n", var);
-        return;
-    }
-    vm->globals[var] = val;
 }
 
 int32_t vm_get_var_or_byte(VM *vm, uint8_t mask) {
@@ -139,6 +141,24 @@ int32_t vm_get_var_or_word(VM *vm, uint8_t mask) {
         return vm_read_var(vm, var);
     }
     return (int32_t)vm_fetch_word(vm);
+}
+
+// SCUMM v5 getResultPos (script_v5.cpp:383). Reads the destination var ID
+// for opcodes that store a result. Handles the rare 0x2000 indirect-add
+// form used for array writes — that consumes 4 bytes instead of 2.
+uint16_t vm_get_result_pos(VM *vm) {
+    uint16_t v = vm_fetch_uword(vm);
+    if (v & 0x2000) {
+        uint16_t a = vm_fetch_uword(vm);
+        uint16_t base = (uint16_t)(v & ~0x2000);
+        if (a & 0x2000) {
+            base += (uint16_t)vm_read_var(vm, (uint16_t)(a & ~0x2000));
+        } else {
+            base += (uint16_t)(a & 0x0FFF);
+        }
+        v = base;
+    }
+    return v;
 }
 
 void vm_jump_relative(VM *vm, bool cond) {

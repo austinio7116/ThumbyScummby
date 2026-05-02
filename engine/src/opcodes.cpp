@@ -127,35 +127,35 @@ static void op_debug(VM *vm) {
 
 // 0x1A / 0x9A  move : var = val
 static void op_move(VM *vm) {
-    uint16_t dst = vm_fetch_uword(vm);
+    uint16_t dst = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     vm_write_var(vm, dst, val);
 }
 
 // 0x5A / 0xDA  add : var += val
 static void op_add(VM *vm) {
-    uint16_t dst = vm_fetch_uword(vm);
+    uint16_t dst = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     vm_write_var(vm, dst, vm_read_var(vm, dst) + val);
 }
 
 // 0x3A / 0xBA  subtract : var -= val
 static void op_subtract(VM *vm) {
-    uint16_t dst = vm_fetch_uword(vm);
+    uint16_t dst = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     vm_write_var(vm, dst, vm_read_var(vm, dst) - val);
 }
 
 // 0x1B / 0x9B  multiply : var *= val
 static void op_multiply(VM *vm) {
-    uint16_t dst = vm_fetch_uword(vm);
+    uint16_t dst = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     vm_write_var(vm, dst, vm_read_var(vm, dst) * val);
 }
 
 // 0x5B / 0xDB  divide : var /= val
 static void op_divide(VM *vm) {
-    uint16_t dst = vm_fetch_uword(vm);
+    uint16_t dst = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     if (val == 0) {
         platform::log("[op] divide by zero\n");
@@ -167,33 +167,33 @@ static void op_divide(VM *vm) {
 
 // 0x17 / 0x97  and : var &= val
 static void op_and(VM *vm) {
-    uint16_t dst = vm_fetch_uword(vm);
+    uint16_t dst = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     vm_write_var(vm, dst, vm_read_var(vm, dst) & val);
 }
 
 // 0x57 / 0xD7  or : var |= val
 static void op_or(VM *vm) {
-    uint16_t dst = vm_fetch_uword(vm);
+    uint16_t dst = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     vm_write_var(vm, dst, vm_read_var(vm, dst) | val);
 }
 
 // 0x46  increment : var++
 static void op_increment(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     vm_write_var(vm, var, vm_read_var(vm, var) + 1);
 }
 
 // 0xC6  decrement : var--
 static void op_decrement(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     vm_write_var(vm, var, vm_read_var(vm, var) - 1);
 }
 
 // 0x16 / 0x96  getRandomNr
 static void op_getRandomNr(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int32_t  max        = vm_get_var_or_byte(vm, 0x80);
     vm_write_var(vm, result_var, simple_random(max));
 }
@@ -204,7 +204,7 @@ static void op_getRandomNr(VM *vm) {
 //   ScummVM byte path: fetchScriptByte() returns unsigned byte (zero-extended
 //   to int). Don't sign-extend.
 static void op_setVarRange(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     int      n   = vm_fetch_byte(vm);
     bool     wide = (vm->opcode & 0x80) != 0;
     while (n-- > 0) {
@@ -221,14 +221,14 @@ static void op_setVarRange(VM *vm) {
 
 // 0x48 / 0xC8  isEqual
 static void op_isEqual(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, vm_read_var(vm, var) == val);
 }
 
 // 0x08 / 0x88  isNotEqual
 static void op_isNotEqual(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, vm_read_var(vm, var) != val);
 }
@@ -251,7 +251,7 @@ static void op_isNotEqual(VM *vm) {
 // table for ScummVM source is: predicate is (val < var). Just trust the
 // source.
 static void op_isLess(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     int32_t  a   = vm_read_var(vm, var);
     int32_t  b   = vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, b < a);
@@ -259,7 +259,7 @@ static void op_isLess(VM *vm) {
 
 // 0x38 / 0xB8  isLessEqual : ScummVM does jumpRelative(b <= a)
 static void op_isLessEqual(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     int32_t  a   = vm_read_var(vm, var);
     int32_t  b   = vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, b <= a);
@@ -267,7 +267,7 @@ static void op_isLessEqual(VM *vm) {
 
 // 0x78 / 0xF8  isGreater : ScummVM jumpRelative(b > a)
 static void op_isGreater(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     int32_t  a   = vm_read_var(vm, var);
     int32_t  b   = vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, b > a);
@@ -275,7 +275,7 @@ static void op_isGreater(VM *vm) {
 
 // 0x04 / 0x84  isGreaterEqual : ScummVM jumpRelative(b >= a)
 static void op_isGreaterEqual(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     int32_t  a   = vm_read_var(vm, var);
     int32_t  b   = vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, b >= a);
@@ -283,13 +283,13 @@ static void op_isGreaterEqual(VM *vm) {
 
 // 0x28  equalZero : jump if var != 0  (i.e. cond=(var==0); fall thru if true)
 static void op_equalZero(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     vm_jump_relative(vm, vm_read_var(vm, var) == 0);
 }
 
 // 0xA8  notEqualZero : jump if var == 0
 static void op_notEqualZero(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     vm_jump_relative(vm, vm_read_var(vm, var) != 0);
 }
 
@@ -348,7 +348,7 @@ static void op_chainScript(VM *vm) {
 
 // 0x68 / 0xE8  isScriptRunning
 static void op_isScriptRunning(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int      scr        = vm_get_var_or_byte(vm, 0x80);
     int      running = 0;
     for (int i = 0; i < VM_MAX_SLOTS; i++) {
@@ -439,7 +439,7 @@ static void op_delay(VM *vm) {
 
 // 0x2B  delayVariable
 static void op_delayVariable(VM *vm) {
-    uint16_t var = vm_fetch_uword(vm);
+    uint16_t var = vm_get_result_pos(vm);
     vm->slots[vm->cur_slot].delay = vm_read_var(vm, var);
 }
 
@@ -548,7 +548,7 @@ static void op_lights(VM *vm) {
 // ===========================================================================
 static void op_expression(VM *vm) {
     vm->stack_pos = 0;
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     while (true) {
         uint8_t op = vm_fetch_byte(vm);
         if (op == 0xFF) break;
@@ -617,7 +617,7 @@ static void op_stringOps(VM *vm) {
         break;
     }
     case 4: {   // get string char : result, slot, idx
-        uint16_t result_var = vm_fetch_uword(vm);
+        uint16_t result_var = vm_get_result_pos(vm);
         int slot = vm_get_var_or_byte(vm, 0x80);
         int idx  = vm_get_var_or_byte(vm, 0x40);
         (void)slot; (void)idx;
@@ -1031,14 +1031,14 @@ static void op_matrixOps(VM *vm) {
         (void)vm_get_var_or_byte(vm, 0x40);
         break;
     case 2: {   // get_walkbox_at : result, x, y
-        uint16_t result_var = vm_fetch_uword(vm);
+        uint16_t result_var = vm_get_result_pos(vm);
         (void)vm_get_var_or_byte(vm, 0x80);
         (void)vm_get_var_or_byte(vm, 0x40);
         vm_write_var(vm, result_var, 0);
         break;
     }
     case 3: {   // get_walkbox : result, actor
-        uint16_t result_var = vm_fetch_uword(vm);
+        uint16_t result_var = vm_get_result_pos(vm);
         (void)vm_get_var_or_byte(vm, 0x80);
         vm_write_var(vm, result_var, 0);
         break;
@@ -1313,7 +1313,7 @@ static void op_startMusic(VM *vm) {
 }
 
 static void op_isSoundRunning(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int snd = vm_get_var_or_byte(vm, 0x80);
     vm_write_var(vm, result_var, imuse_is_running(snd) ? 1 : 0);
 }
@@ -1347,84 +1347,84 @@ static void op_doSentence(VM *vm) {
 // ===========================================================================
 
 static void op_getActorRoom(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     vm_write_var(vm, result_var, a ? a->room : 0);
 }
 
 static void op_getActorX(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     vm_write_var(vm, result_var, a ? a->x : 0);
 }
 
 static void op_getActorY(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     vm_write_var(vm, result_var, a ? a->y : 0);
 }
 
 static void op_getActorMoving(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     vm_write_var(vm, result_var, a ? a->moving : 0);
 }
 
 static void op_getActorFacing(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     vm_write_var(vm, result_var, a ? a->facing : 0);
 }
 
 static void op_getActorCostume(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     vm_write_var(vm, result_var, a ? a->costume : 0);
 }
 
 static void op_getActorElevation(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     vm_write_var(vm, result_var, a ? a->elevation : 0);
 }
 
 static void op_getActorWalkBox(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     vm_write_var(vm, result_var, (a && a->walkbox != INVALID_BOX) ? a->walkbox : 0);
 }
 
 static void op_getActorWidth(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     (void)act;
     vm_write_var(vm, result_var, 0);
 }
 
 static void op_getActorScale(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     (void)act;
     vm_write_var(vm, result_var, 0xFF);
 }
 
 static void op_getAnimCounter(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     (void)act;
     vm_write_var(vm, result_var, 0);
 }
 
 static void op_actorFromPos(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int x = vm_get_var_or_word(vm, 0x80);
     int y = vm_get_var_or_word(vm, 0x40);
     (void)x; (void)y;
@@ -1432,7 +1432,7 @@ static void op_actorFromPos(VM *vm) {
 }
 
 static void op_getDist(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int o1 = vm_get_var_or_word(vm, 0x80);
     int o2 = vm_get_var_or_word(vm, 0x40);
     (void)o1; (void)o2;
@@ -1440,14 +1440,14 @@ static void op_getDist(VM *vm) {
 }
 
 static void op_getInventoryCount(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     (void)act;
     vm_write_var(vm, result_var, 0);
 }
 
 static void op_findInventory(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     int n   = vm_get_var_or_byte(vm, 0x40);
     (void)act; (void)n;
@@ -1455,7 +1455,7 @@ static void op_findInventory(VM *vm) {
 }
 
 static void op_findObject(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int x = vm_get_var_or_byte(vm, 0x80);
     int y = vm_get_var_or_byte(vm, 0x40);
     (void)x; (void)y;
@@ -1463,28 +1463,28 @@ static void op_findObject(VM *vm) {
 }
 
 static void op_getObjectState(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int obj = vm_get_var_or_word(vm, 0x80);
     (void)obj;
     vm_write_var(vm, result_var, 0);
 }
 
 static void op_getObjectOwner(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int obj = vm_get_var_or_word(vm, 0x80);
     (void)obj;
     vm_write_var(vm, result_var, 0);
 }
 
 static void op_getStringWidth(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int strid = vm_get_var_or_byte(vm, 0x80);
     (void)strid;
     vm_write_var(vm, result_var, 8);
 }
 
 static void op_getVerbEntrypoint(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     int a = vm_get_var_or_word(vm, 0x80);
     int b = vm_get_var_or_word(vm, 0x40);
     (void)a; (void)b;
@@ -1492,7 +1492,7 @@ static void op_getVerbEntrypoint(VM *vm) {
 }
 
 static void op_getClosestObjActor(VM *vm) {
-    uint16_t result_var = vm_fetch_uword(vm);
+    uint16_t result_var = vm_get_result_pos(vm);
     // First operand x(0x80), then a vararg list of object IDs (terminated 0xFF).
     int x = vm_get_var_or_word(vm, 0x80);
     int32_t args[VM_MAX_VARARG];

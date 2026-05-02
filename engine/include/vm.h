@@ -150,6 +150,15 @@ void     vm_write_var(VM *vm, uint16_t var, int32_t val);
 int32_t  vm_get_var_or_byte(VM *vm, uint8_t mask);
 int32_t  vm_get_var_or_word(VM *vm, uint8_t mask);
 
+// "Get result pos" — resolves a destination variable ID, handling the
+// SCUMM 0x2000 indirect-add encoding used for arrays. Mirrors ScummVM's
+// ScummEngine_v5::getResultPos (script_v5.cpp:383).
+//
+// Standard form: 2 bytes, returns the var ID directly.
+// Indirect form: 4 bytes — base|0x2000, then either a constant offset or
+// another var read. Used for arrays like B.384[V.100].
+uint16_t vm_get_result_pos(VM *vm);
+
 // Conditional jump: if !cond, advance pc by signed 16-bit offset; otherwise
 // just consume the offset and continue.
 void     vm_jump_relative(VM *vm, bool cond);
