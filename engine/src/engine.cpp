@@ -177,11 +177,31 @@ bool engine_init() {
     }
 
     // Initialize VM and start the boot script (script 1).
+    //
+    // Initial global writes mirror ScummVM's resetScummVars() (vars.cpp:784)
+    // followed by setupScummVars (game-version-specific). This is what fills
+    // VAR_HEAPSPACE / VAR_FIXEDDISK / VAR_CHARINC / VAR_VIDEOMODE / etc. so
+    // that the boot script's checks against those vars take the same path
+    // as the reference implementation.
     vm_init(&g_vm);
     g_vm.globals[VAR_NUM_ACTOR]    = MAX_ACTORS - 1;
     g_vm.globals[VAR_MACHINE_SPEED] = 1;
     g_vm.globals[VAR_TIMER_NEXT]   = 0;
     g_vm.globals[VAR_ROOM]         = g.current_room_id;
+    // resetScummVars() — applies for v4+ in MI1.
+    g_vm.globals[VAR_HEAPSPACE]    = 1400;          // v4+
+    g_vm.globals[VAR_FIXEDDISK]    = 1;             // v4+
+    // The reference trace was captured with --debuglevel=2 which sets
+    // _debugMode=true, so VAR_DEBUGMODE = 1. We hard-set 1 to match the
+    // boot path the boot script takes when debug mode is on.
+    g_vm.globals[VAR_DEBUGMODE]    = 1;
+    g_vm.globals[VAR_CHARINC]      = 4;
+    // VGA video mode -> 19 for the EGA/VGA renderers MI1 uses.
+    g_vm.globals[VAR_VIDEOMODE]    = 19;
+    // ScummVM auto-picks AdLib -> case MDT_ADLIB -> VAR_SOUNDCARD = 3
+    // (vars.cpp:896). We emulate AdLib too via opl2/adlib so that's the
+    // matching choice.
+    g_vm.globals[VAR_SOUNDCARD]    = 3;
 
     if (!g.skip_boot_script) {
         int32_t boot_args[16] = {0};

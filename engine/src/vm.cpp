@@ -7,6 +7,7 @@
 #ifndef THUMBY_DEVICE
 #include <stdio.h>
 #include <stdlib.h>     // getenv
+#include <stdarg.h>
 #endif
 
 #include "opcode_names.inc"
@@ -31,6 +32,14 @@ static inline void trace_opcode(uint16_t script, uint32_t pc, uint8_t op) {
     //   svm_offset = pc + 1 (post-fetch) + 6 (resource header) = pc + 7
     fprintf(g_trace_fp, "Script %u, offset 0x%x: [%02X] %s()\n",
             script, pc + 7, op, VM_OPCODE_NAMES_V4[op]);
+}
+
+void trace_diag(const char *fmt, ...) {
+    if (!g_trace_fp) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_trace_fp, fmt, ap);
+    va_end(ap);
 }
 }  // namespace tsb
 

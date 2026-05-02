@@ -30,25 +30,60 @@ constexpr uint8_t WHERE_LOCAL  = 1;
 constexpr uint8_t WHERE_ROOM   = 2;
 constexpr uint8_t WHERE_FLOBJ  = 3;
 
-// Standard SCUMM v5 globals (well-known indices)
+// Standard SCUMM v4/v5 globals (well-known indices, must match ScummVM
+// setupScummVars / setupScummVarsV4 in vars.cpp).
+constexpr int VAR_KEYPRESS         = 0;
 constexpr int VAR_EGO              = 1;
-constexpr int VAR_RESULT           = 2;
-constexpr int VAR_CAMERA_POS_X     = 3;
-constexpr int VAR_HAVE_MSG         = 4;
-constexpr int VAR_ROOM             = 5;
-constexpr int VAR_OVERRIDE         = 6;
-constexpr int VAR_MACHINE_SPEED    = 7;
-constexpr int VAR_NUM_ACTOR        = 11;
-constexpr int VAR_CURRENT_DRIVE    = 13;
-constexpr int VAR_CURRENT_DISK     = 14;
-constexpr int VAR_TMR_1            = 15;
-constexpr int VAR_TMR_2            = 16;
-constexpr int VAR_TMR_3            = 17;
-constexpr int VAR_MUSIC_TIMER      = 18;
-constexpr int VAR_TIMER            = 35;
+constexpr int VAR_CAMERA_POS_X     = 2;
+constexpr int VAR_HAVE_MSG         = 3;
+constexpr int VAR_ROOM             = 4;
+constexpr int VAR_OVERRIDE         = 5;
+constexpr int VAR_MACHINE_SPEED    = 6;
+constexpr int VAR_ME               = 7;
+constexpr int VAR_NUM_ACTOR        = 8;
+constexpr int VAR_CURRENTDRIVE     = 10;
+constexpr int VAR_TMR_1            = 11;
+constexpr int VAR_TMR_2            = 12;
+constexpr int VAR_TMR_3            = 13;
+constexpr int VAR_MUSIC_TIMER      = 14;
+constexpr int VAR_ACTOR_RANGE_MIN  = 15;
+constexpr int VAR_ACTOR_RANGE_MAX  = 16;
+constexpr int VAR_CAMERA_MIN_X     = 17;
+constexpr int VAR_CAMERA_MAX_X     = 18;
 constexpr int VAR_TIMER_NEXT       = 19;
 constexpr int VAR_VIRT_MOUSE_X     = 20;
 constexpr int VAR_VIRT_MOUSE_Y     = 21;
+constexpr int VAR_ROOM_RESOURCE    = 22;
+constexpr int VAR_LAST_SOUND       = 23;
+constexpr int VAR_CUTSCENEEXIT_KEY = 24;
+constexpr int VAR_TALK_ACTOR       = 25;
+constexpr int VAR_CAMERA_FAST_X    = 26;
+constexpr int VAR_SCROLL_SCRIPT    = 27;
+constexpr int VAR_ENTRY_SCRIPT     = 28;
+constexpr int VAR_ENTRY_SCRIPT2    = 29;
+constexpr int VAR_EXIT_SCRIPT      = 30;
+constexpr int VAR_EXIT_SCRIPT2     = 31;
+constexpr int VAR_VERB_SCRIPT      = 32;
+constexpr int VAR_SENTENCE_SCRIPT  = 33;
+constexpr int VAR_INVENTORY_SCRIPT = 34;
+constexpr int VAR_CUTSCENE_START_SCRIPT = 35;
+constexpr int VAR_CUTSCENE_END_SCRIPT = 36;
+constexpr int VAR_CHARINC          = 37;
+constexpr int VAR_WALKTO_OBJ       = 38;
+constexpr int VAR_DEBUGMODE        = 39;          // v4+
+constexpr int VAR_HEAPSPACE        = 40;
+constexpr int VAR_RESTART_KEY      = 42;
+constexpr int VAR_PAUSE_KEY        = 43;
+constexpr int VAR_MOUSE_X          = 44;
+constexpr int VAR_MOUSE_Y          = 45;
+constexpr int VAR_TIMER            = 46;
+constexpr int VAR_TIMER_TOTAL      = 47;
+constexpr int VAR_SOUNDCARD        = 48;
+constexpr int VAR_VIDEOMODE        = 49;
+constexpr int VAR_MAINMENU_KEY     = 50;          // v4+
+constexpr int VAR_FIXEDDISK        = 51;          // v4+
+constexpr int VAR_CURSORSTATE      = 52;          // v4+
+constexpr int VAR_USERPUT          = 53;          // v4+
 
 // ---------------------------------------------------------------------------
 // Slot — one running script

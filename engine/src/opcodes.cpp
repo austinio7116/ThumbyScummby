@@ -24,6 +24,10 @@
 #include "imuse.h"
 
 #include <string.h>
+#ifndef THUMBY_DEVICE
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 
 namespace tsb {
 
@@ -219,77 +223,72 @@ static void op_setVarRange(VM *vm) {
 // Conditional jumps
 // ===========================================================================
 
-// 0x48 / 0xC8  isEqual
+// All comparison opcodes follow ScummVM script_v5.cpp:1532+ which uses
+// `int16` for both operands (so the test is performed in 16-bit signed
+// space and overflows wrap). The var operand is fetched via fetchScriptWord
+// (NOT getResultPos) — there's no 0x2000 indirection on read-only ops, and
+// readVar itself handles 0x2000 if present.
+
+extern void trace_diag(const char *fmt, ...);
+// 0x48 / 0xC8  isEqual : jumpRelative(b == a)  (a=readVar, b=varOrDirect)
 static void op_isEqual(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
-    int32_t  val = vm_get_var_or_word(vm, 0x80);
-    vm_jump_relative(vm, vm_read_var(vm, var) == val);
+    uint16_t var = vm_fetch_uword(vm);
+    int16_t  a   = (int16_t)vm_read_var(vm, var);
+    int16_t  b   = (int16_t)vm_get_var_or_word(vm, 0x80);
+    trace_diag("  isEqual var=%u/0x%04X a=%d b=%d\n", var, var, a, b);
+    vm_jump_relative(vm, b == a);
 }
 
-// 0x08 / 0x88  isNotEqual
+// 0x08 / 0x88  isNotEqual : jumpRelative(b != a)
 static void op_isNotEqual(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
-    int32_t  val = vm_get_var_or_word(vm, 0x80);
-    vm_jump_relative(vm, vm_read_var(vm, var) != val);
+    uint16_t var = vm_fetch_uword(vm);
+    int16_t  a   = (int16_t)vm_read_var(vm, var);
+    int16_t  b   = (int16_t)vm_get_var_or_word(vm, 0x80);
+    vm_jump_relative(vm, b != a);
 }
 
-// 0x44 / 0xC4  isLess  (jump if var < val) — but operand order in source is
-// `a = readVar(var); b = getVarOrDirectWord; jumpRelative(b < a)` — i.e.
-// "jump if var > val flipped" — actually source is jumpRelative(b < a)
-// which is jump if val < var, i.e. condition var > val. So predicate is
-// (val < var) ⇒ var > val. Wait — we follow the spec: 0x44 = isLess →
-// jump if var < val. But the ScummVM source negates: cond = (b < a) means
-// cond = (val < var). The convention in vm_jump_relative is "fall through
-// if cond true, jump if cond false". The spec table says "jump if var < val".
-// Net effect: predicate passed into vm_jump_relative must be (var >= val).
-// Easier: just match ScummVM source directly.
-//   o5_isLess: a=readVar; b=getVarOrDirect; jumpRelative(b<a);
-// translation: cond = (val < var) i.e. fall-through when val<var, jump
-// when val>=var. So mnemonic "isLess" really means "fall through if
-// val < var" → "jump if NOT (val < var)" → "jump if val >= var" → "jump
-// if var <= val". Spec table says "isLess: jump if var<val". The truth
-// table for ScummVM source is: predicate is (val < var). Just trust the
-// source.
+// 0x44 / 0xC4  isLess : jumpRelative(b < a)
 static void op_isLess(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
-    int32_t  a   = vm_read_var(vm, var);
-    int32_t  b   = vm_get_var_or_word(vm, 0x80);
+    uint16_t var = vm_fetch_uword(vm);
+    int16_t  a   = (int16_t)vm_read_var(vm, var);
+    int16_t  b   = (int16_t)vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, b < a);
 }
 
-// 0x38 / 0xB8  isLessEqual : ScummVM does jumpRelative(b <= a)
+// 0x38 / 0xB8  isLessEqual : jumpRelative(b <= a)
 static void op_isLessEqual(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
-    int32_t  a   = vm_read_var(vm, var);
-    int32_t  b   = vm_get_var_or_word(vm, 0x80);
+    uint16_t var = vm_fetch_uword(vm);
+    int16_t  a   = (int16_t)vm_read_var(vm, var);
+    int16_t  b   = (int16_t)vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, b <= a);
 }
 
-// 0x78 / 0xF8  isGreater : ScummVM jumpRelative(b > a)
+// 0x78 / 0xF8  isGreater : jumpRelative(b > a)
 static void op_isGreater(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
-    int32_t  a   = vm_read_var(vm, var);
-    int32_t  b   = vm_get_var_or_word(vm, 0x80);
+    uint16_t var = vm_fetch_uword(vm);
+    int16_t  a   = (int16_t)vm_read_var(vm, var);
+    int16_t  b   = (int16_t)vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, b > a);
 }
 
-// 0x04 / 0x84  isGreaterEqual : ScummVM jumpRelative(b >= a)
+// 0x04 / 0x84  isGreaterEqual : jumpRelative(b >= a)
 static void op_isGreaterEqual(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
-    int32_t  a   = vm_read_var(vm, var);
-    int32_t  b   = vm_get_var_or_word(vm, 0x80);
+    uint16_t var = vm_fetch_uword(vm);
+    int16_t  a   = (int16_t)vm_read_var(vm, var);
+    int16_t  b   = (int16_t)vm_get_var_or_word(vm, 0x80);
     vm_jump_relative(vm, b >= a);
 }
 
-// 0x28  equalZero : jump if var != 0  (i.e. cond=(var==0); fall thru if true)
+// 0x28  equalZero : jumpRelative(var == 0)  → fall-through when var==0,
+//                                            jump when var != 0.
 static void op_equalZero(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
+    uint16_t var = vm_fetch_uword(vm);
     vm_jump_relative(vm, vm_read_var(vm, var) == 0);
 }
 
-// 0xA8  notEqualZero : jump if var == 0
+// 0xA8  notEqualZero : jumpRelative(var != 0) → jump when var == 0.
 static void op_notEqualZero(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
+    uint16_t var = vm_fetch_uword(vm);
     vm_jump_relative(vm, vm_read_var(vm, var) != 0);
 }
 
@@ -305,11 +304,20 @@ static void op_jumpRelative(VM *vm) {
 
 // 0x0A / 0x2A / 0x4A / 0x6A / 0x8A / 0xAA / 0xCA / 0xEA  startScript
 //   op = vm->opcode; bit 0x20 = freeze_resistant, bit 0x40 = recursive.
+//
+// MI1 VGA copy-protection bypass: ScummVM (script_v5.cpp:2964) skips
+// startScript(152) because that's the dial-a-pirate script. We do the
+// same so the boot trace lines up.
 static void op_startScript(VM *vm) {
     uint8_t op  = vm->opcode;
     int     scr = vm_get_var_or_byte(vm, 0x80);
     int32_t args[VM_MAX_VARARG];
     int     n = vm_get_word_vararg(vm, args);
+    if (scr == 152) {
+        // Copy-protection script in MI1 VGA Floppy. ScummVM disables this
+        // unconditionally when copy protection is off (the default).
+        return;
+    }
     bool fr  = (op & 0x20) != 0;
     bool rec = (op & 0x40) != 0;
     vm_start_script(vm, scr, args, n, fr, rec);
@@ -380,7 +388,9 @@ static void op_stopObjectScript(VM *vm) {
 // Cutscene / freeze / override
 // ===========================================================================
 
-// 0x40  cutscene : push a cutscene level, freeze non-resistant slots.
+// 0x40  cutscene : push a cutscene level, freeze non-resistant slots,
+// and run VAR_CUTSCENE_START_SCRIPT (which gets the same args[]).
+// Mirrors ScummEngine::beginCutscene (script.cpp:1624).
 static void op_cutscene(VM *vm) {
     int32_t args[VM_MAX_VARARG];
     int n = vm_get_word_vararg(vm, args);
@@ -393,6 +403,11 @@ static void op_cutscene(VM *vm) {
         vm->cutscene.depth++;
     }
     freeze_other_slots(vm, false);
+
+    int start = (int)vm_read_var(vm, VAR_CUTSCENE_START_SCRIPT);
+    if (start) {
+        vm_start_script(vm, start, args, VM_MAX_VARARG, false, false);
+    }
 }
 
 // 0xC0  endCutscene : pop a cutscene, decrement freezes.
