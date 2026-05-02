@@ -321,8 +321,10 @@ int vm_start_script(VM *vm, int script_num,
                    vm->slots[outer_slot].status == SS_RUNNING);
 
     if (nested) {
-        // Save outer slot's PC into its slot record so we can resume it.
+        // Save outer slot's PC + script number so we can validate resumption
+        // (matches ScummVM's NestedScript bookkeeping in script.cpp:354-365).
         vm->slots[outer_slot].pc = vm->cur_pc;
+        uint16_t outer_script_num = vm->slots[outer_slot].script_num;
 
         // Switch to new slot's context and run dispatch.
         vm->cur_slot = slot;
@@ -330,11 +332,24 @@ int vm_start_script(VM *vm, int script_num,
         vm->cur_pc = 0;
         run_dispatch(vm, slot);
 
-        // Restore outer slot's context. Its PC was saved above; the dispatch
-        // loop will pick up from there when run_dispatch returns to it.
-        vm->cur_slot = outer_slot;
-        vm->cur_script_data = vm->slots[outer_slot].script_data;
-        vm->cur_pc = vm->slots[outer_slot].pc;
+        // ScummVM's runScriptNested (script.cpp:374-388) only resumes the
+        // outer if it's still the SAME running script — i.e. status is
+        // alive AND freezeCount == 0 (cutscene/freezeScripts didn't kill
+        // it during the nested run). Otherwise sets _currentScript = 0xFF
+        // (we use cur_slot = -1 sentinel) to exit the outer dispatch loop.
+        Slot &outer = vm->slots[outer_slot];
+        if (outer.script_num == outer_script_num &&
+            outer.status != SS_DEAD &&
+            outer.freeze_count == 0) {
+            vm->cur_slot = outer_slot;
+            vm->cur_script_data = outer.script_data;
+            vm->cur_pc = outer.pc;
+        } else {
+            // Outer was killed or frozen during nested run — yield without
+            // resuming. The outer dispatch loop sees cur_slot != outer_slot
+            // and exits.
+            vm->cur_slot = -1;
+        }
 
         // Mark nested slot as didexec so vm_run_frame doesn't re-run it
         // this frame.

@@ -885,11 +885,20 @@ static void op_roomOps(VM *vm) {
 // actorOps (0x13 / 0x53 / 0x93 / 0xD3) — stub. Loop on sub-ops until 0xFF.
 // ===========================================================================
 static void op_actorOps(VM *vm) {
+    // v4 (GF_SMALL_HEADER) remaps the sub-op via convertTable. Mirrors
+    // ScummVM script_v5.cpp:425-451 exactly.
+    static const uint8_t convertTable[20] =
+        { 1, 0, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20 };
     int actor_id = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(actor_id);
     while (true) {
         uint8_t sub = vm_fetch_byte(vm);
         if (sub == 0xFF) break;
+        // v4 small-header convert (we always run v4 for MI1 VGA Floppy).
+        uint8_t lo = (uint8_t)(sub & 0x1F);
+        if (lo >= 1 && lo <= 20) {
+            sub = (uint8_t)((sub & 0xE0) | convertTable[lo - 1]);
+        }
         uint8_t saved = vm->opcode;
         vm->opcode = sub;
         switch (sub & 0x1F) {
