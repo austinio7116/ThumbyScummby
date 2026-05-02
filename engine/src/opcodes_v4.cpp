@@ -7,21 +7,15 @@
 #include "platform.h"
 #include "object.h"
 #include "master_index.h"
+#include "engine.h"
 
 namespace tsb {
 
 extern ObjectTable *get_object_table();   // engine.cpp will provide
 
-// Get an object's state — looks up in current room's object table.
-// For now, fall back to global object owner/state from master index.
+// Mirrors ScummEngine::getState(obj) — read from the global state table.
 static int get_object_state_v4(int obj_id) {
-    ObjectTable *t = get_object_table();
-    if (t) {
-        ObjectData *o = object_get_by_id(t, obj_id);
-        if (o) return o->state;
-    }
-    // Fallback: master index globals (not yet wired up properly)
-    return 0;
+    return engine_get_object_state(obj_id);
 }
 
 // 0x0F / 0x4F / 0x8F / 0xCF — ifState(obj, state, offs)
@@ -48,6 +42,10 @@ static void op_v4_ifNotState(VM *vm) {
 static void op_v4_pickupObjectOld(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
     platform::log("[stub] o4_pickupObject(%d)\n", obj);
+    // Real semantics (script_v4.cpp:95-116): putOwner(EGO), putClass(Untouchable,1),
+    // putState(1), runInventoryScript(1). Minimal: just flip state so the
+    // object disappears from the room view.
+    engine_put_object_state(obj, 1);
     ObjectTable *t = get_object_table();
     if (t) {
         ObjectData *o = object_get_by_id(t, obj);

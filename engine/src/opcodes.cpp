@@ -23,6 +23,9 @@
 #include "actor.h"
 #include "imuse.h"
 #include "engine.h"
+#include "object.h"
+
+namespace tsb { extern ObjectTable *get_object_table(); }
 
 #include <string.h>
 #ifndef THUMBY_DEVICE
@@ -1428,16 +1431,27 @@ static void op_drawBox(VM *vm) {
     platform::log("[stub] drawBox\n");
 }
 
+// Mirrors ScummEngine::setStateCommon (object.cpp) which calls putState +
+// markObjectRectAsDirty + draws if visible. Our renderer recomposites every
+// frame via object_render_all, so updating the global table is sufficient
+// to make the change visible on the next tick.
 static void op_setState(VM *vm) {
     int obj   = vm_get_var_or_word(vm, 0x80);
     int state = vm_get_var_or_byte(vm, 0x40);
-    platform::log("[stub] setState(%d, %d)\n", obj, state);
+    engine_put_object_state(obj, (uint8_t)state);
+    // Refresh the running room's cached state so the next render picks it
+    // up without needing a room reload.
+    ObjectTable *t = get_object_table();
+    if (t) {
+        ObjectData *o = object_get_by_id(t, obj);
+        if (o) o->state = (uint8_t)state;
+    }
 }
 
 static void op_setOwnerOf(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
     int own = vm_get_var_or_byte(vm, 0x40);
-    platform::log("[stub] setOwnerOf(%d, %d)\n", obj, own);
+    engine_put_object_owner(obj, (uint8_t)own);
 }
 
 static void op_pickupObject(VM *vm) {

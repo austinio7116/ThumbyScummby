@@ -49,4 +49,13 @@ int engine_current_room_id();
 // resource base, suitable for `vm_start_room_script`'s pc_offset.
 Span engine_local_script(int script_id, uint32_t *out_offset);
 
+// Global object state/owner tables — mirrors ScummVM's _objectStateTable /
+// _objectOwnerTable indexed by global obj_nr. Zero-initialised at boot.
+// Object visibility in the renderer is gated by these.
+constexpr int NUM_GLOBAL_OBJECTS = 1024;       // upper bound for v4 MI1
+uint8_t engine_get_object_state(int obj_id);
+void    engine_put_object_state(int obj_id, uint8_t state);
+uint8_t engine_get_object_owner(int obj_id);
+void    engine_put_object_owner(int obj_id, uint8_t owner);
+
 }  // namespace tsb

@@ -37,31 +37,35 @@ void object_init(ObjectTable *t) {
 static void parse_obcd_v4(Span obcd_payload, ObjectData *o) {
     if (obcd_payload.size < 12) return;
     const uint8_t *p = obcd_payload.data;
-    o->obj_id     = read_le16(p + 0);
+    o->obj_id      = read_le16(p + 0);
     // p[2] = cdhd version / unknown
-    o->x_strip    = p[3];
-    o->y          = (uint8_t)(p[4] & 0x7F);          // y in 8-pixel units
-    o->w_strip    = p[5];
-    o->parent     = p[6];
-    o->walk_x     = read_le16s(p + 7);
-    o->walk_y     = read_le16s(p + 9);
-    uint8_t dh    = p[11];
-    o->actor_dir  = (uint8_t)(dh & 0x07);
-    o->h          = (uint8_t)((dh & 0xF8) / 8);      // height in 8-pixel units
-    o->flags      = (uint8_t)((p[4] & 0x80) ? 1 : 0); // parentstate-as-flag
+    o->x_strip     = p[3];
+    o->y           = (uint8_t)(p[4] & 0x7F);          // y in 8-pixel units
+    o->parentstate = (uint8_t)((p[4] & 0x80) ? 1 : 0);
+    o->w_strip     = p[5];
+    o->parent      = p[6];
+    o->walk_x      = read_le16s(p + 7);
+    o->walk_y      = read_le16s(p + 9);
+    uint8_t dh     = p[11];
+    o->actor_dir   = (uint8_t)(dh & 0x07);
+    o->h           = (uint8_t)((dh & 0xF8) / 8);      // height in 8-pixel units
 }
 
 int object_load_from_room(Span room_chunk_payload, ObjectTable *t) {
     object_init(t);
-    int n = 0;
 
     // Walk all sub-chunks; collect OI (OBIM) and OC (OBCD) by obj_id.
     // For v4 small_header layout, each OI is followed (eventually) by its
     // OC; collect both into ObjectData entries keyed by obj_id.
+    //
+    // Slot allocation mirrors ScummVM: slot 0 is reserved (empty), local
+    // objects live in slots 1..N. The on-disk OBCD `parent` byte encodes
+    // a slot index in this 1-based scheme — parent == 0 means "no parent".
 
     Span obim_buf[MAX_OBJECTS]; int obim_count = 0;
     int  obim_id [MAX_OBJECTS];
 
+    int next_slot = 1;
     size_t cur = 0;
     SmallChunk c{};
     while (small_next(room_chunk_payload, &cur, &c)) {
@@ -75,13 +79,16 @@ int object_load_from_room(Span room_chunk_payload, ObjectTable *t) {
                 obim_count++;
             }
         } else if (c.tag == small_tag('O','C')) {
-            if (n >= MAX_OBJECTS) break;
-            ObjectData *o = &t->objects[n++];
+            if (next_slot >= MAX_OBJECTS) break;
+            ObjectData *o = &t->objects[next_slot++];
             memset(o, 0, sizeof(*o));
             o->obcd_payload = c.payload;
             parse_obcd_v4(c.payload, o);
-            // initial state defaults: visible if not flagged otherwise
-            o->state = 1;
+            // State is initialised from the global object-state table by the
+            // caller (engine_change_room). Default 0 here so a slot that has
+            // never been state-set stays invisible — matches ScummVM, where
+            // _objectStateTable is zero-initialised at game start.
+            o->state = 0;
             // try to match an OBIM by obj_id
             for (int i = 0; i < obim_count; i++) {
                 if (obim_id[i] == o->obj_id) {
@@ -91,13 +98,14 @@ int object_load_from_room(Span room_chunk_payload, ObjectTable *t) {
             }
         }
     }
-    t->num_objects = n;
-    platform::log("objects: loaded %d (OIs scanned: %d)\n", n, obim_count);
-    return n;
+    t->num_objects = next_slot - 1;   // number populated; slots 1..num_objects
+    platform::log("objects: loaded %d (OIs scanned: %d)\n",
+                  t->num_objects, obim_count);
+    return t->num_objects;
 }
 
 ObjectData *object_get_by_id(ObjectTable *t, int obj_id) {
-    for (int i = 0; i < t->num_objects; i++) {
+    for (int i = 1; i <= t->num_objects; i++) {
         if (t->objects[i].obj_id == obj_id) return &t->objects[i];
     }
     return nullptr;
@@ -121,40 +129,64 @@ void object_mark_all_dirty(ObjectTable *t) {
 // argument is ignored; state-driven appearance changes are handled by the
 // scripts toggling separate OBIM chunks). So we always render the single
 // SMAP body sitting at obim_payload + 2.
+
+// Mirrors ScummVM ScummEngine::drawRoomObject (object.cpp:600-618). For v4
+// the state mask is 0xF. We walk up the parent chain: the object draws
+// only if every ancestor's (state & 0xF) equals the immediate child's
+// `parentstate`. A top-level object (parent == 0) draws unconditionally
+// (the caller's `state & mask` gate has already filtered it).
+static void draw_one_object(const ObjectTable *t, int slot,
+                            uint8_t *vscreen_back, int pitch) {
+    constexpr int mask = 0x0F;
+    const ObjectData *od = &t->objects[slot];
+    if (slot < 1 || od->obj_id < 1 || !od->state) return;
+
+    // Ancestor-chain visibility check.
+    while (true) {
+        uint8_t a = od->parentstate;
+        if (od->parent == 0) break;            // top — proceed to draw
+        const ObjectData *p = &t->objects[od->parent];
+        if ((p->state & mask) != a) return;    // ancestor mismatch — hide
+        od = p;
+    }
+
+    // od now points back at the child (we broke when parent==0). Re-read
+    // the slot we were asked to draw — `od` got walked.
+    od = &t->objects[slot];
+
+    if (od->obim_payload.size < 6) return;
+    if (od->w_strip == 0 || od->h == 0) return;
+
+    int x_pix = od->x_strip * 8;
+    int y_pix = od->y * 8;
+    int w_pix = od->w_strip * 8;
+    int h_pix = od->h * 8;
+    if (x_pix < 0 || y_pix < 0) return;
+    if (w_pix <= 0 || h_pix <= 0) return;
+    if (x_pix >= VIRTUAL_SCREEN_W || y_pix >= VIRTUAL_SCREEN_H) return;
+    if (x_pix + w_pix > VIRTUAL_SCREEN_W) return;
+    if (y_pix + h_pix > VIRTUAL_SCREEN_H) return;
+
+    Span bm = od->obim_payload.sub(2);
+    uint8_t *dst = vscreen_back + (size_t)y_pix * pitch + x_pix;
+    smap_decode_bm(bm, w_pix, h_pix, dst, pitch);
+}
+
+// Mirrors ScummEngine::drawRoomObjects (object.cpp:620-645). v4 path:
+// iterate slots N..1 in reverse, gated by (state & 0xF).
 void object_render_all(const ObjectTable *t,
                        uint8_t *vscreen_back, int pitch) {
-    for (int i = 0; i < t->num_objects; i++) {
+    constexpr int mask = 0x0F;
+    for (int i = t->num_objects; i >= 1; i--) {
         const ObjectData *o = &t->objects[i];
-        // ScummVM's drawRoomObjects gates on (state & 0xF). Treat any
-        // non-zero low nibble as "show". We default state=1 at load time
-        // so freshly-entered rooms render their objects on entry.
-        if ((o->state & 0x0F) == 0) continue;
-        if (o->obim_payload.size < 6) continue;
-        if (o->w_strip == 0 || o->h == 0) continue;
-
-        int x_pix = o->x_strip * 8;
-        int y_pix = o->y * 8;
-        int w_pix = o->w_strip * 8;
-        int h_pix = o->h * 8;
-        if (x_pix < 0 || y_pix < 0) continue;
-        if (w_pix <= 0 || h_pix <= 0) continue;
-
-        // Clip against the virtual screen (320x200). Objects that hang off
-        // the right/bottom edge are common in MI1 — we conservatively skip
-        // them rather than partial-decode (smap_decode_bm doesn't clip).
-        if (x_pix >= VIRTUAL_SCREEN_W || y_pix >= VIRTUAL_SCREEN_H) continue;
-        if (x_pix + w_pix > VIRTUAL_SCREEN_W) continue;
-        if (y_pix + h_pix > VIRTUAL_SCREEN_H) continue;
-
-        // Skip the obj_id prefix; rest is the SMAP-style payload.
-        Span bm = o->obim_payload.sub(2);
-        uint8_t *dst = vscreen_back + (size_t)y_pix * pitch + x_pix;
-        smap_decode_bm(bm, w_pix, h_pix, dst, pitch);
+        if (o->obj_id > 0 && (o->state & mask)) {
+            draw_one_object(t, i, vscreen_back, pitch);
+        }
     }
 }
 
 int object_find_at(const ObjectTable *t, int x, int y) {
-    for (int i = t->num_objects - 1; i >= 0; i--) {
+    for (int i = t->num_objects; i >= 1; i--) {
         const ObjectData *o = &t->objects[i];
         if (o->state == 0) continue;
         int x0 = o->x_strip * 8, y0 = o->y * 8;

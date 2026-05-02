@@ -59,6 +59,39 @@ struct EngineState {
 
 static EngineState g{};
 
+// Global object state / owner tables — mirrors ScummVM _objectStateTable /
+// _objectOwnerTable. Indexed by global obj_nr; zero on game start.
+static uint8_t g_object_state[NUM_GLOBAL_OBJECTS] = {};
+static uint8_t g_object_owner[NUM_GLOBAL_OBJECTS] = {};
+
+uint8_t engine_get_object_state(int obj_id) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return 0;
+    return g_object_state[obj_id];
+}
+void engine_put_object_state(int obj_id, uint8_t state) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return;
+    g_object_state[obj_id] = state;
+}
+uint8_t engine_get_object_owner(int obj_id) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return 0;
+    return g_object_owner[obj_id];
+}
+void engine_put_object_owner(int obj_id, uint8_t owner) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return;
+    g_object_owner[obj_id] = owner;
+}
+
+// Refresh each loaded ObjectData's cached `state` from the global table.
+// Mirrors ScummEngine::updateObjectStates (object.cpp:1165). Called after
+// room_load and after any setState/setOwner that might affect what shows.
+static void refresh_object_states(ObjectTable *t) {
+    for (int i = 1; i <= t->num_objects; i++) {
+        ObjectData *o = &t->objects[i];
+        if (o->obj_id > 0)
+            o->state = g_object_state[o->obj_id];
+    }
+}
+
 // Expose master index to resource.cpp
 MasterIndex *resource_get_master_index() { return &g.master; }
 
@@ -104,9 +137,13 @@ bool engine_change_room(int new_room) {
     }
     g.current_room_id = new_room;
     g.room_loaded = true;
+    // Clear the framebuffer so any old room content can't bleed through if
+    // the new background doesn't span the full 320x200.
+    memset(g.vscreen_main, 0, sizeof(g.vscreen_main));
     room_load_palette(g.room, g.palette);
     room_render_background(g.room, g.vscreen_main, VIRTUAL_SCREEN_W);
     object_load_from_room(g.room.room_chunk, &g_object_table);
+    refresh_object_states(&g_object_table);
     object_render_all(&g_object_table, g.vscreen_main, VIRTUAL_SCREEN_W);
     memcpy(g.vscreen_back, g.vscreen_main, sizeof(g.vscreen_main));
     if (!g.room.boxd_payload.empty()) {
@@ -164,53 +201,31 @@ bool engine_init() {
                           i, g.master.rooms[i].disk, g.master.rooms[i].offset);
     }
 
-    // Default initial room: 10 = "The Secret of Monkey Island" title screen.
-    // TSB_ROOM env var overrides for room exploration (also disables the
-    // boot script so the chosen room stays on screen).
-    int target = 10;
+    // Initialize actor pool before any boot script can manipulate them.
+    actor_init_all();
+
+    // TSB_ROOM env var: skip the boot script and force-load a specific
+    // room for room-data exploration. Without it, the boot script does
+    // its own loadRoom and we leave the framebuffer black until then —
+    // mirrors ScummVM's startup (no pre-render before _bootScript runs).
     bool freeze_at_initial = false;
     if (const char *env = getenv("TSB_ROOM")) {
         int r = atoi(env);
         if (r >= 0 && r < g.master.num_rooms && g.master.rooms[r].disk != 0) {
-            target = r;
             freeze_at_initial = true;
             platform::log("TSB_ROOM=%d: forcing room, boot script disabled\n", r);
-        }
-    } else if (g.master.rooms[target].disk == 0) {
-        // Fall back to first present room
-        for (int i = 1; i < g.master.num_rooms; i++) {
-            if (g.master.rooms[i].disk != 0) { target = i; break; }
+            engine_change_room(r);
+            // For TSB_ROOM exploration, bypass the global state gate:
+            // mark every loaded object visible so we can see the assets.
+            for (int i = 1; i <= g_object_table.num_objects; i++) {
+                ObjectData *o = &g_object_table.objects[i];
+                if (o->obj_id > 0) o->state = 1;
+            }
+            object_render_all(&g_object_table, g.vscreen_main, VIRTUAL_SCREEN_W);
+            memcpy(g.vscreen_back, g.vscreen_main, sizeof(g.vscreen_main));
         }
     }
     g.skip_boot_script = freeze_at_initial;
-
-    // Initialize actor pool before any boot script can manipulate them.
-    actor_init_all();
-
-    // Pre-load: render the title room visually so SDL window has something
-    // before the boot script's first real loadRoom. We deliberately leave
-    // g.current_room_id = 0 so the boot's first loadRoom doesn't see a
-    // stale "same room" state and skip startScene.
-    if (room_load(target, g.master, &g.room)) {
-        g.current_room_id = 0;
-        g.room_loaded = true;
-        room_load_palette(g.room, g.palette);
-        room_render_background(g.room, g.vscreen_main, VIRTUAL_SCREEN_W);
-        // Load object table from this room and composite onto background.
-        object_load_from_room(g.room.room_chunk, &g_object_table);
-        object_render_all(&g_object_table, g.vscreen_main, VIRTUAL_SCREEN_W);
-        memcpy(g.vscreen_back, g.vscreen_main, sizeof(g.vscreen_main));
-        if (!g.room.boxd_payload.empty()) {
-            walkbox_load(g.room.boxd_payload, Span{nullptr, 0}, &g.walkboxes);
-        } else {
-            memset(&g.walkboxes, 0, sizeof(g.walkboxes));
-        }
-    } else {
-        // Fall back: test pattern so we see the SDL pipeline alive
-        for (int y = 0; y < VIRTUAL_SCREEN_H; y++)
-            for (int x = 0; x < VIRTUAL_SCREEN_W; x++)
-                g.vscreen_main[y * VIRTUAL_SCREEN_W + x] = (uint8_t)((x ^ y) & 0xFF);
-    }
 
     // Initialize audio: OPL2 emulator + AdLib MIDI driver + iMUSE sequencer
     // + mixer callback + platform audio device. Must be up before any boot

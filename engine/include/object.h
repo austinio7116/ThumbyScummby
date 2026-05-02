@@ -14,24 +14,27 @@
 namespace tsb {
 
 struct ObjectData {
-    uint16_t obj_id;
-    uint8_t  x_strip;     // x position in 8-pixel units (multiply by 8)
+    uint16_t obj_id;          // global object number (== ScummVM od.obj_nr)
+    uint8_t  x_strip;         // x position in 8-pixel units (multiply by 8)
     uint8_t  y;
-    uint8_t  w_strip;     // width in 8-pixel units
+    uint8_t  w_strip;         // width in 8-pixel units
     uint8_t  h;
-    uint8_t  flags;
-    uint8_t  parent;
+    uint8_t  parentstate;     // expected state of parent for this obj to draw
+    uint8_t  parent;          // local-table slot index of parent (0 = none)
     int16_t  walk_x, walk_y;
     uint8_t  actor_dir;
 
-    Span     obim_payload;     // OBIM chunk payload (or empty if no image)
-    Span     obcd_payload;     // OBCD chunk payload (for verb scripts)
+    Span     obim_payload;    // OBIM chunk payload (or empty if no image)
+    Span     obcd_payload;    // OBCD chunk payload (for verb scripts)
 
-    uint8_t  state;            // current state (0 = invisible/erased)
+    uint8_t  state;            // cached from global state table (0 = invisible)
 };
 
+// Slot 0 is reserved (matches ScummVM convention — objs[0] is empty;
+// drawRoomObjects iterates from _numLocalObjects-1 down to 1; parent==0
+// means "no parent"). Local objects live in slots 1..num_objects.
 struct ObjectTable {
-    int          num_objects;
+    int          num_objects;     // count of populated slots (1..num_objects)
     ObjectData   objects[MAX_OBJECTS];
 };
 
