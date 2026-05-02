@@ -1,0 +1,38 @@
+// ThumbyScummby - minimal iMUSE sequencer.
+//
+// Plays SCUMM v5 'RO'/'SO' (Roland MIDI / euphony) and 'AD' AdLib stream
+// resources. Single active song slot. Skips transitions, hooks, triggers,
+// loop conditionals, parameter faders. Just decode VLQ deltas + MIDI
+// events and dispatch to the AdLib driver.
+
+#pragma once
+
+#include "types.h"
+
+namespace tsb {
+
+// Initialize. No-op besides clearing internal state.
+void imuse_init();
+
+// Begin playing sound_id. sound_resource is the SOUN small-chunk PAYLOAD
+// returned by tsb::resource_get_sound(). Empty span = no-op.
+// Returns true if the resource was understood and playback started.
+bool imuse_start_sound(int sound_id, Span sound_resource);
+
+// Stop a specific sound; if the running song matches, halt playback.
+void imuse_stop_sound(int sound_id);
+
+// Stop everything.
+void imuse_stop_all();
+
+// True if sound_id is currently playing.
+bool imuse_is_running(int sound_id);
+
+// Advance the sequencer by elapsed_us microseconds, dispatching any due
+// events. Called from the audio mix callback - we tick once per chunk.
+void imuse_tick(uint32_t elapsed_us);
+
+// Return current song's sound_id, or 0 if nothing playing. Useful for log.
+int imuse_current_sound();
+
+}  // namespace tsb

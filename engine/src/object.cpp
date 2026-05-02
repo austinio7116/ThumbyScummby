@@ -1,0 +1,169 @@
+// Object loading + render.
+
+#include "object.h"
+#include "small_chunk.h"
+#include "smap.h"
+#include "platform.h"
+
+#include <string.h>
+
+namespace tsb {
+
+void object_init(ObjectTable *t) {
+    memset(t, 0, sizeof(*t));
+}
+
+// V4 small-header OBCD (OC chunk) — mirrors ScummVM_v4::resetRoomObject()
+// (object.cpp:1026). `ptr` there points at the OBCD chunk start (full chunk
+// including 6-byte header). Our `obcd_payload` is the payload AFTER that
+// header, so all offsets below are -6 relative to ScummVM's `ptr`.
+//
+// Layout (offsets in obcd_payload):
+//   p+0..1   obj_id           (uint16 LE)
+//   p+2      unknown (cdhd version byte)
+//   p+3      x                (in 8-pixel units; x_pos = p[3] * 8)
+//   p+4      y                (lower 7 bits in 8-pixel units; top bit = parentstate)
+//   p+5      w                (in 8-pixel units; width = p[5] * 8)
+//   p+6      parent
+//   p+7..8   walk_x           (int16 LE, in pixels)
+//   p+9..10  walk_y           (int16 LE, in pixels)
+//   p+11     actordir(low 3) | height(high 5 — i.e. height_pixels = p[11] & 0xF8)
+//   p+12...  verb-script directory + OBNA name
+//
+// Note: there is NO standalone 'flags' byte and NO standalone 'h' byte in
+// v4; height and actordir are packed into a single byte. The previous
+// parser was off-by-one starting from p+5 onward, which is why h came out
+// as zero for every object and walk_y/actordir read garbage.
+static void parse_obcd_v4(Span obcd_payload, ObjectData *o) {
+    if (obcd_payload.size < 12) return;
+    const uint8_t *p = obcd_payload.data;
+    o->obj_id     = read_le16(p + 0);
+    // p[2] = cdhd version / unknown
+    o->x_strip    = p[3];
+    o->y          = (uint8_t)(p[4] & 0x7F);          // y in 8-pixel units
+    o->w_strip    = p[5];
+    o->parent     = p[6];
+    o->walk_x     = read_le16s(p + 7);
+    o->walk_y     = read_le16s(p + 9);
+    uint8_t dh    = p[11];
+    o->actor_dir  = (uint8_t)(dh & 0x07);
+    o->h          = (uint8_t)((dh & 0xF8) / 8);      // height in 8-pixel units
+    o->flags      = (uint8_t)((p[4] & 0x80) ? 1 : 0); // parentstate-as-flag
+}
+
+int object_load_from_room(Span room_chunk_payload, ObjectTable *t) {
+    object_init(t);
+    int n = 0;
+
+    // Walk all sub-chunks; collect OI (OBIM) and OC (OBCD) by obj_id.
+    // For v4 small_header layout, each OI is followed (eventually) by its
+    // OC; collect both into ObjectData entries keyed by obj_id.
+
+    Span obim_buf[MAX_OBJECTS]; int obim_count = 0;
+    int  obim_id [MAX_OBJECTS];
+
+    size_t cur = 0;
+    SmallChunk c{};
+    while (small_next(room_chunk_payload, &cur, &c)) {
+        if (c.tag == small_tag('O','I')) {
+            // OBIM payload starts with: uint16 obj_id, uint16 num_imgs, uint8 [...]
+            if (c.payload.size < 4) continue;
+            int oid = read_le16(c.payload.data);
+            if (obim_count < MAX_OBJECTS) {
+                obim_id[obim_count]  = oid;
+                obim_buf[obim_count] = c.payload;
+                obim_count++;
+            }
+        } else if (c.tag == small_tag('O','C')) {
+            if (n >= MAX_OBJECTS) break;
+            ObjectData *o = &t->objects[n++];
+            memset(o, 0, sizeof(*o));
+            o->obcd_payload = c.payload;
+            parse_obcd_v4(c.payload, o);
+            // initial state defaults: visible if not flagged otherwise
+            o->state = 1;
+            // try to match an OBIM by obj_id
+            for (int i = 0; i < obim_count; i++) {
+                if (obim_id[i] == o->obj_id) {
+                    o->obim_payload = obim_buf[i];
+                    break;
+                }
+            }
+        }
+    }
+    t->num_objects = n;
+    platform::log("objects: loaded %d (OIs scanned: %d)\n", n, obim_count);
+    return n;
+}
+
+ObjectData *object_get_by_id(ObjectTable *t, int obj_id) {
+    for (int i = 0; i < t->num_objects; i++) {
+        if (t->objects[i].obj_id == obj_id) return &t->objects[i];
+    }
+    return nullptr;
+}
+
+void object_mark_all_dirty(ObjectTable *t) {
+    (void)t; // No-op for now; full renderer is repaint-every-frame
+}
+
+// V4 small-header OBIM (OI chunk) layout — mirrors ScummVM's
+// getObjectImage() which does `ptr += 8` for GF_SMALL_HEADER (object.cpp:1408).
+// `ptr` there is the full chunk start, so +8 = +6 (chunk hdr) +2 (obj_id),
+// landing on the SMAP-style image header.
+//
+//   uint16 LE  obj_id            (offset 0 in payload)
+//   uint32 LE  smap_len/zplane   (offset 2 — same role as room BM's first uint32)
+//   uint32 LE  strip_offsets[w]  (relative to start of "smap_len" word)
+//   ...        strip-encoded pixel data
+//
+// For small_header v4 there is exactly ONE bitmap per OBIM (the `state`
+// argument is ignored; state-driven appearance changes are handled by the
+// scripts toggling separate OBIM chunks). So we always render the single
+// SMAP body sitting at obim_payload + 2.
+void object_render_all(const ObjectTable *t,
+                       uint8_t *vscreen_back, int pitch) {
+    for (int i = 0; i < t->num_objects; i++) {
+        const ObjectData *o = &t->objects[i];
+        // ScummVM's drawRoomObjects gates on (state & 0xF). Treat any
+        // non-zero low nibble as "show". We default state=1 at load time
+        // so freshly-entered rooms render their objects on entry.
+        if ((o->state & 0x0F) == 0) continue;
+        if (o->obim_payload.size < 6) continue;
+        if (o->w_strip == 0 || o->h == 0) continue;
+
+        int x_pix = o->x_strip * 8;
+        int y_pix = o->y * 8;
+        int w_pix = o->w_strip * 8;
+        int h_pix = o->h * 8;
+        if (x_pix < 0 || y_pix < 0) continue;
+        if (w_pix <= 0 || h_pix <= 0) continue;
+
+        // Clip against the virtual screen (320x200). Objects that hang off
+        // the right/bottom edge are common in MI1 — we conservatively skip
+        // them rather than partial-decode (smap_decode_bm doesn't clip).
+        if (x_pix >= VIRTUAL_SCREEN_W || y_pix >= VIRTUAL_SCREEN_H) continue;
+        if (x_pix + w_pix > VIRTUAL_SCREEN_W) continue;
+        if (y_pix + h_pix > VIRTUAL_SCREEN_H) continue;
+
+        // Skip the obj_id prefix; rest is the SMAP-style payload.
+        Span bm = o->obim_payload.sub(2);
+        uint8_t *dst = vscreen_back + (size_t)y_pix * pitch + x_pix;
+        smap_decode_bm(bm, w_pix, h_pix, dst, pitch);
+    }
+}
+
+int object_find_at(const ObjectTable *t, int x, int y) {
+    for (int i = t->num_objects - 1; i >= 0; i--) {
+        const ObjectData *o = &t->objects[i];
+        if (o->state == 0) continue;
+        int x0 = o->x_strip * 8, y0 = o->y * 8;
+        int x1 = x0 + o->w_strip * 8, y1 = y0 + o->h * 8;
+        if (x >= x0 && x < x1 && y >= y0 && y < y1) {
+            return o->obj_id;
+        }
+    }
+    return 0;
+}
+
+}  // namespace tsb

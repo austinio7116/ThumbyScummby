@@ -1,0 +1,38 @@
+# Reference source — not our work
+scummvm-upstream/
+
+# Proprietary game data (user must provide their own)
+data/
+
+# Build artifacts
+build/
+build_device/
+*.o
+*.a
+*.so
+*.uf2
+*.elf
+*.dwo
+*.dwp
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+*.log
+*.ppm
+*.png
+
+# OS
+.DS_Store
