@@ -109,6 +109,21 @@ static void op_v4_saveLoadVars(VM *vm) {
     }
 }
 
+// drawObject is owned by opcodes.cpp; see script_v4.cpp:32-37 for the v4
+// 0x25/0x45/0x65/0xA5/0xC5/0xE5 overrides.
+extern void op_drawObject(VM *vm);
+
+// Stub for v4 0x22/0xA2 saveLoadGame. Mirrors ScummVM's o4_saveLoadGame
+// (script_v4.cpp:284..318): result-var word, then a sub-byte (operation).
+// We don't implement save/load yet — just consume operands so PC stays
+// correct.
+static void op_v4_saveLoadGame(VM *vm) {
+    (void)vm_get_result_pos(vm);          // result-var (2 or 4 bytes)
+    int sub = vm_get_var_or_byte(vm, 0x80);
+    (void)sub;
+    platform::log("[stub] o4_saveLoadGame sub=%d\n", sub);
+}
+
 // Install v4 overrides — call AFTER vm_opcodes_init().
 void vm_opcodes_v4_init() {
     vm_opcode_table[0x0F] = op_v4_ifState;
@@ -128,6 +143,27 @@ void vm_opcodes_v4_init() {
     vm_opcode_table[0xDC] = op_v4_oldRoomEffect;
 
     vm_opcode_table[0xA7] = op_v4_saveLoadVars;
+
+    // V4 overrides 0x25/0x45/0x65/0xA5/0xC5/0xE5 from v5 pickupObject back
+    // to drawObject (script_v4.cpp:32-37). v5 init writes pickupObject at
+    // four of these; restore drawObject for the v4 pickupObject opcode set
+    // (which uses 0x50/0xD0 instead, bound above).
+    vm_opcode_table[0x25] = op_drawObject;
+    vm_opcode_table[0x45] = op_drawObject;
+    vm_opcode_table[0x65] = op_drawObject;
+    vm_opcode_table[0xA5] = op_drawObject;
+    vm_opcode_table[0xC5] = op_drawObject;
+    vm_opcode_table[0xE5] = op_drawObject;
+
+    // v4 overrides 0x22/0xA2 to o4_saveLoadGame (script_v4.cpp:57-58).
+    vm_opcode_table[0x22] = op_v4_saveLoadGame;
+    vm_opcode_table[0xA2] = op_v4_saveLoadGame;
+
+    // v4 disables 0x3B/0x4C/0xBB (script_v4.cpp:61-63). Rather than
+    // crash-on-unimpl, install vm_unimpl which logs and stops the slot.
+    vm_opcode_table[0x3B] = vm_unimpl;
+    vm_opcode_table[0x4C] = vm_unimpl;
+    vm_opcode_table[0xBB] = vm_unimpl;
 }
 
 }  // namespace tsb

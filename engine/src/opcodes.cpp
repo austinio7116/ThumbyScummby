@@ -1237,7 +1237,10 @@ static void op_faceActor(VM *vm) {
     (void)act; (void)obj;
 }
 
-static void op_drawObject(VM *vm) {
+// Non-static so opcodes_v4.cpp can re-install it at v4-specific opcode slots
+// (0x25/0x45/0x65/0xA5/0xC5/0xE5) — see script_v4.cpp:32-37.
+void op_drawObject(VM *vm);
+void op_drawObject(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
     uint8_t sub = vm_fetch_byte(vm);
     uint8_t saved = vm->opcode;
