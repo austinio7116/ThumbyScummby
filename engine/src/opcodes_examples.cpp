@@ -32,9 +32,9 @@ static void op_stopObjectCode(VM *vm) {
 // 0x80: breakHere — yield to next frame.
 // ---------------------------------------------------------------------------
 static void op_breakHere(VM *vm) {
-    // Setting delay > 0 is a clean yield. The dispatch loop sees delay
-    // and breaks out of inner while; PC is saved.
-    vm->slots[vm->cur_slot].delay = 1;
+    // Match ScummVM's o5_breakHere (script_v5.cpp:815): yield via cur_slot
+    // sentinel, NOT via delay. Setting delay = 1 wastes a frame.
+    vm->cur_slot = -1;
 }
 
 // ---------------------------------------------------------------------------

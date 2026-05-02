@@ -106,8 +106,21 @@ static void op_stopObjectCode(VM *vm) {
 // ---------------------------------------------------------------------------
 // 0x80  breakHere — yield to next frame
 // ---------------------------------------------------------------------------
+// ScummVM's o5_breakHere (script_v5.cpp:815) does NOT set delay. It calls
+// updateScriptPtr() (saves PC) then sets _currentScript = 0xFF, which exits
+// ScummVM's `while (_currentScript != 0xFF)` dispatch loop. The slot stays
+// ssRunning, and the next frame's runAllScripts iterates it again.
+//
+// We achieve the same effect by setting cur_slot to a sentinel — run_dispatch
+// already breaks on `cur_slot != slot`. The slot stays SS_RUNNING so
+// vm_run_frame picks it up on the next frame.
+//
+// The previous impl set `delay = 1`, which made run_one_slot decrement-and-
+// return on the very next frame instead of running — wasting an extra frame
+// per breakHere. That broke timing-dependent scripts like the boot's
+// "wait-for-music" loop in Script 149.
 static void op_breakHere(VM *vm) {
-    vm->slots[vm->cur_slot].delay = 1;
+    vm->cur_slot = -1;
 }
 
 // ---------------------------------------------------------------------------
