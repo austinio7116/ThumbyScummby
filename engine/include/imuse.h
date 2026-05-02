@@ -35,4 +35,8 @@ void imuse_tick(uint32_t elapsed_us);
 // Return current song's sound_id, or 0 if nothing playing. Useful for log.
 int imuse_current_sound();
 
+// Music timer used by VAR_MUSIC_TIMER (script-visible). Mirrors ScummVM
+// Player::getMusicTimer (imuse_player.cpp:133): ticks*2/PPQN.
+int imuse_get_music_timer();
+
 }  // namespace tsb

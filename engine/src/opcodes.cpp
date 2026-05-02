@@ -22,6 +22,7 @@
 #include "resource.h"
 #include "actor.h"
 #include "imuse.h"
+#include "engine.h"
 
 #include <string.h>
 #ifndef THUMBY_DEVICE
@@ -75,13 +76,23 @@ static int32_t stack_pop(VM *vm) {
 }
 
 // Freeze management — used by cutscene / o5_freezeScripts.
-static void freeze_other_slots(VM *vm, bool override_resistant) {
+//
+// Mirrors ScummEngine::freezeScripts (script.cpp:906). For v3+ the high-bit
+// override (flagCondition) decides whether freeze_resistant slots are still
+// frozen. After freezing all, the slot that issued the active beginCutscene
+// (vm.cutSceneScriptIndex) is exempted — its freeze_count is cleared so
+// runScriptNested can resume it once the start-script ends.
+static void freeze_other_slots(VM *vm, bool flag_condition) {
     for (int i = 0; i < VM_MAX_SLOTS; i++) {
         if (i == vm->cur_slot) continue;
         Slot &s = vm->slots[i];
         if (s.status == SS_DEAD) continue;
-        if (s.freeze_resistant && !override_resistant) continue;
+        if (s.freeze_resistant && !flag_condition) continue;
         s.freeze_count++;
+    }
+    int csi = vm->cutscene.cut_scene_script_index;
+    if (csi >= 0 && csi < VM_MAX_SLOTS) {
+        vm->slots[csi].freeze_count = 0;
     }
 }
 static void unfreeze_all_slots(VM *vm) {
@@ -146,6 +157,14 @@ static void op_debug(VM *vm) {
 static void op_move(VM *vm) {
     uint16_t dst = vm_get_result_pos(vm);
     int32_t  val = vm_get_var_or_word(vm, 0x80);
+    if (dst == VAR_ENTRY_SCRIPT || dst == VAR_ENTRY_SCRIPT2 ||
+        dst == VAR_EXIT_SCRIPT  || dst == VAR_EXIT_SCRIPT2 ||
+        dst == VAR_ROOM) {
+        platform::log("[move] var %u = %d (in script %d)\n",
+                      dst, val,
+                      (vm->cur_slot >= 0 && vm->cur_slot < VM_MAX_SLOTS)
+                          ? vm->slots[vm->cur_slot].script_num : -1);
+    }
     vm_write_var(vm, dst, val);
 }
 
@@ -273,6 +292,7 @@ static void op_isLessEqual(VM *vm) {
     uint16_t var = vm_fetch_uword(vm);
     int16_t  a   = (int16_t)vm_read_var(vm, var);
     int16_t  b   = (int16_t)vm_get_var_or_word(vm, 0x80);
+    trace_diag("  isLessEqual var=%u/0x%04X a=%d b=%d\n", var, var, a, b);
     vm_jump_relative(vm, b <= a);
 }
 
@@ -415,39 +435,77 @@ static void op_cutscene(VM *vm) {
         vm->cutscene.ptr[vm->cutscene.depth]        = 0;
         vm->cutscene.depth++;
     }
-    freeze_other_slots(vm, false);
+    // ScummVM does NOT freeze on beginCutscene — only the cutscene-start
+    // script may choose to. The freeze in our previous impl was wrong.
+
+    // Record the cutscene-issuing slot so any freezeScripts() inside the
+    // start-script exempts us. (script.cpp:1636 — vm.cutSceneScriptIndex.)
+    int saved_idx = vm->cutscene.cut_scene_script_index;
+    vm->cutscene.cut_scene_script_index = vm->cur_slot;
 
     int start = (int)vm_read_var(vm, VAR_CUTSCENE_START_SCRIPT);
     if (start) {
         vm_start_script(vm, start, args, VM_MAX_VARARG, false, false);
     }
+
+    // beginCutscene resets cutSceneScriptIndex to 0xFF after runScript returns
+    // (script.cpp:1639). Restore prior value to support nested cutscenes.
+    vm->cutscene.cut_scene_script_index = saved_idx;
 }
 
-// 0xC0  endCutscene : pop a cutscene, decrement freezes.
+// 0xC0  endCutscene : pop a cutscene, run VAR_CUTSCENE_END_SCRIPT.
+// Mirrors ScummEngine::endCutscene (script.cpp:1642). Does NOT touch freeze
+// counts (that's freezeScripts' job).
 static void op_endCutscene(VM *vm) {
     if (vm->cutscene.depth > 0) vm->cutscene.depth--;
-    unfreeze_all_slots(vm);
+    vm_write_var(vm, VAR_OVERRIDE, 0);
     vm->cutscene.override_active = false;
+    int32_t args[VM_MAX_VARARG] = {0};
+    int end = (int)vm_read_var(vm, VAR_CUTSCENE_END_SCRIPT);
+    if (end) {
+        vm_start_script(vm, end, args, VM_MAX_VARARG, false, false);
+    }
 }
 
-// 0x58  beginOverride : sub-byte 0 = end, nonzero = begin
+// 0x58  beginOverride : sub-byte 0 = end, nonzero = begin.
+// Mirrors ScummEngine_v5::o5_beginOverride (script_v5.cpp:2010) and
+// beginOverride/endOverride (script.cpp:1703/1720). The "begin" path
+// records the script PC and SKIPS the following jumpRelative instruction
+// (1-byte op + 2-byte word) — the jump is the "skip cutscene" target
+// that the cutscene-exit key (Esc) would take.
 static void op_beginOverride(VM *vm) {
     uint8_t b = vm_fetch_byte(vm);
     if (b != 0) {
         vm->cutscene.override_active = true;
+        // Save current script PC into the cutscene stack ptr slot.
+        if (vm->cutscene.depth > 0) {
+            vm->cutscene.ptr[vm->cutscene.depth - 1] = vm->cur_pc;
+        }
+        // Consume the "skip" opcode: 1 byte + 2-byte word.
+        vm_fetch_byte(vm);
+        vm_fetch_word(vm);
+        // v5+: clear VAR_OVERRIDE.
+        vm_write_var(vm, VAR_OVERRIDE, 0);
     } else {
         vm->cutscene.override_active = false;
+        // endOverride: clear ptr/script slot, reset VAR_OVERRIDE.
+        if (vm->cutscene.depth > 0) {
+            vm->cutscene.ptr[vm->cutscene.depth - 1] = 0;
+            vm->cutscene.script_num[vm->cutscene.depth - 1] = 0;
+        }
+        vm_write_var(vm, VAR_OVERRIDE, 0);
     }
 }
 
-// 0x60 / 0xE0  freezeScripts : flag(0x80). flag=0 -> unfreeze all, else
-// freeze (passing high-bit overrides freeze-resistant flag).
+// 0x60 / 0xE0  freezeScripts : flag(0x80). flag=0 -> unfreezeScripts, else
+// freezeScripts(flag); flag>=0x80 also freezes resistant slots. Mirrors
+// ScummEngine_v5::o5_freezeScripts (script_v5.cpp:1252).
 static void op_freezeScripts(VM *vm) {
     int flag = vm_get_var_or_byte(vm, 0x80);
-    if (flag == 0) {
-        unfreeze_all_slots_force(vm);
+    if (flag != 0) {
+        freeze_other_slots(vm, flag >= 0x80);
     } else {
-        freeze_other_slots(vm, (flag & 0x80) != 0);
+        unfreeze_all_slots(vm);
     }
 }
 
@@ -526,12 +584,91 @@ static void op_resourceRoutines(VM *vm) {
 // Room load / change
 // ===========================================================================
 
-// 0x72  loadRoom : signal main loop to switch room.
+// 0x72  loadRoom : v4 GF_SMALL_HEADER — only call startScene if the room
+// actually changed (script_v5.cpp:1849). Mirrors ScummEngine::startScene
+// (room.cpp:42): runExitScript, kill per-room scripts, load room data,
+// runEntryScript. ScummVM's runExitScript runs the OLD room's EXCD; we
+// snapshot it before the room change overwrites it.
 static void op_loadRoom(VM *vm) {
     int room = vm_get_var_or_byte(vm, 0x80);
+
+    // Same-room shortcut for SMALL_HEADER games (MI1 VGA Floppy is v4).
+    // Note: ScummVM compares against `_currentRoom` (the engine's tracked
+    // current room), NOT VAR(VAR_ROOM) — those can diverge briefly.
+    int cur = engine_current_room_id();
+    if (room == cur) {
+        platform::log("[op] loadRoom(%d) — same room, skip startScene\n", room);
+        return;
+    }
+    platform::log("[op] loadRoom(%d) — sync (cur=%d)\n", room, cur);
+
+    int32_t no_args[VM_MAX_VARARG] = {0};
+
+    // 1) ScummVM startScene (room.cpp:78) calls runExitScript() whenever
+    //    the room actually changes. runExitScript is a chain:
+    //      a. VAR_EXIT_SCRIPT (global script, Script 7 in MI1)
+    //      b. EXCD body of the OLD room (if present)
+    //      c. VAR_EXIT_SCRIPT2 (global script, normally 0)
+    //    The global exit script fires regardless of old-room presence —
+    //    if VAR(VAR_EXIT_SCRIPT) is non-zero, we run it. The EXCD body
+    //    only runs if the old room had one.
+    {
+        int exit_id = (int)vm_read_var(vm, VAR_EXIT_SCRIPT);
+        if (exit_id) {
+            vm_start_script(vm, exit_id, no_args, VM_MAX_VARARG, false, false);
+        }
+        if (cur != 0) {
+            Span     old_excd     = engine_room_excd_payload();
+            uint32_t old_excd_off = engine_room_excd_offset();
+            if (!old_excd.empty()) {
+                vm_start_room_script(vm, old_excd, 10001 /*kScriptNumEXCD*/,
+                                     old_excd_off + 1 /*+1 post-fetch*/,
+                                     WHERE_ROOM);
+            }
+        }
+        int exit2 = (int)vm_read_var(vm, VAR_EXIT_SCRIPT2);
+        if (exit2) {
+            vm_start_script(vm, exit2, no_args, VM_MAX_VARARG, false, false);
+        }
+    }
+
+    // 2) Kill scripts that lived in the old room.
+    for (int i = 0; i < VM_MAX_SLOTS; i++) {
+        Slot &ss = vm->slots[i];
+        if (ss.status == SS_DEAD) continue;
+        if (i == vm->cur_slot) continue;
+        if (ss.where == WHERE_LOCAL || ss.where == WHERE_ROOM ||
+            ss.where == WHERE_FLOBJ) {
+            ss.status = SS_DEAD;
+            ss.script_num = 0;
+        }
+    }
+
+    // 3) Perform the actual room change synchronously.
     vm->pending_room_id = room;
-    vm->room_change_pending = true;
-    platform::log("[op] loadRoom(%d) — pending\n", room);
+    engine_change_room(room);
+
+    // 4) ScummVM startScene early-returns when the new _currentRoom == 0
+    //    (room.cpp:179-182), skipping runEntryScript.
+    if (room == 0) return;
+
+    // 5a) VAR_ENTRY_SCRIPT (Script 5 in MI1).
+    int entry_id = (int)vm_read_var(vm, VAR_ENTRY_SCRIPT);
+    if (entry_id) {
+        vm_start_script(vm, entry_id, no_args, VM_MAX_VARARG, false, false);
+    }
+    // 5b) New room's ENCD.
+    Span     new_encd     = engine_room_encd_payload();
+    uint32_t new_encd_off = engine_room_encd_offset();
+    if (!new_encd.empty()) {
+        vm_start_room_script(vm, new_encd, 10002 /*kScriptNumENCD*/,
+                             new_encd_off + 1, WHERE_ROOM);
+    }
+    // 5c) VAR_ENTRY_SCRIPT2 (Script 6 in MI1).
+    int entry2 = (int)vm_read_var(vm, VAR_ENTRY_SCRIPT2);
+    if (entry2) {
+        vm_start_script(vm, entry2, no_args, VM_MAX_VARARG, false, false);
+    }
 }
 
 // 0x24 / 0x64 / 0xA4 / 0xE4  loadRoomWithEgo : object, room, x, y
@@ -1320,6 +1457,7 @@ static void op_actorFollowCamera(VM *vm) {
 
 static void op_startSound(VM *vm) {
     int snd = vm_get_var_or_byte(vm, 0x80);
+    trace_diag("  startSound id=%d\n", snd);
     Span s = resource_get_sound(snd);
     if (s.empty()) {
         platform::log("startSound(%d): resource missing\n", snd);

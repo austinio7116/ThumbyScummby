@@ -66,6 +66,60 @@ MasterIndex *resource_get_master_index() { return &g.master; }
 static ObjectTable g_object_table{};
 ObjectTable *get_object_table() { return &g_object_table; }
 
+Span     engine_room_excd_payload() { return g.room.excd_payload; }
+uint32_t engine_room_excd_offset()  { return g.room.excd_offset; }
+Span     engine_room_encd_payload() { return g.room.encd_payload; }
+uint32_t engine_room_encd_offset()  { return g.room.encd_offset; }
+int      engine_current_room_id()   { return g.current_room_id; }
+
+Span engine_local_script(int script_id, uint32_t *out_offset) {
+    int idx = script_id - 200;
+    if (idx < 0 || idx >= Room::MAX_LOCAL_SCRIPTS) return Span{nullptr, 0};
+    if (out_offset) *out_offset = g.room.lscr_offset[idx];
+    return g.room.lscr_payload[idx];
+}
+
+bool engine_change_room(int new_room) {
+    if (new_room == 0) {
+        // Room 0 is SCUMM's "no room" placeholder — boot scripts often
+        // pass through it during init. Stay on whatever we have.
+        g_vm.globals[VAR_ROOM] = 0;
+        g_vm.room_change_pending = false;
+        return true;
+    }
+    // Always update VAR_ROOM / VAR_ROOM_RESOURCE — even if we already
+    // have the room data loaded — so the boot's pre-load (room 10) doesn't
+    // leave VAR_ROOM stale across the first script-driven loadRoom.
+    g_vm.globals[VAR_ROOM] = new_room;
+    g_vm.globals[VAR_ROOM_RESOURCE] = new_room;
+    if (new_room == g.current_room_id) {
+        g_vm.room_change_pending = false;
+        return true;
+    }
+    bool ok = room_load(new_room, g.master, &g.room);
+    if (!ok) {
+        platform::log("room transition: failed to load room %d\n", new_room);
+        g_vm.room_change_pending = false;
+        return false;
+    }
+    g.current_room_id = new_room;
+    g.room_loaded = true;
+    room_load_palette(g.room, g.palette);
+    room_render_background(g.room, g.vscreen_main, VIRTUAL_SCREEN_W);
+    object_load_from_room(g.room.room_chunk, &g_object_table);
+    object_render_all(&g_object_table, g.vscreen_main, VIRTUAL_SCREEN_W);
+    memcpy(g.vscreen_back, g.vscreen_main, sizeof(g.vscreen_main));
+    if (!g.room.boxd_payload.empty()) {
+        walkbox_load(g.room.boxd_payload, Span{nullptr, 0}, &g.walkboxes);
+    } else {
+        memset(&g.walkboxes, 0, sizeof(g.walkboxes));
+    }
+    platform::log("room transition -> %d (%dx%d)\n",
+                  new_room, g.room.width, g.room.height);
+    g_vm.room_change_pending = false;
+    return true;
+}
+
 bool engine_init() {
     if (g.initialized) return true;
 
@@ -133,8 +187,12 @@ bool engine_init() {
     // Initialize actor pool before any boot script can manipulate them.
     actor_init_all();
 
+    // Pre-load: render the title room visually so SDL window has something
+    // before the boot script's first real loadRoom. We deliberately leave
+    // g.current_room_id = 0 so the boot's first loadRoom doesn't see a
+    // stale "same room" state and skip startScene.
     if (room_load(target, g.master, &g.room)) {
-        g.current_room_id = target;
+        g.current_room_id = 0;
         g.room_loaded = true;
         room_load_palette(g.room, g.palette);
         room_render_background(g.room, g.vscreen_main, VIRTUAL_SCREEN_W);
@@ -187,7 +245,10 @@ bool engine_init() {
     g_vm.globals[VAR_NUM_ACTOR]    = MAX_ACTORS - 1;
     g_vm.globals[VAR_MACHINE_SPEED] = 1;
     g_vm.globals[VAR_TIMER_NEXT]   = 0;
-    g_vm.globals[VAR_ROOM]         = g.current_room_id;
+    // ScummVM starts _currentRoom at 0 until a script calls startScene; we
+    // mirror that here so o5_loadRoom's same-room-shortcut (script_v5.cpp:
+    // 1849) doesn't suppress the boot's first real room change.
+    g_vm.globals[VAR_ROOM]         = 0;
     // resetScummVars() — applies for v4+ in MI1.
     g_vm.globals[VAR_HEAPSPACE]    = 1400;          // v4+
     g_vm.globals[VAR_FIXEDDISK]    = 1;             // v4+
@@ -301,38 +362,23 @@ bool engine_tick() {
         if (in.dpad_down && g.crop_y < VIRTUAL_SCREEN_H - DISPLAY_H) g.crop_y += step;
     }
 
+    // Mirror ScummVM scummLoop (scumm.cpp:3081): refresh VAR_MUSIC_TIMER
+    // from the iMUSE player BEFORE runAllScripts so the cutscene-timing
+    // wait loops (e.g. Caribbean intro Script 149) can advance.
+    int mt = imuse_get_music_timer();
+    g_vm.globals[VAR_MUSIC_TIMER] = mt;
+    static int last_mt = -1;
+    if (mt != last_mt) { platform::log("MUSIC_TIMER=%d\n", mt); last_mt = mt; }
+
     // Run scripts for this frame
     vm_run_frame(&g_vm);
 
-    // If a script requested a room change, perform it
+    // If a script requested a room change AND op_loadRoom hasn't already
+    // performed it synchronously, do it here. (Most v4+ titles take the
+    // synchronous path so entry/exit scripts can run nested.)
     if (g_vm.room_change_pending) {
         g_vm.room_change_pending = false;
-        int new_room = g_vm.pending_room_id;
-        if (new_room == 0) {
-            // Room 0 is SCUMM's "no room" placeholder — boot scripts often
-            // pass through it during init. Stay on whatever we have.
-            g_vm.globals[VAR_ROOM] = 0;
-        } else if (new_room != g.current_room_id) {
-            if (room_load(new_room, g.master, &g.room)) {
-                g.current_room_id = new_room;
-                g_vm.globals[VAR_ROOM] = new_room;
-                room_load_palette(g.room, g.palette);
-                room_render_background(g.room, g.vscreen_main, VIRTUAL_SCREEN_W);
-                object_load_from_room(g.room.room_chunk, &g_object_table);
-                object_render_all(&g_object_table, g.vscreen_main, VIRTUAL_SCREEN_W);
-                memcpy(g.vscreen_back, g.vscreen_main, sizeof(g.vscreen_main));
-                if (!g.room.boxd_payload.empty()) {
-                    walkbox_load(g.room.boxd_payload, Span{nullptr, 0},
-                                 &g.walkboxes);
-                } else {
-                    memset(&g.walkboxes, 0, sizeof(g.walkboxes));
-                }
-                platform::log("room transition -> %d (%dx%d)\n",
-                              new_room, g.room.width, g.room.height);
-            } else {
-                platform::log("room transition: failed to load room %d\n", new_room);
-            }
-        }
+        engine_change_room(g_vm.pending_room_id);
     }
 
     // Tick walking + animation BEFORE rendering, so position used for draw

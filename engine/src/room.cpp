@@ -126,6 +126,42 @@ bool room_load(int room_id, const MasterIndex &master, Room *out) {
         out->boxd_payload = c.payload;
     }
 
+    // Room entry / exit code (ENCD / EXCD). The offset is relative to the
+    // ROOM resource base — we use room_chunk.full (which starts at the
+    // 6-byte small-chunk header) so it matches ScummVM's roomResPtr from
+    // getResourceAddress(rtRoom, X).
+    out->room_resource = room_chunk.full;
+    if (small_find(room_chunk.payload, stag::EN, &c)) {
+        out->encd_payload = c.payload;
+        out->encd_offset = (uint32_t)(c.payload.data - room_chunk.full.data);
+    }
+    if (small_find(room_chunk.payload, stag::EX, &c)) {
+        out->excd_payload = c.payload;
+        out->excd_offset = (uint32_t)(c.payload.data - room_chunk.full.data);
+    }
+
+    // Local scripts: walk every LS sibling. Each LSCR's body starts with a
+    // 1-byte ID, then the bytecode (matches resource.cpp:459: ptr+1).
+    for (int i = 0; i < Room::MAX_LOCAL_SCRIPTS; i++) {
+        out->lscr_payload[i] = Span{nullptr, 0};
+        out->lscr_offset[i] = 0;
+    }
+    {
+        size_t cur2 = 0;
+        SmallChunk lscr{};
+        while (small_next(room_chunk.payload, &cur2, &lscr)) {
+            if (lscr.tag != stag::LS) continue;
+            if (lscr.payload.size < 2) continue;
+            int id = lscr.payload.data[0];
+            // Per resource.cpp:459: _localScriptOffsets[id - 200] = ptr + 1.
+            int idx = id - 200;
+            if (idx < 0 || idx >= Room::MAX_LOCAL_SCRIPTS) continue;
+            out->lscr_payload[idx] = lscr.payload.sub(1);
+            out->lscr_offset[idx] =
+                (uint32_t)(lscr.payload.data + 1 - room_chunk.full.data);
+        }
+    }
+
     platform::log("room %d: %dx%d, %d objects, palette=%zu B, image=%zu B\n",
                   room_id, out->width, out->height, out->num_objects,
                   out->palette_payload.size, out->bm_smap_payload.size);

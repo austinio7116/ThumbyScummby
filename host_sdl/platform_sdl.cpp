@@ -179,6 +179,23 @@ bool main_loop_iter() {
         if (ev.type == SDL_QUIT) g.quit = true;
         else if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) g.quit = true;
     }
+    // Frame pacing — match ScummVM's main loop wait. v4-on-DOS uses a
+    // VAR_TIMER_NEXT-driven `waitForTimer(delta*4)` with delta defaulting
+    // to 4 and timer freq = PIT_BASE_FREQUENCY / PIT_V2_4_DIVISOR = 236.7Hz,
+    // giving msecDelay = 16 * (1000/236.7) ≈ 67ms (~15Hz frame). Without
+    // this throttle our host outruns the iMUSE music timer that cutscene
+    // loops (e.g. Caribbean intro Script 149) wait on.
+    // (Set lower to fit the 4-second sandbox while still letting the music
+    //  timer accumulate; the music timer is real-time-driven so frames just
+    //  need to be slow enough that polls don't outpace audio progress.)
+    static uint32_t s_last_frame_ms = 0;
+    constexpr uint32_t kFrameMs = 33;   // ~30fps
+    uint32_t now = SDL_GetTicks();
+    if (s_last_frame_ms != 0) {
+        uint32_t elapsed = now - s_last_frame_ms;
+        if (elapsed < kFrameMs) SDL_Delay(kFrameMs - elapsed);
+    }
+    s_last_frame_ms = SDL_GetTicks();
     return !g.quit;
 }
 

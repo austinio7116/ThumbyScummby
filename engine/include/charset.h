@@ -12,7 +12,12 @@ struct Charset {
     int      glyph_height;
     int      glyph_count;
     int      bpp;               // bits per pixel: 1, 2, 4, 8
-    const uint8_t *glyph_offsets; // table: uint32_t per glyph
+    // ScummVM's _fontPtr — points 17 bytes past the resource body start.
+    // For helper LFL files (4-byte LE size + body) that lands at file+21.
+    // bpp / height / numChars are at fontPtr[0..3]; per-glyph LE32 offset
+    // table at fontPtr+4; glyph data at fontPtr + table[chr].
+    const uint8_t *fontptr;
+    const uint8_t *glyph_offsets; // table: uint32_t per glyph (= fontptr+4)
     const uint8_t *colormap;      // 16 bytes color remap table for 4bpp glyphs
 };
 

@@ -22,7 +22,7 @@ extern MasterIndex *resource_get_master_index();   // engine.cpp provides this
 //   _roomoffs -> offset relative to that room's LFLF chunk start in the LEC
 // The actual disk and LEC absolute offset come from the OWNING ROOM's entry.
 static Span lookup_in_room_lflf(const ResourceEntry &entry, uint16_t tag,
-                                int resource_id) {
+                                int resource_id, bool include_header = false) {
     int owning_room = entry.disk;   // misnamed: actually room number for non-room resources
     if (owning_room == 0) return Span{nullptr, 0};
 
@@ -64,7 +64,7 @@ static Span lookup_in_room_lflf(const ResourceEntry &entry, uint16_t tag,
                       ta, tb, c.tag, c.size, wa, wb, tag);
         return Span{nullptr, 0};
     }
-    return c.payload;
+    return include_header ? c.full : c.payload;
 }
 
 void resource_init() {
@@ -84,7 +84,10 @@ Span resource_get_costume(int costume_id) {
     MasterIndex *m = resource_get_master_index();
     if (!m || costume_id < 0 || costume_id >= m->num_costumes)
         return Span{nullptr, 0};
-    return lookup_in_room_lflf(m->costumes[costume_id], stag::CO, costume_id);
+    // Costume parser mirrors ScummVM's loadCostume which keeps the 6-byte
+    // small-chunk header in the buffer (_baseptr = ptr; _numAnim = ptr[6]).
+    return lookup_in_room_lflf(m->costumes[costume_id], stag::CO, costume_id,
+                               /*include_header=*/true);
 }
 
 Span resource_get_sound(int sound_id) {

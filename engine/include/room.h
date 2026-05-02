@@ -26,6 +26,29 @@ struct Room {
     Span     boxd_payload;     // BOXD (BX) — walkbox table
     Span     boxm_payload;     // BOXM ('BM' as a sibling, not the bitmap)
 
+    // ENCD / EXCD — room-entry / room-exit local scripts (run by ScummVM's
+    // runEntryScript / runExitScript when the room changes). The payloads
+    // are bytecode chunks with NO 6-byte small-chunk header; we feed them
+    // straight to vm_start_room_script.
+    Span     encd_payload;
+    Span     excd_payload;
+    // Offset of each chunk's body within the room resource (matches
+    // ScummVM's _ENCD_offs / _EXCD_offs). Used for trace alignment.
+    uint32_t encd_offset;
+    uint32_t excd_offset;
+    // Base of the room resource as ScummVM holds it — i.e. the start of
+    // the ROOM full chunk (with its 6-byte header). We compute offsets
+    // relative to this so they line up with ScummVM's _scriptOrgPointer.
+    Span     room_resource;
+
+    // Local scripts (LSCR chunks). Index by (id - 200). Stores the
+    // bytecode payload (after the 1-byte LSCR ID prefix) AND the offset
+    // of that bytecode within the room resource (matches ScummVM's
+    // _localScriptOffsets). Empty span = script not present.
+    static constexpr int MAX_LOCAL_SCRIPTS = 60;
+    Span     lscr_payload[MAX_LOCAL_SCRIPTS];
+    uint32_t lscr_offset[MAX_LOCAL_SCRIPTS];
+
     uint8_t  transparent_color;
 };
 

@@ -100,6 +100,11 @@ struct Slot {
     int32_t  delay;             // frames remaining
     uint32_t pc;                // byte offset into script_data
     Span     script_data;       // bytes of this script (XIP-resident)
+    // Trace-only: offset added to printed PC so it matches ScummVM's
+    // `slot.offs + script_pc` convention. Default = 7 for global scripts
+    // (pre-fetch + 6-byte small-chunk header). Room-local scripts (ENCD/
+    // EXCD/LSCR) override this with their offset within the room data.
+    uint32_t trace_pc_offset;
 };
 
 // Cutscene state — track up to 5 nested cutscenes
@@ -109,6 +114,12 @@ struct CutsceneState {
     uint32_t ptr[VM_CUTSCENE_DEPTH];
     int      depth;
     bool     override_active;
+    // Mirrors ScummVM vm.cutSceneScriptIndex (script.cpp:1636/1639). While
+    // beginCutscene is running VAR_CUTSCENE_START_SCRIPT, this records the
+    // slot of the script that issued op_cutscene. freezeScripts uses it to
+    // exempt that slot — preserving its freeze_count so it resumes after the
+    // start-script returns.
+    int      cut_scene_script_index;  // -1 == 0xFF sentinel (no active begin)
 };
 
 // ---------------------------------------------------------------------------
@@ -154,6 +165,14 @@ void vm_init(VM *vm);
 int  vm_start_script(VM *vm, int script_num,
                      const int32_t *args, int n_args,
                      bool freeze_resistant, bool recursive);
+
+// Start a room-local code chunk (ENCD = 10002 / EXCD = 10001) using bytecode
+// at `code` with the given pseudo-script-number for trace labelling. The
+// `pc_offset` is added to the trace's printed offset so it lines up with
+// ScummVM's `slot.offs + cur_pc` convention. Runs nested-style: returns
+// after the chunk yields/stops.
+int  vm_start_room_script(VM *vm, Span code, int pseudo_num,
+                          uint32_t pc_offset, uint8_t where);
 
 // Stop a running script by ID (all matching slots).
 void vm_stop_script(VM *vm, int script_num);

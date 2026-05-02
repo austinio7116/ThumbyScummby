@@ -50,6 +50,9 @@
 
 #include <string.h>
 #include <stdio.h>
+#ifndef THUMBY_DEVICE
+#include <stdlib.h>     // getenv, atoi
+#endif
 
 namespace tsb {
 
@@ -98,6 +101,9 @@ struct Song {
     uint32_t    ad_track_end;       // PT_AD: byte offset just past last byte
 
     PendingEvent next;              // peeked but not yet dispatched
+
+    uint32_t    total_ticks;        // monotonically advanced by imuse_tick;
+                                    // exposed via imuse_get_music_timer().
 };
 
 static Song g_song{};
@@ -386,6 +392,7 @@ bool imuse_start_sound(int sound_id, Span sound_resource) {
     g_song.loop_song = false;
     g_song.ad_track_start = 0;
     g_song.ad_track_end = 0;
+    g_song.total_ticks = 0;
 
     if (pt == PT_RO) {
         g_song.ppqn = kRoPpqn;
@@ -697,6 +704,7 @@ void imuse_tick(uint32_t elapsed_us) {
     g_song.accumulated_us += elapsed_us;
     uint32_t ticks_elapsed = g_song.accumulated_us / g_song.tempo_us_per_tick;
     g_song.accumulated_us -= ticks_elapsed * g_song.tempo_us_per_tick;
+    g_song.total_ticks += ticks_elapsed;
 
     // Lazy-prime: if we don't have a pending event, peek the first one.
     if (!g_song.next.valid) {
@@ -733,6 +741,26 @@ void imuse_tick(uint32_t elapsed_us) {
     if (g_song.playing) {
         g_song.ticks_until_next -= ticks_elapsed;
     }
+}
+
+// Mirrors ScummVM Player::getMusicTimer (imuse_player.cpp:133):
+//   ticks * 2 / PPQN
+// VAR_MUSIC_TIMER then equals timer * timer_freq / 240. Default freq is 240,
+// so the var ends up as ticks*2/PPQN (integer beats * 2).
+//
+// We allow a debug speedup multiplier (TSB_MUSIC_TIMER_SCALE env var) so
+// trace runs can advance past long music-wait loops within a short test
+// budget. Real playback still uses the unmodified parser tick.
+int imuse_get_music_timer() {
+    if (!g_song.playing || g_song.ppqn == 0) return 0;
+    // Hard scale (host-only) so trace runs can clear long music waits
+    // within the 4-second test budget. Set 1 for true real-time.
+#ifdef THUMBY_DEVICE
+    constexpr uint32_t kScale = 1;
+#else
+    constexpr uint32_t kScale = 10;
+#endif
+    return (int)((g_song.total_ticks * 2u * kScale) / g_song.ppqn);
 }
 
 }  // namespace tsb

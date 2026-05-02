@@ -12,24 +12,26 @@ bool charset_load_from_helper(int helper_id, Charset *out) {
     Span helper = platform::data_helper(helper_id);
     if (helper.empty()) return false;
 
-    // Helper file format (v4): starts directly with raw CHAR resource:
-    //   uint32 LE  size
-    //   uint8      unknown (or part of header)
-    //   uint16 LE  colormap_offset
-    //   uint8      bpp
-    //   uint8      font_height
-    //   uint16 LE  num_chars
-    //   uint32 LE  char_offsets[num_chars]
-    //   ... bit-packed glyph data ...
+    // Helper file layout (9xx.LFL):
+    //   +0 ..  +3  uint32 LE   file size (consumed by ScummVM's resource
+    //                          loader before populating its buffer)
+    //   +4 .. +20  17-byte CHAR pre-header (unused fields + colormap)
+    //  +21         bpp
+    //  +22         glyph_height
+    //  +23..+24    uint16 LE   num_chars
+    //  +25..       uint32 LE * num_chars   per-glyph offsets
+    //  ...         bit-packed glyph data
+    //
+    // ScummVM's CharsetRendererCommon::setCurID does `_fontPtr += 17` after
+    // pointing past the size word, so `_fontPtr` lands at file + 21.
 
-    if (helper.size < 16) return false;
-    out->resource = helper;
-    // The first 4 bytes are likely a size header
-    const uint8_t *p = helper.data;
-    out->bpp           = p[8];
-    out->glyph_height  = p[9];
-    out->glyph_count   = read_le16(p + 10);
-    out->glyph_offsets = p + 12;
+    if (helper.size < 25) return false;
+    out->resource      = helper;
+    out->fontptr       = helper.data + 21;
+    out->bpp           = out->fontptr[0];
+    out->glyph_height  = out->fontptr[1];
+    out->glyph_count   = read_le16(out->fontptr + 2);
+    out->glyph_offsets = out->fontptr + 4;
     out->colormap      = nullptr;
     if (out->bpp != 1 && out->bpp != 2 && out->bpp != 4 && out->bpp != 8) {
         platform::log("charset: helper %d bpp=%d invalid\n",
@@ -49,8 +51,10 @@ void charset_draw_char(const Charset *cs, char c, int dx, int dy,
 
     uint32_t offs = read_le32(cs->glyph_offsets + idx * 4);
     if (offs == 0) return;
-    if (offs + 4 > cs->resource.size) return;
-    const uint8_t *g = cs->resource.data + offs;
+    // Glyph offsets are relative to _fontPtr (= helper.data + 21).
+    size_t fontptr_base = (size_t)(cs->fontptr - cs->resource.data);
+    if (fontptr_base + offs + 4 > cs->resource.size) return;
+    const uint8_t *g = cs->fontptr + offs;
     uint8_t w = g[0];
     uint8_t h = g[1];
     int8_t  ox = (int8_t)g[2];
@@ -94,8 +98,9 @@ int charset_draw_string(const Charset *cs, const char *s, int dx, int dy,
         int idx = (uint8_t)c;
         if (idx < cs->glyph_count) {
             uint32_t offs = read_le32(cs->glyph_offsets + idx * 4);
-            if (offs > 0 && offs < cs->resource.size) {
-                x += cs->resource.data[offs] + 1;
+            size_t fontptr_base = (size_t)(cs->fontptr - cs->resource.data);
+            if (offs > 0 && fontptr_base + offs < cs->resource.size) {
+                x += cs->fontptr[offs] + 1;
             } else {
                 x += 4;
             }

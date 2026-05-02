@@ -2,6 +2,7 @@
 
 #include "vm.h"
 #include "platform.h"
+#include "engine.h"
 
 #include <string.h>
 #ifndef THUMBY_DEVICE
@@ -25,13 +26,15 @@ static void trace_init() {
     if (path && *path) g_trace_fp = fopen(path, "w");
 #endif
 }
-static inline void trace_opcode(uint16_t script, uint32_t pc, uint8_t op) {
+static inline void trace_opcode(uint16_t script, uint32_t pc, uint8_t op,
+                                uint32_t pc_offset) {
     if (!g_trace_fp) return;
-    // ScummVM logs (POST-fetch PC) + resource-header (=6 for v4 small-header
-    // global scripts). Our pc here is PRE-fetch and payload-relative, so:
-    //   svm_offset = pc + 1 (post-fetch) + 6 (resource header) = pc + 7
+    // ScummVM logs the POST-fetch PC plus the script's resource base offset.
+    // For global scripts pc_offset == 7 (=6 small-chunk header + 1 post-
+    // fetch). Room-local scripts (ENCD/EXCD/LSCR) override pc_offset to
+    // their offset within the room data.
     fprintf(g_trace_fp, "Script %u, offset 0x%x: [%02X] %s()\n",
-            script, pc + 7, op, VM_OPCODE_NAMES_V4[op]);
+            script, pc + pc_offset, op, VM_OPCODE_NAMES_V4[op]);
 }
 
 void trace_diag(const char *fmt, ...) {
@@ -281,7 +284,22 @@ int vm_start_script(VM *vm, int script_num,
         vm_stop_script(vm, script_num);
     }
 
-    Span data = resource_get_script(script_num);
+    // ScummVM script.cpp:70-86: scripts >= _numGlobalScripts (=200 in v4)
+    // are LOCAL scripts stored inside the current room; resolve via the
+    // engine's per-room LSCR table.
+    Span     data;
+    uint8_t  where        = WHERE_GLOBAL;
+    uint32_t pc_offset    = 7;       // global default: 6 (header) + 1 (post)
+    if (script_num < 200) {
+        data = resource_get_script(script_num);
+    } else {
+        uint32_t lscr_off = 0;
+        data = engine_local_script(script_num, &lscr_off);
+        if (!data.empty()) {
+            where     = WHERE_LOCAL;
+            pc_offset = lscr_off + 1;   // payload offset + post-fetch
+        }
+    }
     if (data.empty()) {
         platform::log("vm: cannot load script %d\n", script_num);
         return -1;
@@ -296,7 +314,7 @@ int vm_start_script(VM *vm, int script_num,
     Slot &s = vm->slots[slot];
     s.script_num       = (uint16_t)script_num;
     s.status           = SS_RUNNING;
-    s.where            = WHERE_GLOBAL;
+    s.where            = where;
     s.freeze_count     = 0;
     s.cycle            = 1;
     s.freeze_resistant = freeze_resistant ? 1 : 0;
@@ -305,6 +323,7 @@ int vm_start_script(VM *vm, int script_num,
     s.delay            = 0;
     s.pc               = 0;
     s.script_data      = data;
+    s.trace_pc_offset  = pc_offset;
 
     // Init locals
     for (int i = 0; i < VM_NUM_LOCALS; i++) vm->locals[slot][i] = 0;
@@ -338,6 +357,9 @@ int vm_start_script(VM *vm, int script_num,
         // it during the nested run). Otherwise sets _currentScript = 0xFF
         // (we use cur_slot = -1 sentinel) to exit the outer dispatch loop.
         Slot &outer = vm->slots[outer_slot];
+        platform::log("vm: nested return inner=%d outer_slot=%d outer.script=%d expected=%d status=%d freeze=%d\n",
+                      script_num, outer_slot, outer.script_num, outer_script_num,
+                      (int)outer.status, (int)outer.freeze_count);
         if (outer.script_num == outer_script_num &&
             outer.status != SS_DEAD &&
             outer.freeze_count == 0) {
@@ -356,6 +378,70 @@ int vm_start_script(VM *vm, int script_num,
         vm->slots[slot].didexec = 1;
     }
 
+    return slot;
+}
+
+// Run a room-local code chunk (ENCD = 10002 / EXCD = 10001 / LSCR > 200).
+// `code` is the chunk payload (header already stripped). `pc_offset` is the
+// chunk payload's offset within the room resource buffer; trace lines are
+// emitted as `Script pseudo_num, offset (cur_pc + pc_offset)` to match
+// ScummVM's `slot.offs + script_pc` format. Runs nested-style.
+int vm_start_room_script(VM *vm, Span code, int pseudo_num,
+                         uint32_t pc_offset, uint8_t where) {
+    if (code.empty()) return -1;
+    int slot = find_free_slot(vm);
+    if (slot < 0) {
+        platform::log("vm: no free slot for room script %d\n", pseudo_num);
+        return -1;
+    }
+
+    Slot &s = vm->slots[slot];
+    s.script_num       = (uint16_t)pseudo_num;
+    s.status           = SS_RUNNING;
+    s.where            = where;
+    s.freeze_count     = 0;
+    s.cycle            = 1;
+    s.freeze_resistant = 0;
+    s.recursive        = 0;
+    s.didexec          = 0;
+    s.delay            = 0;
+    s.pc               = 0;
+    s.script_data      = code;
+    // ScummVM trace prints `_scriptPointer - _scriptOrgPointer`, where
+    // _scriptOrgPointer is the room resource base. We add the chunk's
+    // payload offset within the room AND the small-chunk header (6 bytes)
+    // because ScummVM's findResourceData returns the body but the slot.offs
+    // is stored as `bodyPtr - roomResPtr`, which equals our pc_offset
+    // (already includes header skip in our parser). We do NOT add 6 here.
+    s.trace_pc_offset  = pc_offset;
+
+    for (int i = 0; i < VM_NUM_LOCALS; i++) vm->locals[slot][i] = 0;
+
+    int outer_slot = vm->cur_slot;
+    bool nested = (outer_slot >= 0 && outer_slot < VM_MAX_SLOTS &&
+                   outer_slot != slot &&
+                   vm->slots[outer_slot].status == SS_RUNNING);
+    if (nested) {
+        vm->slots[outer_slot].pc = vm->cur_pc;
+        uint16_t outer_script_num = vm->slots[outer_slot].script_num;
+
+        vm->cur_slot = slot;
+        vm->cur_script_data = code;
+        vm->cur_pc = 0;
+        run_dispatch(vm, slot);
+
+        Slot &outer = vm->slots[outer_slot];
+        if (outer.script_num == outer_script_num &&
+            outer.status != SS_DEAD &&
+            outer.freeze_count == 0) {
+            vm->cur_slot = outer_slot;
+            vm->cur_script_data = outer.script_data;
+            vm->cur_pc = outer.pc;
+        } else {
+            vm->cur_slot = -1;
+        }
+        vm->slots[slot].didexec = 1;
+    }
     return slot;
 }
 
@@ -396,7 +482,7 @@ void run_dispatch(VM *vm, int slot) {
 
         uint32_t op_pc = vm->cur_pc;
         vm->opcode = vm_fetch_byte(vm);
-        trace_opcode(s.script_num, op_pc, vm->opcode);
+        trace_opcode(s.script_num, op_pc, vm->opcode, s.trace_pc_offset);
         OpcodeFn fn = vm_opcode_table[vm->opcode];
         if (!fn) fn = vm_unimpl;
         fn(vm);
@@ -439,7 +525,7 @@ static void run_one_slot(VM *vm, int slot) {
 
         uint32_t op_pc = vm->cur_pc;
         vm->opcode = vm_fetch_byte(vm);
-        trace_opcode(s.script_num, op_pc, vm->opcode);
+        trace_opcode(s.script_num, op_pc, vm->opcode, s.trace_pc_offset);
         OpcodeFn fn = vm_opcode_table[vm->opcode];
         if (!fn) fn = vm_unimpl;
         fn(vm);
@@ -475,6 +561,7 @@ void vm_run_frame(VM *vm) {
 void vm_init(VM *vm) {
     memset(vm, 0, sizeof(*vm));
     vm->stack_pos = 0;
+    vm->cutscene.cut_scene_script_index = -1;
     trace_init();
 }
 

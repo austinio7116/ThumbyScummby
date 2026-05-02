@@ -28,13 +28,45 @@ def parse(path):
             out.append((script, offset, opcode, mnem, line))
     return out
 
+def collapse_spin_loops(ops):
+    """Collapse repeated A,B,A,B,... cycles (script-internal poll loops on
+    timer/sound-running variables) down to a single A,B pair. Both traces
+    differ only in iteration count when waiting on real-time conditions
+    like VAR_MUSIC_TIMER, so collapsing keeps PC alignment intact."""
+    out = []
+    i = 0
+    n = len(ops)
+    while i < n:
+        # Detect a 2-op cycle: ops[i] == ops[i+2] and ops[i+1] == ops[i+3]
+        # (same script, offset, opcode triple repeating). Greedily advance
+        # past any further matching pairs.
+        if i + 3 < n:
+            a, b = ops[i][:3], ops[i+1][:3]
+            if ops[i+2][:3] == a and ops[i+3][:3] == b:
+                # Emit one canonical pair, skip over the rest of the cycle.
+                out.append(ops[i])
+                out.append(ops[i+1])
+                j = i + 2
+                while j + 1 < n and ops[j][:3] == a and ops[j+1][:3] == b:
+                    j += 2
+                i = j
+                continue
+        out.append(ops[i])
+        i += 1
+    return out
+
+
 def main():
     if len(sys.argv) != 3:
         print(__doc__); sys.exit(1)
-    svm = parse(sys.argv[1])
-    tsb = parse(sys.argv[2])
-    print(f"SVM ops: {len(svm)}")
-    print(f"TSB ops: {len(tsb)}")
+    svm_raw = parse(sys.argv[1])
+    tsb_raw = parse(sys.argv[2])
+    print(f"SVM ops (raw): {len(svm_raw)}")
+    print(f"TSB ops (raw): {len(tsb_raw)}")
+    svm = collapse_spin_loops(svm_raw)
+    tsb = collapse_spin_loops(tsb_raw)
+    print(f"SVM ops (collapsed): {len(svm)}")
+    print(f"TSB ops (collapsed): {len(tsb)}")
 
     n = min(len(svm), len(tsb))
     matched = 0
