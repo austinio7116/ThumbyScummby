@@ -500,8 +500,24 @@ void run_dispatch(VM *vm, int slot) {
 
 static void run_one_slot(VM *vm, int slot) {
     Slot &s = vm->slots[slot];
+    if (s.status == SS_DEAD) return;
+    if (s.status == SS_PAUSED) {
+        // ScummVM decreaseScriptDelay (script.cpp:1505) decrements all
+        // ssPaused slots by `delta` per frame, where delta = VAR_TIMER_NEXT
+        // (default 4 in MI1). When delay drops below zero the slot
+        // returns to ssRunning with delay=0.
+        int32_t delta = vm->globals[VAR_TIMER_NEXT];
+        if (delta <= 0) delta = 4;
+        if (delta > 15) delta = 15;
+        s.delay -= delta;
+        if (s.delay < 0) {
+            s.status = SS_RUNNING;
+            s.delay  = 0;
+        } else {
+            return;
+        }
+    }
     if (s.status != SS_RUNNING) return;
-    if (s.delay > 0) { s.delay--; return; }
     if (s.freeze_count > 0) return;
     if (s.didexec) return;
 

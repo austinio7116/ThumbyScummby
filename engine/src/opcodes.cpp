@@ -513,14 +513,19 @@ static void op_freezeScripts(VM *vm) {
 // Delay
 // ===========================================================================
 
-// 0x2E  delay : 24-bit immediate
+// 0x2E  delay : 24-bit immediate. Mirrors ScummEngine_v5::o5_delay
+// (script_v5.cpp:972) — store the 3-byte LE value as-is, mark slot ssPaused,
+// yield the frame.
 static void op_delay(VM *vm) {
     uint8_t a = vm_fetch_byte(vm);
     uint8_t b = vm_fetch_byte(vm);
     uint8_t c = vm_fetch_byte(vm);
-    int32_t d = (int32_t)a | ((int32_t)b << 8) | ((int32_t)c << 16);
-    vm->slots[vm->cur_slot].delay = d;
-    // Yield this frame
+    int32_t d = (int32_t)((uint32_t)a | ((uint32_t)b << 8) | ((uint32_t)c << 16));
+    vm->slots[vm->cur_slot].delay  = d;
+    vm->slots[vm->cur_slot].status = SS_PAUSED;
+    trace_diag("  delay frames=%d\n", d);
+    // Yield: same as breakHere — sentinel the dispatch loop to bail.
+    vm->cur_slot = -1;
 }
 
 // 0x2B  delayVariable
@@ -1100,9 +1105,10 @@ static void op_actorOps(VM *vm) {
             if (a && idx >= 0 && idx < 32) a->palette[idx] = (uint8_t)col;
             break;
         }
-        case 17: { // actor_scale
+        case 17: { // actor_scale — v4 reads ONE byte (sx==sy);
+                   // v5+ reads two bytes (sx, sy). MI1 VGA Floppy is v4.
             int sx = vm_get_var_or_byte(vm, 0x80);
-            int sy = vm_get_var_or_byte(vm, 0x40);
+            int sy = sx;
             if (a) { a->scalex = (uint8_t)sx; a->scaley = (uint8_t)sy; }
             break;
         }
