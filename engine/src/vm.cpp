@@ -193,15 +193,43 @@ int vm_read_string(VM *vm, uint8_t *out_buf, int max_len) {
     return n;
 }
 
+// Skip an in-line SCUMM string. SCUMM strings end at 0x00 BUT may contain
+// inline escape sequences starting with 0xFF that consume extra bytes:
+//   \xFF\x01           : newline (0 args)
+//   \xFF\x02           : keep text (0 args)
+//   \xFF\x03           : (0 args)
+//   \xFF\x08           : (0 args)
+//   \xFF\x04 lo hi     : substitute integer var (2 args)
+//   \xFF\x05 lo hi     : substitute verb name (2 args)
+//   \xFF\x06 lo hi     : substitute actor name (2 args)
+//   \xFF\x07 lo hi     : substitute string (2 args)
+//   \xFF\x09 lo hi     : sound (2 args)
+//   \xFF\x0A lo hi     : start animation (2 args)
+//   ...others...       : 2 args
+// (See ScummVM resStrLen in `engines/scumm/string.cpp`.)
 int vm_skip_string(VM *vm) {
     int n = 0;
     while (vm->cur_pc < vm->cur_script_data.size) {
         uint8_t c = vm->cur_script_data.data[vm->cur_pc++];
         n++;
         if (c == 0x00) break;
+        if (c == 0xFF) {
+            if (vm->cur_pc >= vm->cur_script_data.size) break;
+            uint8_t ctrl = vm->cur_script_data.data[vm->cur_pc++];
+            n++;
+            if (ctrl != 1 && ctrl != 2 && ctrl != 3 && ctrl != 8) {
+                // Two argument bytes follow.
+                if (vm->cur_pc + 2 > vm->cur_script_data.size) break;
+                vm->cur_pc += 2;
+                n += 2;
+            }
+        }
     }
     return n;
 }
+
+// Forward declaration for vm_start_script's nested dispatch.
+void run_dispatch(VM *vm, int slot);
 
 // ---------------------------------------------------------------------------
 // Slot management
@@ -306,6 +334,40 @@ void vm_stop_current_script(VM *vm) {
 // Frame execution
 // ---------------------------------------------------------------------------
 
+// Run dispatch on `slot` until it yields (delay, stop, freeze) or finishes.
+// Caller must have set vm->cur_slot, cur_script_data, cur_pc to point into
+// this slot. Updates s.pc on exit. Re-entrant: an opcode handler may switch
+// vm->cur_slot to a nested slot and call run_dispatch recursively, then
+// restore vm->cur_slot before returning.
+void run_dispatch(VM *vm, int slot) {
+    Slot &s = vm->slots[slot];
+    int budget = 50000;
+    while (s.status == SS_RUNNING && budget-- > 0) {
+        if (vm->cur_pc >= vm->cur_script_data.size) {
+            platform::log("vm: slot %d script %d ran off end\n",
+                          slot, s.script_num);
+            s.status = SS_DEAD;
+            break;
+        }
+
+        uint32_t op_pc = vm->cur_pc;
+        vm->opcode = vm_fetch_byte(vm);
+        trace_opcode(s.script_num, op_pc, vm->opcode);
+        OpcodeFn fn = vm_opcode_table[vm->opcode];
+        if (!fn) fn = vm_unimpl;
+        fn(vm);
+
+        // The handler may have run a nested startScript which transiently
+        // changed cur_slot, then restored it. We only break out of this
+        // outer loop if cur_slot is STILL pointing at someone else (e.g.,
+        // chainScript replaced our slot).
+        if (vm->cur_slot != slot) break;
+        if (s.delay > 0) break;
+        if (s.status != SS_RUNNING) break;
+    }
+    s.pc = vm->cur_pc;
+}
+
 static void run_one_slot(VM *vm, int slot) {
     Slot &s = vm->slots[slot];
     if (s.status != SS_RUNNING) return;
@@ -318,7 +380,10 @@ static void run_one_slot(VM *vm, int slot) {
     vm->cur_script_data  = s.script_data;
     vm->cur_pc           = s.pc;
 
-    // Run until the script yields (breakHere, delay, stop) or aborts.
+    run_dispatch(vm, slot);
+    return;
+
+    // Old inline loop (replaced by run_dispatch)
     int budget = 50000;     // safety: prevent infinite loop in one frame
     while (s.status == SS_RUNNING && budget-- > 0) {
         if (vm->cur_pc >= vm->cur_script_data.size) {
