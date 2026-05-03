@@ -3,21 +3,13 @@
 // Derived from / inspired by ScummVM (https://www.scummvm.org/).
 // See LICENSE for full GPL-3.0-or-later terms.
 //
-// ThumbyScummby - minimal OPL2 (Yamaha YM3812) software emulator.
+// ThumbyScummby — OPL2 (Yamaha YM3812) emulation API.
 //
-// Not a perfect dbopl port - we hand-write a lean OPL2 in pure portable C++
-// so it cross-compiles to ARM Cortex-M33 with no x86-isms. Goals:
-//
-//   - 9 channels x 2 operators FM synthesis
-//   - ADSR envelope per operator
-//   - Sine, half-sine, abs-sine, quarter-sine waveforms (OPL2 supports 4)
-//   - Feedback path on operator 1 of each channel
-//   - FM (modulator drives carrier phase) or AM (sum) per channel
-//   - 22050 Hz output, mono int16
-//
-// Register-write semantics match the real chip's external interface so the
-// AdLib MIDI driver code talks to it the same way it would talk to dbopl
-// or a real OPL2 chip.
+// Implementation lives in engine/src/opl2.cpp, which is a thin shim
+// over the canonical DOSBox dbopl emulator (engine/src/dbopl.cpp +
+// engine/include/dbopl.h, dropped in verbatim from
+// scummvm-upstream/audio/softsynth/opl/dbopl.{cpp,h}, GPL-2.0+ © The
+// DOSBox Team — see those files for original attribution).
 
 #pragma once
 

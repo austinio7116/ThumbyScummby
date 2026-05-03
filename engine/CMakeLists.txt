@@ -21,6 +21,7 @@ add_library(thumbyscummby_engine STATIC
     src/charset.cpp
     src/string.cpp
     src/opl2.cpp
+    src/dbopl.cpp
     src/adlib.cpp
     src/imuse.cpp
     src/audio_mix.cpp
