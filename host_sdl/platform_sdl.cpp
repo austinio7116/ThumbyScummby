@@ -385,7 +385,13 @@ int audio_init(int requested_rate, AudioCallback cb, void *user) {
     want.freq = requested_rate;
     want.format = AUDIO_S16SYS;
     want.channels = 1;
-    want.samples = 1024;
+    // 2048 samples @ 22050 Hz = ~93ms of slack. The smaller 1024-sample
+    // buffer (~46ms) was tight enough that any host-thread scheduling
+    // hiccup or a longer-than-average dbopl/iMUSE callback produced an
+    // audible dropout. SDL's audio thread is independent of our main
+    // thread but the system mixer still has to deliver this buffer in
+    // real time. Doubled the buffer for headroom.
+    want.samples = 2048;
     want.callback = sdl_audio_cb_thunk;
     g.audio_cb = cb;
     g.audio_user = user;
@@ -395,6 +401,9 @@ int audio_init(int requested_rate, AudioCallback cb, void *user) {
         return 0;
     }
     g.audio_rate = have.freq;
+    fprintf(stderr, "audio: requested %d Hz / %d samples; got %d Hz / %d samples / %d ch / fmt=0x%04X\n",
+            want.freq, want.samples,
+            have.freq, have.samples, have.channels, (unsigned)have.format);
     SDL_PauseAudioDevice(g.audio_dev, 0);
     return have.freq;
 }
