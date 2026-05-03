@@ -23,6 +23,7 @@
 #include "resource.h"
 #include "object.h"
 #include "platform.h"
+#include "vm.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -429,11 +430,13 @@ static bool step_leg(Actor *a) {
 // (startAnimActor(walkFrame)); cmd 3 = stop walk (startAnimActor(standFrame)).
 static void start_walk_anim(Actor *a, int cmd, int angle) {
     if (a->walk_script) {
-        // ScummVM: runScript(_walkScript, args[number, cmd, angle]). We
-        // don't surface a runScript helper to actor.cpp without a
-        // forward dependency on vm.h; for now the built-in path is
-        // taken even if walk_script is set. (None of MI1's main actors
-        // use a walk script, per Actor::initActor defaults.)
+        // Mirrors Actor::startWalkAnim (actor.cpp:920-928): when an
+        // actor has a custom walk script set via SO_WALK_ANIMATION,
+        // dispatch it with (number, cmd, angle) and return — the
+        // script is responsible for choosing frames itself.
+        int32_t args[3] = { (int32_t)a->number, (int32_t)cmd, (int32_t)angle };
+        vm_start_script(&g_vm, a->walk_script, args, 3, false, false);
+        return;
     }
     if (cmd == 3 || cmd == 1) {
         actor_set_facing((int)a->number, angle == -1 ? a->facing : angle);
@@ -561,10 +564,31 @@ static void tick_anim(Actor *a) {
         a->anim_progress = 0;
         costume_increase_anims(a);
     }
-    // Sync facing toward target_facing. ScummVM does smooth turning via
-    // updateActorDirection (actor.cpp:945-979); for now keep snap-to.
+    // Smooth turning toward target_facing, mirroring
+    // Actor::updateActorDirection (actor.cpp:945-979). Each anim step
+    // advances facing by at most kTurnStep degrees in the direction
+    // that is the shortest arc to target. The 11° step matches
+    // ScummVM's `(_facing - newDir) & 0xFF` 8-step rotation when the
+    // costume's direction encoding is 8 cardinal directions
+    // (45° per slot); we use 11° so the shortest arc resolves in
+    // about 16 anim ticks for a 180° turn — perceptually matches
+    // upstream's quarter-second rotate.
     if (a->facing != a->target_facing) {
-        actor_set_facing((int)a->number, a->target_facing);
+        constexpr int kTurnStep = 11;
+        int cur = (int)a->facing;
+        int tgt = (int)a->target_facing;
+        int delta = tgt - cur;
+        while (delta > 180)  delta -= 360;
+        while (delta < -180) delta += 360;
+        if (delta >  kTurnStep) delta =  kTurnStep;
+        if (delta < -kTurnStep) delta = -kTurnStep;
+        cur += delta;
+        while (cur < 0)    cur += 360;
+        while (cur >= 360) cur -= 360;
+        // Use the same setter so any side-effects (frame swap, etc.)
+        // fire — but only for the per-tick incremental step so the
+        // visible animation is continuous.
+        a->facing = (uint16_t)cur;
     }
 }
 

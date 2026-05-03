@@ -457,9 +457,28 @@ void adlib_midi_event(uint8_t status, uint8_t d1, uint8_t d2) {
     case 0xE0: {                                        // Pitch Bend
         int v = ((int)(d2 & 0x7F) << 7) | (int)(d1 & 0x7F);
         s_channels[ch].pitch_bend = (int16_t)(v - 8192);
-        // Note: the next note-on will pick up the new bend. Mid-note bend is
-        // not propagated in our minimal driver - the title music doesn't use
-        // continuous pitch bend so this is fine.
+        // Propagate the new bend to every voice this channel is
+        // currently sounding so a note that's already keyed-on glides
+        // with the bend rather than waiting for the next note-on to
+        // pick it up. Mirrors the per-voice fnum/block rewrite that
+        // ScummVM's MidiDriver_ADLIB does in its pitch-bend handler.
+        for (int i = 0; i < 9; i++) {
+            AdlibVoice &voice = s_voices[i];
+            if (!voice.in_use || voice.released) continue;
+            if (voice.channel != ch) continue;
+            int n = (int)voice.note + s_channels[ch].pitch_bend / 4096;
+            if (n < 0)   n = 0;
+            if (n > 127) n = 127;
+            uint8_t block;
+            uint16_t fnum;
+            note_to_block_fnum(n, &block, &fnum);
+            // Preserve the key-on bit (0x20) on B0+n so the note keeps
+            // sounding through the rewrite.
+            uint8_t b0_prev = opl2_read_reg(0xB0 + i);
+            opl2_write_reg(0xA0 + i, (uint8_t)(fnum & 0xFF));
+            opl2_write_reg(0xB0 + i,
+                (uint8_t)(((fnum >> 8) & 3) | (block << 2) | (b0_prev & 0x20)));
+        }
         break;
     }
     default:

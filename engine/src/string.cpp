@@ -123,9 +123,11 @@ static bool ensure_charset(int id) {
 }
 
 // Mirrors ScummVM CharsetRendererCommon::setCurID + memcpy(_charsetColorMap,
-// _charsetData[id], 4) (string.cpp:1426 / 1104). For our v4 use we use
-// only the 4-bit colour mapping that talk text relies on. _charsetData is
-// populated by o5_cursorCommand sub 14; for now we keep it identity.
+// _charsetData[id], 4) (string.cpp:1426 / 1104). The 4-bit colour map
+// that talk-text uses is supplied by o5_cursorCommand sub 14 (the
+// vararg word list in opcodes.cpp); when no script has called it the
+// colour map left at default identity (0..15) which matches ScummVM's
+// startup state before the boot script's first cursorCommand.
 static void set_cur_charset(int id) {
     if (id < 0 || id >= 8) return;
     if (!ensure_charset(id)) return;
@@ -328,9 +330,16 @@ static void draw_string(int slot, const uint8_t *msg) {
     g_next_top  = s->ypos;
     draw_string_at(s->xpos, s->ypos, s->color, buf, s->center);
 
-    // ScummVM updates _string[a].xpos to the right edge after draw.
-    // We approximate by using the resulting cx value; for now leave
-    // xpos untouched.
+    // ScummVM advances _string[a].xpos to the right edge of the
+    // rendered glyph run so successive printString calls on the same
+    // slot continue from where the last one stopped (string.cpp:120).
+    // Our draw_string_at writes left-to-right starting at s->xpos and
+    // the dispatcher already publishes the right edge via g_next_left;
+    // leaving s->xpos at its caller-supplied value matches v4 boot
+    // scripts which always re-set xpos on every print, but breaks
+    // multi-call concatenation. Sync the slot's xpos to g_next_left so
+    // the next call lands at the correct position.
+    s->xpos = (int16_t)g_next_left;
 }
 
 // ---------------------------------------------------------------------------
