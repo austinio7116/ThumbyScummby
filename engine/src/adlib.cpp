@@ -236,17 +236,22 @@ static void program_voice(int v_idx, uint8_t midi_ch, uint8_t note, uint8_t velo
     uint8_t op1 = kOp1Offset[v_idx];
     uint8_t op2 = kOp2Offset[v_idx];
 
-    // Set FM characteristics + envelopes
+    // Set FM characteristics + envelopes. The AD instrument layout
+    // matches the OPL2 register byte format directly — `mod_attack_decay`
+    // is already (attack << 4) | decay, ready to be written as-is to
+    // register 0x60. The previous code applied a bitwise NOT, producing
+    // essentially random envelope settings (slow attacks, fast decays,
+    // silent sustains) — symptom: clicks instead of full notes.
     opl2_write_reg(0x20 + op1, inst.mod_freq);
     opl2_write_reg(0x40 + op1, scale_level(inst.mod_level, mch.volume, velocity));
-    opl2_write_reg(0x60 + op1, (uint8_t)~inst.mod_attack_decay);
-    opl2_write_reg(0x80 + op1, (uint8_t)~inst.mod_sustain_release);
+    opl2_write_reg(0x60 + op1, inst.mod_attack_decay);
+    opl2_write_reg(0x80 + op1, inst.mod_sustain_release);
     opl2_write_reg(0xE0 + op1, inst.mod_wave & 3);
 
     opl2_write_reg(0x20 + op2, inst.car_freq);
     opl2_write_reg(0x40 + op2, scale_level(inst.car_level, mch.volume, velocity));
-    opl2_write_reg(0x60 + op2, (uint8_t)~inst.car_attack_decay);
-    opl2_write_reg(0x80 + op2, (uint8_t)~inst.car_sustain_release);
+    opl2_write_reg(0x60 + op2, inst.car_attack_decay);
+    opl2_write_reg(0x80 + op2, inst.car_sustain_release);
     opl2_write_reg(0xE0 + op2, inst.car_wave & 3);
 
     opl2_write_reg(0xC0 + v_idx, inst.feedback);
