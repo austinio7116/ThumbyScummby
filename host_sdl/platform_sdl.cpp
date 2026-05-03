@@ -179,23 +179,10 @@ bool main_loop_iter() {
         if (ev.type == SDL_QUIT) g.quit = true;
         else if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) g.quit = true;
     }
-    // Frame pacing — match ScummVM's main loop wait. v4-on-DOS uses a
-    // VAR_TIMER_NEXT-driven `waitForTimer(delta*4)` with delta defaulting
-    // to 4 and timer freq = PIT_BASE_FREQUENCY / PIT_V2_4_DIVISOR = 236.7Hz,
-    // giving msecDelay = 16 * (1000/236.7) ≈ 67ms (~15Hz frame). Without
-    // this throttle our host outruns the iMUSE music timer that cutscene
-    // loops (e.g. Caribbean intro Script 149) wait on.
-    // (Set lower to fit the 4-second sandbox while still letting the music
-    //  timer accumulate; the music timer is real-time-driven so frames just
-    //  need to be slow enough that polls don't outpace audio progress.)
-    static uint32_t s_last_frame_ms = 0;
-    constexpr uint32_t kFrameMs = 33;   // ~30fps
-    uint32_t now = SDL_GetTicks();
-    if (s_last_frame_ms != 0) {
-        uint32_t elapsed = now - s_last_frame_ms;
-        if (elapsed < kFrameMs) SDL_Delay(kFrameMs - elapsed);
-    }
-    s_last_frame_ms = SDL_GetTicks();
+    // Frame pacing lives inside engine_tick() now — see scumm.cpp:2702-2857
+    // (waitForTimer + go-loop port). The host's only job here is event
+    // pumping + quit detection; the engine handles its own anchored wait
+    // using VAR_TIMER_NEXT and the v4 PIT frequency.
     return !g.quit;
 }
 
@@ -233,8 +220,15 @@ Span data_helper(int id) {
     return Span{g.helper[id-900].data, g.helper[id-900].size};
 }
 
-// FIT / FILL / CROP scaling, mirroring ThumbyNES's blit_fit/blit_crop pattern.
-// Source: 320x200 8bpp paletted. Dest: 128x128 RGB565 framebuffer.
+// FIT / FILL / CROP scaling. Source: 320x200 8bpp paletted main + optional
+// 320x200 paletted text overlay (sentinel 0xFD = transparent). Dest: 128x128
+// RGB565 framebuffer.
+//
+// The main scene is averaged with the ThumbyNES md_core.c:601 packed-RGB565
+// 2x2 box blend trick — three 32-bit adds + shifts + masks blend four
+// pixels with no per-channel extract. The text overlay uses ink-priority
+// sampling instead so 1-pixel glyph features (the shadow) survive the
+// 320 -> 128 downsample (foreground > shadow > transparent).
 static inline uint16_t pal_to_565(const uint8_t *pal, uint8_t idx) {
     uint8_t r = pal[idx*3 + 0];
     uint8_t g = pal[idx*3 + 1];
@@ -242,48 +236,100 @@ static inline uint16_t pal_to_565(const uint8_t *pal, uint8_t idx) {
     return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
-void present(const uint8_t *virt, const uint8_t *palette,
+// 2x2 packed-RGB565 box blend (md_core.c:601). Returns avg of 4 src pixels.
+static inline uint16_t blend4_565(uint16_t a, uint16_t b,
+                                  uint16_t c, uint16_t d) {
+    constexpr uint32_t MASK = 0x07E0F81Fu;
+    uint32_t ea = ((uint32_t)a | ((uint32_t)a << 16)) & MASK;
+    uint32_t eb = ((uint32_t)b | ((uint32_t)b << 16)) & MASK;
+    uint32_t ec = ((uint32_t)c | ((uint32_t)c << 16)) & MASK;
+    uint32_t ed = ((uint32_t)d | ((uint32_t)d << 16)) & MASK;
+    uint32_t ab  = ((ea + eb) >> 1) & MASK;
+    uint32_t cd  = ((ec + ed) >> 1) & MASK;
+    uint32_t avg = ((ab + cd) >> 1) & MASK;
+    return (uint16_t)((avg | (avg >> 16)) & 0xFFFFu);
+}
+
+// Pick the most-visible text sample from up-to-4 candidates. Priority:
+// foreground (non-FD, non-zero) > shadow (zero) > transparent (FD).
+// 0xFD is scummvm's CHARSET_MASK_TRANSPARENCY sentinel (gfx.h:289).
+static inline uint8_t text_pick4(uint8_t a, uint8_t b,
+                                 uint8_t c, uint8_t d) {
+    uint8_t fg = 0xFD;
+    bool has_shadow = false;
+    auto consider = [&](uint8_t v) {
+        if (v == 0xFD) return;
+        if (v != 0) { if (fg == 0xFD) fg = v; }
+        else has_shadow = true;
+    };
+    consider(a); consider(b); consider(c); consider(d);
+    if (fg != 0xFD) return fg;
+    if (has_shadow) return 0;
+    return 0xFD;
+}
+
+void present(const uint8_t *virt, const uint8_t *text,
+             const uint8_t *palette,
              ScaleMode mode, int crop_x, int crop_y) {
     using namespace tsb::platform_sdl;
     uint16_t *fb = g.framebuffer;
 
-    if (mode == ScaleMode::Fit) {
-        // 320x200 -> 128x80 with 24px black bars top/bottom
-        // Scale 5:2 both axes: src_x = (dx * 5) >> 1; src_y = (dy * 5) >> 1
-        memset(fb, 0, sizeof(g.framebuffer));
-        for (int dy = 0; dy < 80; dy++) {
-            int sy = (dy * 5) >> 1;            // 0..199
-            const uint8_t *srow = virt + sy * VIRTUAL_SCREEN_W;
-            uint16_t *drow = fb + (dy + 24) * DISPLAY_W;
+    if (mode == ScaleMode::Fit || mode == ScaleMode::Fill) {
+        const int dst_h = (mode == ScaleMode::Fill) ? DISPLAY_H : 80;
+        const int letterbox_top = (DISPLAY_H - dst_h) / 2;
+        if (letterbox_top > 0) memset(fb, 0, sizeof(g.framebuffer));
+
+        // Pre-build per-dx source X pair (sx, sx2 = sx+1 clamped).
+        // Mirrors md_core_rebuild_sx_lut at md_core.c:514-519.
+        uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
+        for (int dx = 0; dx < DISPLAY_W; dx++) {
+            int sx  = (dx * VIRTUAL_SCREEN_W) / DISPLAY_W;
+            int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
+            sxa[dx] = (uint16_t)sx;
+            sxb[dx] = (uint16_t)sx2;
+        }
+
+        for (int dy = 0; dy < dst_h; dy++) {
+            int sy  = (dy * VIRTUAL_SCREEN_H) / dst_h;
+            int sy2 = sy + 1; if (sy2 >= VIRTUAL_SCREEN_H) sy2 = sy;
+            const uint8_t *vrow1 = virt + sy  * VIRTUAL_SCREEN_W;
+            const uint8_t *vrow2 = virt + sy2 * VIRTUAL_SCREEN_W;
+            const uint8_t *trow1 = text ? text + sy  * VIRTUAL_SCREEN_W : nullptr;
+            const uint8_t *trow2 = text ? text + sy2 * VIRTUAL_SCREEN_W : nullptr;
+            uint16_t *drow = fb + (dy + letterbox_top) * DISPLAY_W;
             for (int dx = 0; dx < DISPLAY_W; dx++) {
-                int sx = (dx * 5) >> 1;        // 0..319
-                drow[dx] = pal_to_565(palette, srow[sx]);
+                int sx = sxa[dx], sx2 = sxb[dx];
+                uint8_t tpick = 0xFD;
+                if (trow1) {
+                    tpick = text_pick4(trow1[sx], trow1[sx2],
+                                       trow2[sx], trow2[sx2]);
+                }
+                if (tpick != 0xFD) {
+                    drow[dx] = pal_to_565(palette, tpick);
+                } else {
+                    uint16_t pa = pal_to_565(palette, vrow1[sx]);
+                    uint16_t pb = pal_to_565(palette, vrow1[sx2]);
+                    uint16_t pc = pal_to_565(palette, vrow2[sx]);
+                    uint16_t pd = pal_to_565(palette, vrow2[sx2]);
+                    drow[dx] = blend4_565(pa, pb, pc, pd);
+                }
             }
         }
-    } else if (mode == ScaleMode::Fill) {
-        // 320x200 -> 128x128 anisotropic.
-        // src_x = (dx * 320) >> 7 = (dx * 5) >> 1 (same X)
-        // src_y = (dy * 200) >> 7 = (dy * 25) >> 4
-        for (int dy = 0; dy < DISPLAY_H; dy++) {
-            int sy = (dy * 25) >> 4;
-            const uint8_t *srow = virt + sy * VIRTUAL_SCREEN_W;
-            uint16_t *drow = fb + dy * DISPLAY_W;
-            for (int dx = 0; dx < DISPLAY_W; dx++) {
-                int sx = (dx * 5) >> 1;
-                drow[dx] = pal_to_565(palette, srow[sx]);
-            }
-        }
-    } else { // Crop
-        // 1:1 native window, pannable
+    } else { // Crop — 1:1 native window, pannable
         if (crop_x < 0) crop_x = 0;
         if (crop_y < 0) crop_y = 0;
         if (crop_x > VIRTUAL_SCREEN_W - DISPLAY_W) crop_x = VIRTUAL_SCREEN_W - DISPLAY_W;
         if (crop_y > VIRTUAL_SCREEN_H - DISPLAY_H) crop_y = VIRTUAL_SCREEN_H - DISPLAY_H;
         for (int dy = 0; dy < DISPLAY_H; dy++) {
             const uint8_t *srow = virt + (crop_y + dy) * VIRTUAL_SCREEN_W + crop_x;
+            const uint8_t *trow = text
+                ? text + (crop_y + dy) * VIRTUAL_SCREEN_W + crop_x
+                : nullptr;
             uint16_t *drow = fb + dy * DISPLAY_W;
             for (int dx = 0; dx < DISPLAY_W; dx++) {
-                drow[dx] = pal_to_565(palette, srow[dx]);
+                uint8_t t = trow ? trow[dx] : 0xFD;
+                drow[dx] = pal_to_565(palette,
+                                      (t != 0xFD) ? t : srow[dx]);
             }
         }
     }

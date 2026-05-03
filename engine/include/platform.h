@@ -53,10 +53,21 @@ enum class ScaleMode : uint8_t {
     Crop = 2    // 128x128 native window, pannable via crop_x/y
 };
 
-// Submit a frame. virt is 320*200 bytes of palette indices.
-// palette is 256*3 bytes of RGB888 (0..255 range, NOT scumm 6-bit).
-// crop_x/y are used in CROP mode (0..(320-128) and 0..(200-128) ranges).
-void present(const uint8_t *virt, const uint8_t *palette,
+// Submit a frame.
+//   virt is 320*200 bytes of palette indices for the main scene.
+//   text is 320*200 bytes of palette indices for the kTextVirtScreen
+//        overlay; bytes equal to 0xFD (CHARSET_MASK_TRANSPARENCY,
+//        scummvm gfx.h:289) mean "no text — fall through to virt".
+//        Pass nullptr if no overlay.
+//   palette is 256*3 bytes of RGB888 (0..255 range, NOT scumm 6-bit).
+//   crop_x/y are used in CROP mode (0..(320-128) and 0..(200-128)).
+//
+// The text overlay is composited with ink-priority during scaling so
+// thin glyph features (1-pixel shadows) survive the 320→128 downsample
+// instead of vanishing through nearest-neighbour sampling. The main
+// scene uses the ThumbyNES 2x2 packed-RGB565 box blend (md_core.c:601).
+void present(const uint8_t *virt, const uint8_t *text,
+             const uint8_t *palette,
              ScaleMode mode, int crop_x, int crop_y);
 
 // ---------------------------------------------------------------------------

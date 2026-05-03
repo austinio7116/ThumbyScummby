@@ -664,7 +664,7 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
         sorted[nvis++] = &a;
     }
     if (nvis == 0) return;
-    (void)x_off;  // legitimately used below
+    (void)x_off;
 
     qsort(sorted, nvis, sizeof(sorted[0]), cmp_actor_y);
 

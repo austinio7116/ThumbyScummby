@@ -21,15 +21,15 @@
 namespace tsb {
 // Trace mode: when set via TSB_TRACE env var, emit a per-opcode line in
 // ScummVM's `Script N, offset 0xPC: [HEX] o5_xxx()` format to a log file.
+// Host-only — the device firmware has no FILE / stdio.
+#ifndef THUMBY_DEVICE
 static FILE *g_trace_fp = nullptr;
 static bool  g_trace_initialized = false;
 static void trace_init() {
     if (g_trace_initialized) return;
     g_trace_initialized = true;
-#ifndef THUMBY_DEVICE
     const char *path = getenv("TSB_TRACE");
     if (path && *path) g_trace_fp = fopen(path, "w");
-#endif
 }
 static inline void trace_opcode(uint16_t script, uint32_t pc, uint8_t op,
                                 uint32_t pc_offset) {
@@ -49,6 +49,12 @@ void trace_diag(const char *fmt, ...) {
     vfprintf(g_trace_fp, fmt, ap);
     va_end(ap);
 }
+#else
+// Device build: trace is compiled out entirely.
+static inline void trace_init() {}
+static inline void trace_opcode(uint16_t, uint32_t, uint8_t, uint32_t) {}
+void trace_diag(const char *, ...) {}
+#endif
 }  // namespace tsb
 
 

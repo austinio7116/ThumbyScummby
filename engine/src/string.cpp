@@ -33,6 +33,7 @@
 #include "engine.h"
 
 #include <string.h>
+#include <stdio.h>
 
 namespace tsb {
 
@@ -119,7 +120,12 @@ void string_set_keep_text(bool b) { g_keep_text = b; }
 void string_set_charset_colormap(const uint8_t *table, int n) {
     if (!table) return;
     if (n > 16) n = 16;
-    for (int i = 0; i < n; i++) g_charset_color_map[i] = table[i];
+    platform::log("set_charset_colormap n=%d:", n);
+    for (int i = 0; i < n; i++) {
+        g_charset_color_map[i] = table[i];
+        platform::log(" %d", table[i]);
+    }
+    platform::log("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +429,17 @@ void string_actor_talk(int actor_to_print_for, const uint8_t *msg) {
     g_have_msg = 0xFF;
     g_vm.globals[VAR_HAVE_MSG] = 0xFF;
     g_talk_delay = 0;
+
+    // Mirror ScummVM actor.cpp:3538 — actorTalk runs displayDialog()
+    // before returning. This processes the buffer to either completion
+    // (c==0 → clears _keepText) or until \xFF\x02/\x03/talkDelay
+    // suspends it. Without this, scripts that call print twice in a
+    // single frame (no o5_delay between) leave the FIRST buffer
+    // unprocessed when the SECOND actorTalk fires, so _keepText doesn't
+    // get reset and stopTalk is skipped — producing the credit-roll
+    // overlap (Caribbean intro: " " spacer at y=8 should reset keep
+    // before "The Island of Mêléen" reuses y=160).
+    string_tick();
 }
 
 void string_stop_talk() {
@@ -535,12 +552,21 @@ void string_tick() {
         charset_draw_char(cs, (char)c, g_next_left, g_next_top,
                           color_table, vscr, pitch);
         g_next_left += charset_glyph_advance(cs, (char)c);
+        // ScummVM accumulates talk delay per char (string.cpp:1312
+        // `_talkDelay += VAR(VAR_CHARINC)`) WITHOUT breaking the inner
+        // loop. The outer per-frame gate (string.cpp:1116
+        // `if (_talkDelay) return;`) stops re-entry next frame until
+        // delay decrements to 0. We previously returned early on
+        // talk_delay > 0, which left the buffer mid-message and never
+        // hit the end-of-buffer fallthrough that resets _keepText to
+        // false — so a same-frame next actorTalk inherited stale
+        // _keepText and skipped stopTalk's text-vscreen clear.
         g_talk_delay += (int)g_vm.globals[VAR_CHARINC];
-        if (g_talk_delay > 0) return;
     }
 
-    // Walked off the buffer without a NUL (shouldn't happen — convert
-    // null-terminates), but be safe.
+    // Walked off the buffer (no \0 in source — typical for v4 floppy
+    // intro credits where the message bytes don't include a trailing
+    // null). Mirrors scummvm string.cpp:1227 c==0 branch behaviour.
     g_have_msg = 1;
     g_keep_text = false;
 }
@@ -586,9 +612,15 @@ void string_decode_parse(VM *vm, int actor_to_print_for) {
             int w = vm_get_var_or_word(vm, 0x80);
             int h = vm_get_var_or_word(vm, 0x40);
             (void)w; (void)h;
-            // We don't model a separate text VirtScreen yet — there's
-            // nothing to erase. Mirrors the "case 3" in
-            // script_v5.cpp:3511-3516 short of restoreCharsetBg.
+            // Mirrors script_v5.cpp:3511-3516 -> restoreCharsetBg, which
+            // wipes the talk-text overlay so the next print doesn't
+            // stack on top of the previous. MI1's intro credit roll
+            // (`Deep in the Caribbean...` -> `The Island of Melee` at
+            // the same xpos/ypos) relies on this between successive
+            // lines. We don't have per-rectangle backing-store dirty
+            // tracking, so we fall back to the same engine call
+            // string_stop_talk uses — wipe the whole text overlay.
+            engine_clear_text_vscreen();
             break;
         }
         case 4:    // SO_CENTER

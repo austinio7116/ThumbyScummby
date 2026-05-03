@@ -148,7 +148,39 @@ Span data_helper(int id) {
     return Span{tsb_data_blob + g_entries[idx].offset, g_entries[idx].size};
 }
 
-void present(const uint8_t *virt, const uint8_t *palette,
+// 2x2 packed-RGB565 box blend (md_core.c:601 — same trick as ThumbyNES).
+// Returns avg of 4 src pixels with one 32-bit add+shift+AND per channel.
+static inline uint16_t blend4_565(uint16_t a, uint16_t b,
+                                  uint16_t c, uint16_t d) {
+    constexpr uint32_t MASK = 0x07E0F81Fu;
+    uint32_t ea = ((uint32_t)a | ((uint32_t)a << 16)) & MASK;
+    uint32_t eb = ((uint32_t)b | ((uint32_t)b << 16)) & MASK;
+    uint32_t ec = ((uint32_t)c | ((uint32_t)c << 16)) & MASK;
+    uint32_t ed = ((uint32_t)d | ((uint32_t)d << 16)) & MASK;
+    uint32_t ab  = ((ea + eb) >> 1) & MASK;
+    uint32_t cd  = ((ec + ed) >> 1) & MASK;
+    uint32_t avg = ((ab + cd) >> 1) & MASK;
+    return (uint16_t)((avg | (avg >> 16)) & 0xFFFFu);
+}
+
+// Pick most-visible text sample from up-to-4 candidates.
+// Priority: foreground (non-FD non-zero) > shadow (zero) > transparent (FD).
+// 0xFD is scummvm's CHARSET_MASK_TRANSPARENCY (gfx.h:289).
+static inline uint8_t text_pick4(uint8_t a, uint8_t b,
+                                 uint8_t c, uint8_t d) {
+    uint8_t fg = 0xFD;
+    bool has_shadow = false;
+    if (a != 0xFD) { if (a) { if (fg == 0xFD) fg = a; } else has_shadow = true; }
+    if (b != 0xFD) { if (b) { if (fg == 0xFD) fg = b; } else has_shadow = true; }
+    if (c != 0xFD) { if (c) { if (fg == 0xFD) fg = c; } else has_shadow = true; }
+    if (d != 0xFD) { if (d) { if (fg == 0xFD) fg = d; } else has_shadow = true; }
+    if (fg != 0xFD) return fg;
+    if (has_shadow) return 0;
+    return 0xFD;
+}
+
+void present(const uint8_t *virt, const uint8_t *text,
+             const uint8_t *palette,
              ScaleMode mode, int crop_x, int crop_y) {
     using namespace tsb::platform_pico;
     uint16_t *fb = g_fb;
@@ -156,39 +188,61 @@ void present(const uint8_t *virt, const uint8_t *palette,
     // The previous DMA push must finish before we touch g_fb.
     lcd_wait_idle();
 
-    if (mode == ScaleMode::Fit) {
-        // 320x200 -> 128x80 letterboxed (24 px black bars top + bottom)
-        memset(fb, 0, sizeof(g_fb));
-        for (int dy = 0; dy < 80; dy++) {
-            int sy = (dy * 5) >> 1;            // 0..199
-            const uint8_t *srow = virt + sy * VIRTUAL_SCREEN_W;
-            uint16_t *drow = fb + (dy + 24) * DISPLAY_W;
+    if (mode == ScaleMode::Fit || mode == ScaleMode::Fill) {
+        const int dst_h = (mode == ScaleMode::Fill) ? DISPLAY_H : 80;
+        const int letterbox_top = (DISPLAY_H - dst_h) / 2;
+        if (letterbox_top > 0) memset(fb, 0, sizeof(g_fb));
+
+        // Per-dx source X pair (sx, sx2 = sx+1 clamped). Mirrors
+        // md_core_rebuild_sx_lut at md_core.c:514-519.
+        uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
+        for (int dx = 0; dx < DISPLAY_W; dx++) {
+            int sx  = (dx * VIRTUAL_SCREEN_W) / DISPLAY_W;
+            int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
+            sxa[dx] = (uint16_t)sx;
+            sxb[dx] = (uint16_t)sx2;
+        }
+
+        for (int dy = 0; dy < dst_h; dy++) {
+            int sy  = (dy * VIRTUAL_SCREEN_H) / dst_h;
+            int sy2 = sy + 1; if (sy2 >= VIRTUAL_SCREEN_H) sy2 = sy;
+            const uint8_t *vrow1 = virt + sy  * VIRTUAL_SCREEN_W;
+            const uint8_t *vrow2 = virt + sy2 * VIRTUAL_SCREEN_W;
+            const uint8_t *trow1 = text ? text + sy  * VIRTUAL_SCREEN_W : nullptr;
+            const uint8_t *trow2 = text ? text + sy2 * VIRTUAL_SCREEN_W : nullptr;
+            uint16_t *drow = fb + (dy + letterbox_top) * DISPLAY_W;
             for (int dx = 0; dx < DISPLAY_W; dx++) {
-                int sx = (dx * 5) >> 1;        // 0..319
-                drow[dx] = pal_to_565(palette, srow[sx]);
+                int sx = sxa[dx], sx2 = sxb[dx];
+                uint8_t tpick = 0xFD;
+                if (trow1) {
+                    tpick = text_pick4(trow1[sx], trow1[sx2],
+                                       trow2[sx], trow2[sx2]);
+                }
+                if (tpick != 0xFD) {
+                    drow[dx] = pal_to_565(palette, tpick);
+                } else {
+                    uint16_t pa = pal_to_565(palette, vrow1[sx]);
+                    uint16_t pb = pal_to_565(palette, vrow1[sx2]);
+                    uint16_t pc = pal_to_565(palette, vrow2[sx]);
+                    uint16_t pd = pal_to_565(palette, vrow2[sx2]);
+                    drow[dx] = blend4_565(pa, pb, pc, pd);
+                }
             }
         }
-    } else if (mode == ScaleMode::Fill) {
-        // 320x200 -> 128x128 anisotropic
-        for (int dy = 0; dy < DISPLAY_H; dy++) {
-            int sy = (dy * 25) >> 4;
-            const uint8_t *srow = virt + sy * VIRTUAL_SCREEN_W;
-            uint16_t *drow = fb + dy * DISPLAY_W;
-            for (int dx = 0; dx < DISPLAY_W; dx++) {
-                int sx = (dx * 5) >> 1;
-                drow[dx] = pal_to_565(palette, srow[sx]);
-            }
-        }
-    } else { // Crop
+    } else { // Crop — 1:1 native, pannable
         if (crop_x < 0) crop_x = 0;
         if (crop_y < 0) crop_y = 0;
         if (crop_x > VIRTUAL_SCREEN_W - DISPLAY_W) crop_x = VIRTUAL_SCREEN_W - DISPLAY_W;
         if (crop_y > VIRTUAL_SCREEN_H - DISPLAY_H) crop_y = VIRTUAL_SCREEN_H - DISPLAY_H;
         for (int dy = 0; dy < DISPLAY_H; dy++) {
             const uint8_t *srow = virt + (crop_y + dy) * VIRTUAL_SCREEN_W + crop_x;
+            const uint8_t *trow = text
+                ? text + (crop_y + dy) * VIRTUAL_SCREEN_W + crop_x
+                : nullptr;
             uint16_t *drow = fb + dy * DISPLAY_W;
             for (int dx = 0; dx < DISPLAY_W; dx++) {
-                drow[dx] = pal_to_565(palette, srow[dx]);
+                uint8_t t = trow ? trow[dx] : 0xFD;
+                drow[dx] = pal_to_565(palette, (t != 0xFD) ? t : srow[dx]);
             }
         }
     }

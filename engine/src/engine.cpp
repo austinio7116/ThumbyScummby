@@ -22,6 +22,8 @@
 #include "text.h"
 #include "charset.h"
 
+#include <cmath>       // std::modf for frame-pacing fractional carry
+
 #ifndef THUMBY_DEVICE
 #include <stdio.h>
 #include <stdlib.h>    // getenv, atoi
@@ -562,14 +564,17 @@ WalkboxGraph *engine_active_walkbox_graph() {
 
 // Exposed to string.cpp — the text VirtScreen. Mirrors ScummVM
 // kTextVirtScreen: a transparent overlay drawn on top of the main
-// composite each frame. Pixel value 0 == "no text here, fall through".
-// Lets us erase old text just by clearing this buffer (audit H88).
+// composite each frame. The sentinel for "no text here, fall through"
+// is CHARSET_MASK_TRANSPARENCY (0xFD) — see scummvm gfx.h:289 and the
+// composite blit in scummvm gfx.cpp:710 which skips bytes equal to that
+// value. Using 0xFD (not 0) lets shadow glyph pixels written as palette
+// index 0 (black) survive the composite, matching original behaviour.
 uint8_t *engine_main_vscreen()       { return g.vscreen_text; }
 int      engine_main_vscreen_pitch() { return VIRTUAL_SCREEN_W; }
 
 // Clear the text overlay — called by stopTalk and at engine init.
 void engine_clear_text_vscreen() {
-    memset(g.vscreen_text, 0, sizeof(g.vscreen_text));
+    memset(g.vscreen_text, 0xFD, sizeof(g.vscreen_text));
 }
 
 Span     engine_room_excd_payload() { return g.room.excd_payload; }
@@ -807,6 +812,9 @@ bool engine_init() {
 
     // Clear screen (palette index 0)
     memset(g.vscreen_main, 0, sizeof(g.vscreen_main));
+    // Text overlay starts fully transparent — sentinel matches scummvm
+    // gfx.h CHARSET_MASK_TRANSPARENCY (0xFD).
+    memset(g.vscreen_text, 0xFD, sizeof(g.vscreen_text));
 
     // Default palette: grayscale ramp so the empty buffer is visible.
     for (int i = 0; i < 256; i++) {
@@ -882,6 +890,7 @@ bool engine_init() {
     // its own loadRoom and we leave the framebuffer black until then —
     // mirrors ScummVM's startup (no pre-render before _bootScript runs).
     bool freeze_at_initial = false;
+#ifndef THUMBY_DEVICE
     if (const char *env = getenv("TSB_ROOM")) {
         int r = atoi(env);
         if (r >= 0 && r < g.master.num_rooms && g.master.rooms[r].disk != 0) {
@@ -898,6 +907,7 @@ bool engine_init() {
                               g.room.width, g.room.height);
         }
     }
+#endif
     g.skip_boot_script = freeze_at_initial;
 
     // Initialize audio: OPL2 emulator + AdLib MIDI driver + iMUSE sequencer
@@ -1030,6 +1040,72 @@ bool engine_init() {
 
 bool engine_tick() {
     if (!g.initialized || g.quitting) return false;
+
+    // -----------------------------------------------------------------------
+    // Frame pacing — port of ScummEngine::waitForTimer (scumm.cpp:2802-2857)
+    // and the surrounding go() loop (scumm.cpp:2702-2772).
+    //
+    // For SCUMM v4 (MI1 floppy DOS):
+    //   _timerFrequency = PIT_BASE_FREQUENCY / PIT_V2_4_DIVISOR
+    //                   = 1193182.0 / 5041.0 ≈ 236.6904 Hz
+    //                   (scumm.cpp:2882, scumm.h:314-316)
+    //   delta           = VAR(VAR_TIMER_NEXT), default 4 if 0/unset
+    //                   (scumm.cpp:2704, 2717-2718)
+    //   quarterFrames   = delta * 4
+    //   msecDelay       = quarterFrames * (1000 / _timerFrequency)
+    //                   (scumm.cpp:2804). With delta=4 ⇒ ~67.6 ms/frame
+    //                   (~14.79 Hz), giving the music timer enough wall
+    //                   time to advance between script polls.
+    //
+    // Anchored timing: _lastWaitTime becomes the *ideal* end time, not
+    // the actual current time, so a frame that runs long is absorbed
+    // into the next frame (scumm.cpp:2848-2856).
+    //
+    // The fractional-millisecond carry mirrors getIntegralTime
+    // (scumm.cpp:2859-2868) so 67.609ms-per-frame doesn't accumulate as
+    // a round-down bias of -0.6ms/frame.
+    {
+        constexpr double kTimerFrequency = 1193182.0 / 5041.0;  // v4 PIT
+        int delta = (int)g_vm.globals[VAR_TIMER_NEXT];
+        if (delta < 1) delta = 4;          // scumm.cpp:2704, 2717
+        int quarterFrames = delta * 4;     // scumm.cpp:2772
+        double fMsecs = (double)quarterFrames * (1000.0 / kTimerFrequency);
+
+        static double s_msec_fract = 0.0;
+        static uint32_t s_last_wait_time = 0;
+        static bool s_pace_init = false;
+
+        // getIntegralTime: accumulate fractional ms, round to whole ms.
+        // (scumm.cpp:2859-2868)
+        double whole;
+        double frac = std::modf(fMsecs, &whole);
+        s_msec_fract += frac;
+        if (s_msec_fract >= 1.0) { s_msec_fract -= 1.0; whole += 1.0; }
+        uint32_t msecDelay = (uint32_t)whole;
+
+        uint32_t cur = platform::millis();
+        if (!s_pace_init) {
+            s_last_wait_time = cur;
+            s_pace_init = true;
+        }
+        uint32_t diff = cur - s_last_wait_time;          // scumm.cpp:2812
+        msecDelay = (msecDelay > diff) ? msecDelay - diff : 0;
+        uint32_t endTime = cur + msecDelay;              // scumm.cpp:2814
+
+        // 10ms-quantised poll; SDL audio thread is independent, host
+        // events are pumped at the top of each engine_tick.
+        // (scumm.cpp:2819-2846)
+        while (true) {
+            cur = platform::millis();
+            if (cur >= endTime) break;
+            uint32_t remain = endTime - cur;
+            platform::sleep_ms(remain < 10u ? remain : 10u);
+        }
+
+        // Anchor at IDEAL end time, not actual cur, unless we overshot
+        // by more than 50ms (suggesting a stall). (scumm.cpp:2856)
+        s_last_wait_time = (cur > endTime + 50) ? cur : endTime;
+    }
 
     platform::Input in{};
     if (!platform::poll_input(&in)) return false;
@@ -1167,35 +1243,40 @@ bool engine_tick() {
     // _talkDelay and renders the next character into vscreen_text.
     string_tick();
 
-    // Overlay the text VirtScreen onto the main composite. Mirrors
-    // ScummVM's kTextVirtScreen blit step (gfx.cpp). Pixel value 0 in
-    // vscreen_text = transparent (skip). Otherwise overwrite. This
-    // means previously-rendered text persists until clearTextVscreen
-    // is called (e.g. via stopTalk).
-    if (g.room_loaded) {
-        for (int p = 0; p < VIRTUAL_SCREEN_W * VIRTUAL_SCREEN_H; p++) {
-            uint8_t t = g.vscreen_text[p];
-            if (t != 0) g.vscreen_main[p] = t;
-        }
-    }
-
+    // The kTextVirtScreen overlay is composited inside platform::present
+    // during scaling so 1-pixel glyph features survive the 320 -> 128
+    // downsample with ink-priority sampling. We pass it as a parallel
+    // buffer; vscreen_main remains text-free here.
     g.frame++;
-    platform::present(g.vscreen_main, g.palette, g.scale_mode, g.crop_x, g.crop_y);
+    platform::present(g.vscreen_main, g.vscreen_text, g.palette,
+                      g.scale_mode, g.crop_x, g.crop_y);
 
 #ifndef THUMBY_DEVICE
     // Periodically dump the live virtual screen to PPM for offline inspection
     // (every 30 frames ≈ 1 second). Useful for verifying what's actually
     // visible while the boot script runs. Host-only: no fopen on device.
     if ((g.frame % 30) == 0) {
-        FILE *f = fopen("/tmp/tsb_vscreen.ppm", "wb");
-        if (f) {
-            fprintf(f, "P6\n%d %d\n255\n", VIRTUAL_SCREEN_W, VIRTUAL_SCREEN_H);
+        char path[64];
+        snprintf(path, sizeof(path), "/tmp/tsb_seq_%04u.ppm",
+                 (unsigned)(g.frame / 30));
+        FILE *f = fopen(path, "wb");
+        if (!f) f = fopen("/tmp/tsb_vscreen.ppm", "wb");
+        // Inline composite for the dump only — text overlay on top of
+        // main scene, ignoring 0xFD sentinel. The live scaled output
+        // uses the present() path (ink-priority + 2x2 blend) instead.
+        auto dump_composited = [&](FILE *fp){
+            fprintf(fp, "P6\n%d %d\n255\n",
+                    VIRTUAL_SCREEN_W, VIRTUAL_SCREEN_H);
             for (int p = 0; p < VIRTUAL_SCREEN_W * VIRTUAL_SCREEN_H; p++) {
-                uint8_t idx = g.vscreen_main[p];
-                fwrite(g.palette + idx*3, 3, 1, f);
+                uint8_t t = g.vscreen_text[p];
+                uint8_t idx = (t != 0xFD) ? t : g.vscreen_main[p];
+                fwrite(g.palette + idx*3, 3, 1, fp);
             }
-            fclose(f);
-        }
+        };
+        if (f) { dump_composited(f); fclose(f); }
+        // Also keep a "latest" copy for the existing tooling.
+        f = fopen("/tmp/tsb_vscreen.ppm", "wb");
+        if (f) { dump_composited(f); fclose(f); }
         // Also dump the full room-wide buffer for diagnosing strip layout.
         FILE *fr = fopen("/tmp/tsb_room.ppm", "wb");
         if (fr) {

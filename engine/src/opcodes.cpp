@@ -1447,6 +1447,10 @@ static void op_putActor(VM *vm) {
     int act = vm_get_var_or_byte(vm, 0x80);
     int x   = vm_get_var_or_word(vm, 0x40);
     int y   = vm_get_var_or_word(vm, 0x20);
+    if (act >= 7 && act <= 9) {
+        platform::log("putActor: a%d (cost=%u) -> (%d,%d)\n",
+                      act, actor_get(act) ? actor_get(act)->costume : 0, x, y);
+    }
     actor_put_at(act, x, y);
 }
 
@@ -1454,6 +1458,10 @@ static void op_walkActorTo(VM *vm) {
     int act = vm_get_var_or_byte(vm, 0x80);
     int x   = vm_get_var_or_word(vm, 0x40);
     int y   = vm_get_var_or_word(vm, 0x20);
+    if (act >= 7 && act <= 9) {
+        platform::log("walkActorTo: a%d (cost=%u) -> (%d,%d)\n",
+                      act, actor_get(act) ? actor_get(act)->costume : 0, x, y);
+    }
     actor_walk_to(act, x, y);
 }
 
@@ -1687,6 +1695,10 @@ static void op_startSound(VM *vm) {
         platform::log("startSound(%d): resource missing\n", snd);
         return;
     }
+    // Mirror script_v5.cpp:2828 — reset VAR_MUSIC_TIMER on startSound so
+    // the script's music-gated waits measure ticks since *this* sound
+    // began.
+    g_vm.globals[VAR_MUSIC_TIMER] = 0;
     if (!imuse_start_sound(snd, s)) {
         platform::log("startSound(%d): imuse refused (size=%zu)\n", snd, s.size);
     }
