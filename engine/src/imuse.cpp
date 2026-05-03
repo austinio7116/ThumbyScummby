@@ -3,7 +3,7 @@
 // Derived from / inspired by ScummVM (https://www.scummvm.org/).
 // See LICENSE for full GPL-3.0-or-later terms.
 //
-// ThumbyScummby - minimal iMUSE sequencer.
+// ThumbyScummby — iMUSE sequencer (single-song slot).
 //
 // Three stream formats supported, autodetected:
 //

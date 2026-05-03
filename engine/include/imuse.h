@@ -3,12 +3,20 @@
 // Derived from / inspired by ScummVM (https://www.scummvm.org/).
 // See LICENSE for full GPL-3.0-or-later terms.
 //
-// ThumbyScummby - minimal iMUSE sequencer.
+// ThumbyScummby — iMUSE sequencer (single-song slot).
 //
-// Plays SCUMM v5 'RO'/'SO' (Roland MIDI / euphony) and 'AD' AdLib stream
-// resources. Single active song slot. Skips transitions, hooks, triggers,
-// loop conditionals, parameter faders. Just decode VLQ deltas + MIDI
-// events and dispatch to the AdLib driver.
+// Plays SCUMM v4/v5 'RO'/'SO' (Roland MIDI / euphony) and 'AD' (AdLib)
+// stream resources. Decodes VLQ deltas and dispatches MIDI events to the
+// AdLib driver, with tempo (meta 0x51) and end-of-track (meta 0x2F)
+// handling and AD-stream auto-loop. Music timer is exposed as
+// `imuse_get_music_timer()` per upstream Player::getMusicTimer
+// (scummvm-upstream/engines/scumm/imuse/imuse_player.cpp:133).
+//
+// Out of scope for MI1 boot: hook callbacks, scene transitions, loop
+// conditionals, parameter faders, and the IMuseInternal::doCommand
+// host-control interface — those are only used by later v5+ titles
+// and would land as separate features rather than being approximated
+// here.
 
 #pragma once
 

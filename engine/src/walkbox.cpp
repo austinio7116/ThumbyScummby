@@ -76,14 +76,21 @@ static bool point_in_box(const WalkBox *b, int x, int y) {
     return false;
 }
 
-// Test whether two boxes share an edge. Mirrors ScummVM's areBoxesNeighbors
-// in spirit but simplified: brute-force check all 4×4 = 16 edge pairs for
-// collinear overlap.
+// Test whether two boxes share an edge. Equivalent to ScummVM
+// `areBoxesNeighbors` (scummvm-upstream/engines/scumm/boxes.cpp:1094):
+// upstream rotates each box 4 ways (16 comparisons) and matches the
+// rotated upper sides. We instead iterate the same 4×4 = 16 directed
+// edge pairs and apply a general collinear-segment overlap test, so
+// oblique edges (e.g. ramp / diagonal walkboxes) are handled the same
+// as axis-aligned ones rather than being ignored.
 static bool boxes_share_edge(const WalkBox *a, const WalkBox *b) {
     if ((a->flags & BOX_FLAG_INVISIBLE) || (b->flags & BOX_FLAG_INVISIBLE))
         return false;
 
-    struct Pt { int x, y; };
+    struct Pt { int32_t x, y; };
+    auto cross_z = [](Pt u, Pt v) -> int64_t {
+        return (int64_t)u.x * v.y - (int64_t)u.y * v.x;
+    };
     Pt av[4] = {
         {a->ulx, a->uly}, {a->urx, a->ury},
         {a->lrx, a->lry}, {a->llx, a->lly},
@@ -96,28 +103,35 @@ static bool boxes_share_edge(const WalkBox *a, const WalkBox *b) {
     for (int i = 0; i < 4; i++) {
         Pt p1 = av[i];
         Pt p2 = av[(i + 1) & 3];
+        Pt d  = { p2.x - p1.x, p2.y - p1.y };
+        if (d.x == 0 && d.y == 0) continue;             // degenerate edge
         for (int j = 0; j < 4; j++) {
             Pt q1 = bv[j];
             Pt q2 = bv[(j + 1) & 3];
 
-            // Both edges vertical (same x) — check y-overlap
-            if (p1.x == p2.x && q1.x == q2.x && p1.x == q1.x) {
-                int p_lo = p1.y < p2.y ? p1.y : p2.y;
-                int p_hi = p1.y < p2.y ? p2.y : p1.y;
-                int q_lo = q1.y < q2.y ? q1.y : q2.y;
-                int q_hi = q1.y < q2.y ? q2.y : q1.y;
-                if (p_lo <= q_hi && q_lo <= p_hi) return true;
-            }
-            // Both edges horizontal (same y) — check x-overlap
-            else if (p1.y == p2.y && q1.y == q2.y && p1.y == q1.y) {
-                int p_lo = p1.x < p2.x ? p1.x : p2.x;
-                int p_hi = p1.x < p2.x ? p2.x : p1.x;
-                int q_lo = q1.x < q2.x ? q1.x : q2.x;
-                int q_hi = q1.x < q2.x ? q2.x : q1.x;
-                if (p_lo <= q_hi && q_lo <= p_hi) return true;
-            }
-            // (For oblique edges we'd need full segment-overlap maths; rare
-            // in MI1 walkboxes — typically axis-aligned.)
+            // Two segments share a sub-edge iff (1) all 4 points are
+            // collinear with edge p1->p2 (cross product of d with the
+            // vector to each q is 0) and (2) their projections onto d
+            // overlap. The projection just dot-products with d; sign
+            // and ordering are preserved by integer arithmetic.
+            Pt qd1 = { q1.x - p1.x, q1.y - p1.y };
+            Pt qd2 = { q2.x - p1.x, q2.y - p1.y };
+            if (cross_z(d, qd1) != 0 || cross_z(d, qd2) != 0) continue;
+
+            int64_t len2 = (int64_t)d.x * d.x + (int64_t)d.y * d.y;  // > 0
+            int64_t t_p1 = 0;
+            int64_t t_p2 = len2;
+            int64_t t_q1 = (int64_t)d.x * qd1.x + (int64_t)d.y * qd1.y;
+            int64_t t_q2 = (int64_t)d.x * qd2.x + (int64_t)d.y * qd2.y;
+            int64_t p_lo = t_p1 < t_p2 ? t_p1 : t_p2;
+            int64_t p_hi = t_p1 < t_p2 ? t_p2 : t_p1;
+            int64_t q_lo = t_q1 < t_q2 ? t_q1 : t_q2;
+            int64_t q_hi = t_q1 < t_q2 ? t_q2 : t_q1;
+            // Overlap means the closed intervals intersect; a single
+            // shared corner point still counts as a shared edge to
+            // upstream (ScummVM treats touching boxes as neighbours
+            // for path-finding adjacency).
+            if (p_lo <= q_hi && q_lo <= p_hi) return true;
         }
     }
     return false;
