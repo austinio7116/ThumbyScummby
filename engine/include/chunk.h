@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
+// Derived from / inspired by ScummVM (https://www.scummvm.org/).
+// See LICENSE for full GPL-3.0-or-later terms.
+//
 // ThumbyScummby — SCUMM v5 chunk reader.
 //
 // Chunks: 4-byte big-endian tag + 4-byte big-endian inclusive size + payload.

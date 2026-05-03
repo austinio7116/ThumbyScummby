@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
+// Derived from / inspired by ScummVM (https://www.scummvm.org/).
+// See LICENSE for full GPL-3.0-or-later terms.
+//
 // ThumbyScummby — room loader. Locates a room within DISK0n.LEC, parses
 // its sub-chunks (RMHD, palette, RMIM/SMAP, OBIM/OBCD, scripts, BOXD), and
 // renders the background into a target 320x200 8bpp buffer.

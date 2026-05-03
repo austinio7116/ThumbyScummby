@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
+// Derived from / inspired by ScummVM (https://www.scummvm.org/).
+// See LICENSE for full GPL-3.0-or-later terms.
+//
 // ThumbyScummby - minimal OPL2 (Yamaha YM3812) software emulator.
 //
 // Not a perfect dbopl port - we hand-write a lean OPL2 in pure portable C++

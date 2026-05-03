@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
+// Derived from / inspired by ScummVM (https://www.scummvm.org/).
+// See LICENSE for full GPL-3.0-or-later terms.
+//
 // ThumbyScummby — SMAP strip-image decoder for SCUMM v4 small_header.
 //
 // In v4 floppy small-header rooms, the room image is stored in a 'BM'

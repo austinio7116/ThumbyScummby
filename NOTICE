@@ -1,0 +1,40 @@
+ThumbyScummby
+=============
+
+A SCUMM v4/v5 interpreter port targeting the Thumby Color handheld
+(RP2350, 128x128 RGB565 LCD, 520 KB SRAM).
+
+Licensed under GPL-3.0-or-later. See LICENSE for full terms.
+
+Derived From
+------------
+
+The interpreter logic in this project is a port of ScummVM
+(https://www.scummvm.org/), the Graphic Adventure Engine, also
+licensed GPL-3.0-or-later. ScummVM's `engines/scumm/` source tree is
+included under `scummvm-upstream/` as the reference specification
+this port mirrors. Where individual files in `engine/src/` and
+`engine/include/` reproduce algorithms, constants, opcode dispatch
+tables, resource layouts, or other behavioural details from
+ScummVM, inline comments cite the upstream `file:line` they were
+ported from.
+
+Credit for the interpreter design, the SCUMM bytecode disassembly
+and behavioural reverse-engineering, and the resource format work
+goes to the ScummVM developers and contributors. See
+`scummvm-upstream/COPYRIGHT` for their full author list.
+
+The original SCUMM engine and the games it interprets are the
+intellectual property of LucasArts / Lucasfilm Games / their
+successors. This port is a software interpreter only and ships no
+game data — users must supply their own legitimately-acquired data
+files.
+
+Files Outside This Port
+-----------------------
+
+- `scummvm-upstream/` — unmodified upstream snapshot, kept under its
+  own license terms (see `scummvm-upstream/COPYING` and
+  `scummvm-upstream/COPYRIGHT`).
+- `data/` — game data files supplied by the user; not part of this
+  source distribution.

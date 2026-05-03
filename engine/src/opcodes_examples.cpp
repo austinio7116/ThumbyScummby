@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
+// Derived from / inspired by ScummVM (https://www.scummvm.org/).
+// See LICENSE for full GPL-3.0-or-later terms.
+//
 // THIS FILE IS A REFERENCE for opcode style. It is included in the build
 // (the example handlers are wired into vm_opcode_table by opcodes_table_init
 // at startup) but the bulk opcode implementations live in opcodes.cpp.

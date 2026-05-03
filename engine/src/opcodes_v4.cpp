@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
+// Derived from / inspired by ScummVM (https://www.scummvm.org/).
+// See LICENSE for full GPL-3.0-or-later terms.
+//
 // SCUMM v4-specific opcode overrides for MI1 VGA Floppy.
 //
 // The v5 opcode table has holes (0x5C, 0x50, 0x0F, 0x2F, 0xA7) that v4
