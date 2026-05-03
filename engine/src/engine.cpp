@@ -1072,6 +1072,22 @@ bool engine_tick() {
         engine_change_room(g_vm.pending_room_id);
     }
 
+    // VAR_MAIN_SCRIPT — runs every frame. Mirrors scumm.cpp:3178-3180:
+    //   if (VAR(VAR_MAIN_SCRIPT) != 0) runScript(VAR(VAR_MAIN_SCRIPT)).
+    // MI1's boot doesn't populate this; later titles do (H116).
+    {
+        // VAR_MAIN_SCRIPT is at index 56 in v5 vars; not declared in our
+        // header for v4 because the v4 var table doesn't define it. Read
+        // through the global pool directly so future v5 ports inherit
+        // the behaviour without changes.
+        constexpr int VAR_MAIN_SCRIPT_IDX = 56;
+        int main_script = (int)g_vm.globals[VAR_MAIN_SCRIPT_IDX];
+        if (main_script) {
+            int32_t no_args[1] = { 0 };
+            vm_start_script(&g_vm, main_script, no_args, 0, false, false);
+        }
+    }
+
     // Sentence dispatch — mirrors checkAndRunSentenceScript (script.cpp:
     // 1166-1207). Pop the top _sentence[] entry and run the
     // VAR_SENTENCE_SCRIPT with (verb, objA, objB) when no sentence script
