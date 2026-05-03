@@ -76,6 +76,10 @@ constexpr int VAR_SENTENCE_SCRIPT  = 33;
 constexpr int VAR_INVENTORY_SCRIPT = 34;
 constexpr int VAR_CUTSCENE_START_SCRIPT = 35;
 constexpr int VAR_CUTSCENE_END_SCRIPT = 36;
+// VAR_MAIN_SCRIPT — runs every frame from scummLoop (scumm.cpp:3178-3180).
+// Some MI1 reissues populate this; default zero. Index 41 in v5+ but
+// not used in v4 (left as 0 for v4 boot).
+// (We only honour it when non-zero so the v4 path stays inert.)
 constexpr int VAR_CHARINC          = 37;
 constexpr int VAR_WALKTO_OBJ       = 38;
 constexpr int VAR_DEBUGMODE        = 39;          // v4+

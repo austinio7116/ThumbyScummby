@@ -149,6 +149,21 @@ void     engine_set_pal_color(int d, int r, int g, int b);
 void     engine_darken_palette(int red_scale, int green_scale, int blue_scale,
                                int start, int end);
 
+// Mirrors ScummEngine::getVerbEntrypoint (script.cpp:167-258). For a
+// loaded object in the current room, look up the verb-script offset
+// for the given verb id. Returns 0 if the verb is not present.
+// `out_payload`/`out_offset` (when non-null) receive the underlying
+// script bytecode span and its offset within the room resource — the
+// caller hands this to vm_start_room_script.
+int      engine_get_verb_entrypoint(int obj_id, int verb,
+                                    Span *out_payload, uint32_t *out_offset);
+
+// Run an object's verb-script. Mirrors ScummEngine::runObjectScript
+// (script.cpp:130-150). Returns the slot number (or -1 on failure).
+int      engine_run_object_script(int obj_id, int verb,
+                                  bool freeze_resistant, bool recursive,
+                                  const int32_t *args, int n_args);
+
 // Camera control — mirrors ScummEngine setCameraAt / panCameraTo /
 // setCameraFollows. Called from the matching opcode handlers.
 void engine_camera_set_at(int pos_x);

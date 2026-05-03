@@ -341,6 +341,61 @@ void engine_draw_box(int x1, int y1, int x2, int y2, int color) {
     }
 }
 
+// Mirrors ScummEngine::getVerbEntrypoint (script.cpp:167-258) for v4
+// SMALL_HEADER. The verb-script directory in OBCD starts at chunk
+// offset 19 (i.e. payload + 13 in our parser, which strips the 6-byte
+// chunk header). Each entry is 3 bytes: verb-id, LE16 offset (relative
+// to the OBCD chunk start). Terminator: a 0 verb-id.
+int engine_get_verb_entrypoint(int obj_id, int verb,
+                               Span *out_payload, uint32_t *out_offset) {
+    ObjectData *od = object_get_by_id(&g_object_table, obj_id);
+    if (!od) return 0;
+    // OBCD payload begins after the 6-byte small_chunk header. ScummVM's
+    // verbptr = objptr+19 with objptr at the chunk start. Our payload =
+    // objptr+6, so the verb directory begins at payload offset 13.
+    const uint8_t *p = od->obcd_payload.data;
+    size_t sz = od->obcd_payload.size;
+    if (sz < 14) return 0;
+    const uint8_t *vptr = p + 13;
+    while (vptr + 3 <= p + sz) {
+        if (*vptr == 0) return 0;
+        if (*vptr == (uint8_t)verb || *vptr == 0xFF) {
+            uint16_t offs = read_le16(vptr + 1);
+            // ScummVM v4 SMALL_HEADER returns offset directly (chunk-
+            // start-relative); we want the bytecode payload to feed
+            // into vm_start_room_script. The bytecode begins at
+            // (chunk_start + offs). Chunk start is payload - 6.
+            const uint8_t *bytecode = (p - 6) + offs;
+            // Sanity bound: clamp size to room data
+            if (out_payload) {
+                size_t remaining = (size_t)((p + sz) - bytecode);
+                out_payload->data = bytecode;
+                out_payload->size = remaining;
+            }
+            if (out_offset) *out_offset = offs;     // chunk-start-relative
+            return offs;
+        }
+        vptr += 3;
+    }
+    return 0;
+}
+
+// Mirrors ScummEngine::runObjectScript (script.cpp:130-150). Looks up
+// the verb's entrypoint, then starts the script with where=WIO_FLOBJECT.
+int engine_run_object_script(int obj_id, int verb,
+                             bool freeze_resistant, bool recursive,
+                             const int32_t *args, int n_args) {
+    Span code{}; uint32_t offs = 0;
+    int found = engine_get_verb_entrypoint(obj_id, verb, &code, &offs);
+    if (!found || code.empty()) return -1;
+    // We don't yet have a vm_start_object_script wrapper; reuse
+    // vm_start_room_script with a pseudo-num that tags the obj/verb
+    // pair (low 16 bits = obj, high bits = verb).
+    int pseudo = obj_id | (verb << 16);
+    (void)freeze_resistant; (void)recursive; (void)args; (void)n_args;
+    return vm_start_room_script(&g_vm, code, pseudo, offs, WHERE_FLOBJ);
+}
+
 // Mirrors ScummEngine::setPalColor (palette.cpp). The palette source
 // here uses unscaled 0..255 RGB matching the v4 PA chunk; ScummVM
 // scales 6-bit DOS palette values, but our palette is already 8-bit.

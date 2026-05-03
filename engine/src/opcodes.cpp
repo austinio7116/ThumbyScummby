@@ -421,20 +421,31 @@ static void op_isScriptRunning(VM *vm) {
     vm_write_var(vm, result_var, running);
 }
 
-// 0x37 / 0x77 / 0xB7 / 0xF7  startObject — stub (object scripts not yet)
+// 0x37 / 0x77 / 0xB7 / 0xF7 — startObject. Mirrors o5_startObject ->
+// runObjectScript (script.cpp:130-150). bit 0x20 of opcode = freezeResist,
+// 0x40 = recursive.
 static void op_startObject(VM *vm) {
+    uint8_t op = vm->opcode;
     int obj    = vm_get_var_or_word(vm, 0x80);
-    int script = vm_get_var_or_byte(vm, 0x40);
+    int verb   = vm_get_var_or_byte(vm, 0x40);
     int32_t args[VM_MAX_VARARG];
     int n = vm_get_word_vararg(vm, args);
-    (void)args; (void)n;
-    platform::log("[stub] startObject(%d, %d, +%d args)\n", obj, script, n);
+    bool fr  = (op & 0x20) != 0;
+    bool rec = (op & 0x40) != 0;
+    engine_run_object_script(obj, verb, fr, rec, args, n);
 }
 
-// 0x6E / 0xEE  stopObjectScript
+// 0x6E / 0xEE — stopObjectScript. Mirrors o5_stopObjectScript: stops
+// any slot whose where == WIO_FLOBJ and whose stored obj matches.
 static void op_stopObjectScript(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
-    platform::log("[stub] stopObjectScript(%d)\n", obj);
+    for (int i = 0; i < VM_MAX_SLOTS; i++) {
+        if (vm->slots[i].where == WHERE_FLOBJ &&
+            (int)(vm->slots[i].script_num & 0xFFFF) == obj) {
+            vm->slots[i].status = SS_DEAD;
+            vm->slots[i].script_num = 0;
+        }
+    }
 }
 
 // ===========================================================================
@@ -705,18 +716,39 @@ static void op_loadRoom(VM *vm) {
     }
 }
 
-// 0x24 / 0x64 / 0xA4 / 0xE4  loadRoomWithEgo : object, room, x, y
+// 0x24 / 0x64 / 0xA4 / 0xE4 — loadRoomWithEgo. Mirrors o5_loadRoomWithEgo
+// (script_v5.cpp:1857-1902): putActor(ego, 0, 0, room); startScene(room,
+// ego, obj); if (!egoPositioned) getObjectXYPos(obj, x, y); centerCamera;
+// if (x != -1) walkActor(ego, x, y); _fullRedraw = true.
 static void op_loadRoomWithEgo(VM *vm) {
     int obj  = vm_get_var_or_word(vm, 0x80);
     int room = vm_get_var_or_byte(vm, 0x40);
     int x = (int)vm_fetch_word(vm);
     int y = (int)vm_fetch_word(vm);
-    vm->pending_room_id      = room;
-    vm->pending_room_ego_obj = obj;
-    vm->pending_room_ego_x   = x;
-    vm->pending_room_ego_y   = y;
-    vm->room_change_pending  = true;
-    platform::log("[op] loadRoomWithEgo(obj=%d, room=%d, x=%d, y=%d) — pending\n",
+
+    int ego = (int)vm_read_var(vm, VAR_EGO);
+    Actor *a = actor_get(ego);
+    if (a) a->room = (uint8_t)room;
+
+    // Switch the room synchronously so EXCD/ENCD run nested.
+    engine_change_room(room);
+
+    // Get the object's walk-pos in the new room. If found, snap the
+    // ego there (the ScummVM script_v5 idiom is putActor(obj_pos);
+    // then walkActor(walk_pos) if the script provided x/y).
+    int obj_x = 0, obj_y = 0, obj_dir = 0;
+    if (engine_object_walk_pos(obj, &obj_x, &obj_y, &obj_dir)) {
+        actor_put_at(ego, obj_x, obj_y);
+        if (a) { a->facing = (uint16_t)obj_dir; a->target_facing = (uint16_t)obj_dir; }
+    }
+
+    // Centre camera on ego (setCameraFollows pattern).
+    engine_camera_set_follows(ego, /*force=*/true);
+
+    // If the script provided explicit walk-to coords (x != -1), walk.
+    if (x != -1) actor_walk_to(ego, x, y);
+
+    platform::log("[op] loadRoomWithEgo(obj=%d, room=%d, x=%d, y=%d)\n",
                   obj, room, x, y);
 }
 
@@ -845,28 +877,44 @@ static void op_stringOps(VM *vm) {
 // ===========================================================================
 // Wait (0xAE)
 // ===========================================================================
+// Mirrors o5_wait (script_v5.cpp:3262-3306).
 static void op_wait(VM *vm) {
     uint32_t saved_pc = vm->cur_pc - 1;   // wait opcode itself
     uint8_t  sub = vm_fetch_byte(vm);
     switch (sub & 0x1F) {
-    case 1: {   // wait for actor
-        int actor = vm_get_var_or_byte(vm, 0x80);
-        (void)actor;
-        // No actor system yet — never wait, just fall through.
-        return;
-    }
-    case 2:     // wait for message — VAR_HAVE_MSG
-        if (vm_read_var(vm, VAR_HAVE_MSG) != 0) {
+    case 1: {   // SO_WAIT_FOR_ACTOR
+        int actor_id = vm_get_var_or_byte(vm, 0x80);
+        Actor *a = actor_get(actor_id);
+        if (a && a->moving != 0) {
+            // ScummVM: rewind to the wait opcode so it re-executes next
+            // frame, then o5_breakHere — yield. Mirrors script_v5.cpp:
+            // 3280-3287 "if (a && a->_moving) { _scriptPointer = oldaddr;
+            // o5_breakHere(); }".
             vm->cur_pc = saved_pc;
-            vm->slots[vm->cur_slot].delay = 1;
+            vm->cur_slot = -1;
         }
         return;
-    case 3:     // wait for camera
+    }
+    case 2:     // SO_WAIT_FOR_MESSAGE — VAR_HAVE_MSG
+        if (vm_read_var(vm, VAR_HAVE_MSG) != 0) {
+            vm->cur_pc = saved_pc;
+            vm->cur_slot = -1;
+        }
         return;
-    case 4:     // wait for sentence
+    case 3:     // SO_WAIT_FOR_CAMERA — camera._dest != camera._cur
+        // The engine's panCameraTo and follow logic naturally complete;
+        // ScummVM compares camera._dest.x/8 with camera._cur.x/8. We
+        // expose that via VAR_CAMERA_POS_X tracking. Approximate by
+        // not blocking — boot scripts pair this with panCameraTo and
+        // we move the camera every tick.
+        return;
+    case 4:     // SO_WAIT_FOR_SENTENCE
+        // ScummVM: rewind+breakHere if _sentenceNum != 0 OR if
+        // VAR_SENTENCE_SCRIPT is running. We don't model the
+        // _sentenceNum stack yet; treat as "no pending sentence".
         return;
     default:
-        platform::log("[stub] wait sub=0x%02X\n", sub);
+        platform::log("wait unknown sub=0x%02X\n", sub);
         return;
     }
 }
@@ -1619,8 +1667,13 @@ static void op_actorFollowCamera(VM *vm) {
     engine_camera_set_follows(act, /*force=*/false);
 }
 
+// Mirrors o5_startSound (script_v5.cpp): write VAR_LAST_SOUND, then
+// _sound->addSoundToQueue(sound). We invoke imuse_start_sound directly
+// (we don't model a deferred queue yet), which is functionally
+// equivalent for single-sound-per-frame scripts.
 static void op_startSound(VM *vm) {
     int snd = vm_get_var_or_byte(vm, 0x80);
+    vm_write_var(vm, VAR_LAST_SOUND, snd);
     trace_diag("  startSound id=%d\n", snd);
     Span s = resource_get_sound(snd);
     if (s.empty()) {
@@ -1864,12 +1917,13 @@ static void op_getStringWidth(VM *vm) {
     vm_write_var(vm, result_var, 8);
 }
 
+// Mirrors o5_getVerbEntrypoint (script_v5.cpp:1481-1488).
 static void op_getVerbEntrypoint(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
-    int a = vm_get_var_or_word(vm, 0x80);
-    int b = vm_get_var_or_word(vm, 0x40);
-    (void)a; (void)b;
-    vm_write_var(vm, result_var, 0);
+    int obj  = vm_get_var_or_word(vm, 0x80);
+    int verb = vm_get_var_or_word(vm, 0x40);
+    int offs = engine_get_verb_entrypoint(obj, verb, nullptr, nullptr);
+    vm_write_var(vm, result_var, offs);
 }
 
 // Mirrors o5_getClosestObjActor (script_v5.cpp:1379-1404). For an actor's
