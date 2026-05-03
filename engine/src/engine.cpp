@@ -113,6 +113,13 @@ static EngineState g{};
 static uint8_t g_object_state[NUM_GLOBAL_OBJECTS] = {};
 static uint8_t g_object_owner[NUM_GLOBAL_OBJECTS] = {};
 
+// Per-game var-table indices that depend on game version. 0xFF is the
+// "var not defined for this game" sentinel matching ScummVM's pattern
+// (scumm.h:1947). v4 doesn't define VAR_MAIN_SCRIPT so it stays 0xFF.
+// When v5+ ports come, set this in setup-vars to the right index (e.g.
+// 127 for the games per vars.cpp:359).
+static int g_var_main_script = 0xFF;
+
 // Per-object class bitfield — mirrors ScummEngine::_classData. 32 class
 // bits per object packed into a uint32_t.
 static uint32_t g_object_classes[NUM_GLOBAL_OBJECTS] = {};
@@ -1072,16 +1079,18 @@ bool engine_tick() {
         engine_change_room(g_vm.pending_room_id);
     }
 
-    // VAR_MAIN_SCRIPT — runs every frame. Mirrors scumm.cpp:3178-3180:
-    //   if (VAR(VAR_MAIN_SCRIPT) != 0) runScript(VAR(VAR_MAIN_SCRIPT)).
-    // MI1's boot doesn't populate this; later titles do (H116).
-    {
-        // VAR_MAIN_SCRIPT is at index 56 in v5 vars; not declared in our
-        // header for v4 because the v4 var table doesn't define it. Read
-        // through the global pool directly so future v5 ports inherit
-        // the behaviour without changes.
-        constexpr int VAR_MAIN_SCRIPT_IDX = 56;
-        int main_script = (int)g_vm.globals[VAR_MAIN_SCRIPT_IDX];
+    // VAR_MAIN_SCRIPT — runs every frame for games where it's defined.
+    // Mirrors ScummEngine::scummLoop scumm.cpp:3178-3180:
+    //     if (VAR_MAIN_SCRIPT != 0xFF && VAR(VAR_MAIN_SCRIPT) != 0)
+    //         runScript(VAR(VAR_MAIN_SCRIPT), 0, 0, nullptr);
+    // Upstream's `byte VAR_MAIN_SCRIPT = 0xFF` (scumm.h:1947) is the
+    // "var not defined" sentinel; only later games assign it (e.g. v5+
+    // index 127, vars.cpp:359). For v4 (MI1) it stays 0xFF so the dispatch
+    // is a no-op. Hard-coding any other index here erroneously runs
+    // whatever script number the boot stashed at that global slot.
+    if (g_var_main_script != 0xFF) {
+        int idx = g_var_main_script;
+        int main_script = (int)g_vm.globals[idx];
         if (main_script) {
             int32_t no_args[1] = { 0 };
             vm_start_script(&g_vm, main_script, no_args, 0, false, false);
