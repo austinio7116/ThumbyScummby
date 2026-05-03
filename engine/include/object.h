@@ -54,9 +54,14 @@ void object_mark_all_dirty(ObjectTable *t);
 
 // Render each visible object's current state image into the back virtual
 // screen (which acts as the background+objects composite — actors will
-// draw on top).
+// draw on top). `buf_w`/`buf_h` give the destination buffer extents
+// (== room.width / room.height for the ROOM-wide composite). Defaults
+// fall back to pitch / VIRTUAL_SCREEN_H. Mirrors ScummEngine_v5
+// drawRoomObjects in object.cpp:620-645, with clipping to the actual
+// room rectangle (audit F6).
 void object_render_all(const ObjectTable *t,
-                       uint8_t *vscreen_back, int pitch);
+                       uint8_t *vscreen_back, int pitch,
+                       int buf_w = 0, int buf_h = 0);
 
 // Look up object by ID. Returns nullptr if not in table.
 ObjectData *object_get_by_id(ObjectTable *t, int obj_id);

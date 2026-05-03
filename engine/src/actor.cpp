@@ -34,38 +34,25 @@ static Actor g_actors[MAX_ACTORS];
 // Initialization & simple setters
 // ---------------------------------------------------------------------------
 
-void actor_init_all() {
-    memset(g_actors, 0, sizeof(g_actors));
-    for (int i = 0; i < MAX_ACTORS; i++) {
-        Actor &a = g_actors[i];
-        a.number = (uint8_t)i;
-        a.scalex = a.scaley = 0xFF;
-        a.x = 0; a.y = 0;
-        a.room = 0;
-        a.speedx = 8; a.speedy = 2;          // ScummVM defaults
-        a.facing = 180;
-        a.target_facing = 180;
+// Mirrors ScummEngine::Actor::initActor (actor.cpp:161-235). `mode == -1`
+// is the full reset done at game startup; `mode == 0` is the soft reset
+// invoked by o5_actorOps SO_DEFAULT (preserves room/cost/pos/facing).
+void actor_init_one(int n, int mode) {
+    if (n < 0 || n >= MAX_ACTORS) return;
+    Actor &a = g_actors[n];
+
+    if (mode == -1) {
+        a.number = (uint8_t)n;
+        a.flags  = 0;
+        a.moving = 0;
+        a.frame  = 0;
         a.walkbox = INVALID_BOX;
         a.cur_box = INVALID_BOX;
         a.dest_box = INVALID_BOX;
-        a.init_frame = 1;
-        a.walk_frame = 2;
-        a.stand_frame = 3;
-        a.talk_start_frame = 4;
-        a.talk_stop_frame = 5;
-        a.anim_speed = 0;
         a.anim_progress = 0;
-        a.frame = a.init_frame;
-        // Default palette: 0xFF in every entry — sentinel "use the costume's
-        // own palette[i]". Mirrors ScummEngine::Actor::setActorCostume
-        // (actor.cpp:3702-3703) for v4/v5 (non-GF_OLD_BUNDLE):
-        //   for (i = 0; i < 32; i++) _palette[i] = 0xFF;
-        // op_actorOps sub-op 11 (SO_PALETTE) overrides specific entries
-        // with explicit color indices. The costume render falls back to
-        // cost->palette[i] whenever actor.palette[i] == 0xFF (matching
-        // ClassicCostumeRenderer::setPalette in cost.cpp:817-823).
-        for (int c = 0; c < 32; c++) a.palette[c] = 0xFF;
-        // Initialize costume anim slots to "empty"
+        for (int p = 0; p < 32; p++) a.palette[p] = 0;
+        // Initialise costume anim slots to "empty" — Actor::_cost.reset()
+        // sets every curpos[i] to 0xFFFF and stopped to 0xFFFF.
         for (int l = 0; l < 16; l++) {
             a.cost.anim_type[l] = 0;
             a.cost.curpos[l]    = 0xFFFF;
@@ -73,8 +60,105 @@ void actor_init_all() {
             a.cost.end[l]       = 0xFFFF;
             a.cost.frame[l]     = 0xFFFF;
         }
-        a.cost.stopped_mask = 0xFFFF;       // all limbs stopped initially
+        a.cost.stopped_mask = 0xFFFF;
+        a.walk_script = 0;
     }
+
+    if (mode == 1 || mode == -1) {
+        a.costume = 0;
+        a.room    = 0;
+        a.x       = 0;
+        a.y       = 0;
+        a.facing  = 180;
+    } else if (mode == 2) {
+        a.facing  = 180;
+    }
+    a.elevation        = 0;
+    a.width            = 24;                   // actor.cpp:195
+    a.talk_color       = 15;
+    a.talk_pos_x       = 0;
+    a.talk_pos_y       = -80;
+    a.scalex = a.scaley = 0xFF;
+    a.target_facing    = a.facing;
+
+    a.shadow_mode      = 0;
+    a.layer            = 0;
+
+    a.moving           = 0;        // stopActorMoving — clear walk state
+
+    // Walk speed defaults via setActorWalkSpeed(8, 2) — actor.cpp:211
+    a.speedx = 8;
+    a.speedy = 2;
+
+    a.anim_speed       = 0;
+
+    a.flags &= ~ACTOR_FLAG_IGNORE_BOX;     // _ignoreBoxes = false
+    a.force_clip       = 0;
+
+    // Default per-anim frame slots — actor.cpp:225-229
+    a.init_frame       = 1;
+    a.walk_frame       = 2;
+    a.stand_frame      = 3;
+    a.talk_start_frame = 4;
+    a.talk_stop_frame  = 5;
+
+    a.walk_script      = 0;
+    a.talk_script      = 0;
+}
+
+void actor_init_all() {
+    memset(g_actors, 0, sizeof(g_actors));
+    for (int i = 0; i < MAX_ACTORS; i++) {
+        actor_init_one(i, -1);
+        // Default palette after initActor(-1): 0xFF in every entry —
+        // sentinel "use the costume's own palette[i]". Mirrors
+        // setActorCostume (actor.cpp:3702-3703) for v4/v5 (non-GF_OLD_BUNDLE):
+        //     for (i = 0; i < 32; i++) _palette[i] = 0xFF;
+        // op_actorOps sub-op 11 (SO_PALETTE) overrides specific entries.
+        for (int c = 0; c < 32; c++) g_actors[i].palette[c] = 0xFF;
+    }
+}
+
+// Mirrors Actor::classChanged (actor.cpp). For SCUMM v4/v5 the only
+// classes that affect actor state are kObjectClassNeverClip(20) /
+// kObjectClassAlwaysClip(21) / kObjectClassIgnoreBoxes(22). Higher-numbered
+// classes (XFlip/YFlip/Player/Untouchable) are the ones remapped to the
+// SMALL_HEADER 18..24 range by putClass.
+void actor_class_changed(int n, int cls, bool set) {
+    Actor *a = actor_get(n);
+    if (!a) return;
+    switch (cls) {
+    case 20:    // kObjectClassNeverClip
+        if (set) { a->flags |= ACTOR_FLAG_NEVER_ZCLIP; a->force_clip = 0; }
+        else     { a->flags &= ~ACTOR_FLAG_NEVER_ZCLIP; }
+        break;
+    case 21:    // kObjectClassAlwaysClip
+        if (set) { a->flags |= ACTOR_FLAG_FORCE_ZCLIP; a->force_clip = 1; }
+        else     { a->flags &= ~ACTOR_FLAG_FORCE_ZCLIP; a->force_clip = 0; }
+        break;
+    case 22:    // kObjectClassIgnoreBoxes
+        if (set) a->flags |=  ACTOR_FLAG_IGNORE_BOX;
+        else     a->flags &= ~ACTOR_FLAG_IGNORE_BOX;
+        break;
+    case 30:    // kObjectClassXFlip
+        if (set) a->flags |=  ACTOR_FLAG_FLIP_X;
+        else     a->flags &= ~ACTOR_FLAG_FLIP_X;
+        break;
+    default: break;
+    }
+}
+
+// Mirrors ScummEngine::Actor::setDirection (actor.cpp:1577-1623). For
+// version <= 6 this updates _facing and (when costume is set) walks the
+// per-limb _cost.frame[] table to redecode each non-empty limb in the
+// new facing. Costume re-decode is handled by costumeDecodeData; here we
+// just set facing and let the per-frame draw pick up the change.
+void actor_set_facing(int n, int direction) {
+    Actor *a = actor_get(n); if (!a) return;
+    direction = ((direction % 360) + 360) % 360;
+    if (a->facing == (uint16_t)direction) return;
+    a->facing = (uint16_t)direction;
+    a->target_facing = (uint16_t)direction;
 }
 
 Actor *actor_get(int n) {

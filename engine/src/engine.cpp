@@ -19,6 +19,8 @@
 #include "adlib.h"
 #include "imuse.h"
 #include "audio_mix.h"
+#include "text.h"
+#include "charset.h"
 
 #ifndef THUMBY_DEVICE
 #include <stdio.h>
@@ -98,6 +100,27 @@ static EngineState g{};
 static uint8_t g_object_state[NUM_GLOBAL_OBJECTS] = {};
 static uint8_t g_object_owner[NUM_GLOBAL_OBJECTS] = {};
 
+// Per-object class bitfield — mirrors ScummEngine::_classData. 32 class
+// bits per object packed into a uint32_t.
+static uint32_t g_object_classes[NUM_GLOBAL_OBJECTS] = {};
+
+// Inventory: ScummVM's _inventory[] is sized by VAR_INVENTORY_SLOT_COUNT
+// (80 in MI1). Slots start at index 1 (slot 0 is unused, matching
+// ScummVM convention). When an obj is "carried", its global owner field
+// is set to actor_num and an entry is placed in _inventory.
+constexpr int INVENTORY_MAX = 80;
+static uint16_t g_inventory[INVENTORY_MAX + 1];   // indexed 1..INVENTORY_MAX
+
+// Object-name pool. ScummVM uses rtObjectName resource type with one
+// entry per global object id; storage is variable-length so we use a
+// small fixed pool of slots and an index map. 32 bytes per name covers
+// every MI1 object name.
+constexpr int OBJ_NAME_POOL = 256;
+constexpr int OBJ_NAME_LEN  = 64;
+static int     g_obj_name_count = 0;
+static int16_t g_obj_name_index[NUM_GLOBAL_OBJECTS];     // -1 if no name
+static uint8_t g_obj_name_pool[OBJ_NAME_POOL][OBJ_NAME_LEN];
+
 uint8_t engine_get_object_state(int obj_id) {
     if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return 0;
     return g_object_state[obj_id];
@@ -115,6 +138,94 @@ void engine_put_object_owner(int obj_id, uint8_t owner) {
     g_object_owner[obj_id] = owner;
 }
 
+// Mirrors ScummEngine::getClass / putClass (object.cpp:225-294). For
+// SMALL_HEADER (v4) games, four "new" class IDs are remapped to the
+// "old" range:
+//   kObjectClassUntouchable(32) -> 24
+//   kObjectClassPlayer(31)      -> 23
+//   kObjectClassXFlip(30)       -> 19
+//   kObjectClassYFlip(29)       -> 18
+// Negative `cls` in script form encodes a clear; the polarity comes
+// from the high bit (& 0x80) — putClass(_, cls, (cls & 0x80) != 0).
+static int remap_class_v4(int cls) {
+    cls &= 0x7F;
+    switch (cls) {
+    case 32: return 24;     // Untouchable
+    case 31: return 23;     // Player
+    case 30: return 19;     // XFlip
+    case 29: return 18;     // YFlip
+    default: return cls;
+    }
+}
+
+bool engine_get_class(int obj_id, int cls) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return false;
+    int c = remap_class_v4(cls);
+    if (c < 1 || c > 32) return false;
+    return (g_object_classes[obj_id] & (1u << (c - 1))) != 0;
+}
+void engine_put_class(int obj_id, int cls, bool set) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return;
+    int c = remap_class_v4(cls);
+    if (c < 1 || c > 32) return;
+    if (set) g_object_classes[obj_id] |=  (1u << (c - 1));
+    else     g_object_classes[obj_id] &= ~(1u << (c - 1));
+    // ScummVM forwards class bits 18..30 onto actors when obj < numActors —
+    // see object.cpp:291-293 + Actor::classChanged.
+    if (obj_id >= 1 && obj_id < MAX_ACTORS) {
+        actor_class_changed(obj_id, c, set);
+    }
+}
+void engine_clear_class_data(int obj_id) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return;
+    g_object_classes[obj_id] = 0;
+}
+
+// Inventory ownership. ScummVM's addObjectToInventory walks the
+// _inventory pool to find a free slot and writes obj_id there; remove
+// shifts entries down. We mirror that directly.
+int engine_inventory_count(int actor_num) {
+    int n = 0;
+    for (int i = 1; i <= INVENTORY_MAX; i++) {
+        if (g_inventory[i] == 0) continue;
+        if (engine_get_object_owner(g_inventory[i]) == (uint8_t)actor_num)
+            n++;
+    }
+    return n;
+}
+int engine_find_inventory(int actor_num, int idx) {
+    int seen = 0;
+    for (int i = 1; i <= INVENTORY_MAX; i++) {
+        if (g_inventory[i] == 0) continue;
+        if (engine_get_object_owner(g_inventory[i]) == (uint8_t)actor_num) {
+            if (++seen == idx) return g_inventory[i];
+        }
+    }
+    return 0;
+}
+void engine_add_object_to_inventory(int obj_id, int actor_num) {
+    // already there?
+    for (int i = 1; i <= INVENTORY_MAX; i++) if (g_inventory[i] == obj_id) {
+        engine_put_object_owner(obj_id, (uint8_t)actor_num);
+        return;
+    }
+    for (int i = 1; i <= INVENTORY_MAX; i++) {
+        if (g_inventory[i] == 0) {
+            g_inventory[i] = (uint16_t)obj_id;
+            engine_put_object_owner(obj_id, (uint8_t)actor_num);
+            return;
+        }
+    }
+}
+void engine_remove_object_from_inventory(int obj_id) {
+    for (int i = 1; i <= INVENTORY_MAX; i++) {
+        if (g_inventory[i] == obj_id) {
+            g_inventory[i] = 0;
+            return;
+        }
+    }
+}
+
 // Refresh each loaded ObjectData's cached `state` from the global table.
 // Mirrors ScummEngine::updateObjectStates (object.cpp:1165). Called after
 // room_load and after any setState/setOwner that might affect what shows.
@@ -126,18 +237,159 @@ static void refresh_object_states(ObjectTable *t) {
     }
 }
 
+// Forward — defined later in this file as the engine's only ObjectTable.
+static ObjectTable g_object_table{};
+ObjectTable *get_object_table() { return &g_object_table; }
+
+// Mirrors ScummEngine::getObjectXYPos (object.cpp:506-509) for
+// version 3-4: returns od->walk_x / od->walk_y / actordir-derived
+// direction (oldDirToNewDir(actordir & 3)).
+static int old_dir_to_new_dir(int dir) {
+    static const int new_dir_table[4] = { 270, 90, 180, 0 };
+    return new_dir_table[dir & 3];
+}
+
+bool engine_object_walk_pos(int obj_id, int *out_x, int *out_y, int *out_dir) {
+    ObjectData *o = object_get_by_id(&g_object_table, obj_id);
+    if (!o) return false;
+    if (out_x)   *out_x = o->walk_x;
+    if (out_y)   *out_y = o->walk_y;
+    if (out_dir) *out_dir = old_dir_to_new_dir(o->actor_dir);
+    return true;
+}
+
+// Mirrors ScummEngine::findObject (object.cpp:557-595) — v3-5 path
+// without HE polygons. Honours kObjectClassUntouchable (v4 class 24).
+int engine_find_object_at(int x, int y) {
+    constexpr int mask = 0x0F;
+    for (int i = 1; i <= g_object_table.num_objects; i++) {
+        ObjectData *o = &g_object_table.objects[i];
+        if (o->obj_id < 1) continue;
+        if (engine_get_class(o->obj_id, 32 /*kObjectClassUntouchable*/))
+            continue;
+        // Walk parent chain — must reach parent==0 with all (state&mask)
+        // matches the child's parentstate, exactly like upstream's loop.
+        int b = i;
+        while (true) {
+            uint8_t a = g_object_table.objects[b].parentstate;
+            int p = g_object_table.objects[b].parent;
+            b = p;
+            if (b == 0) {
+                int x0 = o->x_strip * 8, y0 = o->y * 8;
+                int x1 = x0 + o->w_strip * 8;
+                int y1 = y0 + o->h * 8;
+                if (x0 <= x && x < x1 && y0 <= y && y < y1) return o->obj_id;
+                break;
+            }
+            if ((g_object_table.objects[b].state & mask) != a) break;
+        }
+    }
+    return 0;
+}
+
+// Mirrors ScummEngine::getDist (object.cpp:516-520) — Chebyshev metric.
+int engine_world_dist(int x1, int y1, int x2, int y2) {
+    int a = y1 > y2 ? (y1 - y2) : (y2 - y1);
+    int b = x1 > x2 ? (x1 - x2) : (x2 - x1);
+    return a > b ? a : b;
+}
+
+// Mirrors o5_walkActorToObject (script_v5.cpp:2120-2158): if the object
+// has a walk-pos, walk the actor to (walk_x, walk_y).
+void engine_walk_actor_to_object(int actor_num, int obj_id) {
+    int x, y, dir;
+    if (!engine_object_walk_pos(obj_id, &x, &y, &dir)) return;
+    actor_walk_to(actor_num, x, y);
+    Actor *a = actor_get(actor_num);
+    if (a) a->target_facing = (uint16_t)dir;
+}
+void engine_put_actor_at_object(int actor_num, int obj_id) {
+    int x, y, dir;
+    if (!engine_object_walk_pos(obj_id, &x, &y, &dir)) return;
+    actor_put_at(actor_num, x, y);
+    Actor *a = actor_get(actor_num);
+    if (a) { a->facing = (uint16_t)dir; a->target_facing = (uint16_t)dir; }
+}
+
+// Mirrors ScummEngine::drawBox (gfx.cpp). Renders a filled rectangle
+// at room coords into the room-wide composite buffer. The next viewport
+// blit picks it up.
+void engine_draw_box(int x1, int y1, int x2, int y2, int color) {
+    if (!g.room_loaded) return;
+    if (color < 0) color = 0;
+    int rw = g.room.width;
+    int rh = g.room.height;
+    if (rw > ROOM_BUFFER_W) rw = ROOM_BUFFER_W;
+    if (rh > VIRTUAL_SCREEN_H) rh = VIRTUAL_SCREEN_H;
+    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 > rw - 1) x2 = rw - 1;
+    if (y2 > rh - 1) y2 = rh - 1;
+    for (int y = y1; y <= y2; y++) {
+        uint8_t *row = g.vscreen_room + (size_t)y * ROOM_BUFFER_W;
+        for (int x = x1; x <= x2; x++) row[x] = (uint8_t)color;
+    }
+}
+
+void engine_set_object_name(int obj_id, const uint8_t *name, int len) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return;
+    if (!name) return;
+    int idx = g_obj_name_index[obj_id];
+    if (idx < 0) {
+        if (g_obj_name_count >= OBJ_NAME_POOL) return;
+        idx = g_obj_name_count++;
+        g_obj_name_index[obj_id] = (int16_t)idx;
+    }
+    if (len > OBJ_NAME_LEN - 1) len = OBJ_NAME_LEN - 1;
+    memcpy(g_obj_name_pool[idx], name, (size_t)len);
+    g_obj_name_pool[idx][len] = 0;
+}
+const uint8_t *engine_get_object_name(int obj_id) {
+    if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return nullptr;
+    int idx = g_obj_name_index[obj_id];
+    if (idx < 0) return nullptr;
+    return g_obj_name_pool[idx];
+}
+
+// Mirror ScummEngine::scummLoop_updateScummVars (scumm.cpp:2989-3008).
+// VAR_TIMER counts ticks since last frame; VAR_TIMER_TOTAL accumulates;
+// VAR_TMR_1/2/3 also accumulate. delta is in 60ths-of-a-second ticks
+// (we'll feed it from frame pacing in engine_tick).
+void engine_update_scumm_vars(int delta_ticks) {
+    g_vm.globals[VAR_TIMER]       = delta_ticks;
+    g_vm.globals[VAR_TIMER_TOTAL] += delta_ticks;
+    g_vm.globals[VAR_TMR_1]       += delta_ticks;
+    g_vm.globals[VAR_TMR_2]       += delta_ticks;
+    g_vm.globals[VAR_TMR_3]       += delta_ticks;
+}
+
 // Expose master index to resource.cpp
 MasterIndex *resource_get_master_index() { return &g.master; }
 
-// Object table — populated when a room loads.
-static ObjectTable g_object_table{};
-ObjectTable *get_object_table() { return &g_object_table; }
+// Exposed to walkbox.cpp so o5_isActorInBox / o5_matrixOps can query the
+// current room's graph without engine.cpp depending on walkbox internals.
+WalkboxGraph *engine_active_walkbox_graph() {
+    return g.walkboxes.valid ? &g.walkboxes : nullptr;
+}
+
+// Exposed to string.cpp — the main VirtScreen (320×200) where talk text
+// and verb labels are drawn. Mirrors ScummVM _virtscr[kMainVirtScreen].
+uint8_t *engine_main_vscreen()       { return g.vscreen_main; }
+int      engine_main_vscreen_pitch() { return VIRTUAL_SCREEN_W; }
 
 Span     engine_room_excd_payload() { return g.room.excd_payload; }
 uint32_t engine_room_excd_offset()  { return g.room.excd_offset; }
 Span     engine_room_encd_payload() { return g.room.encd_payload; }
 uint32_t engine_room_encd_offset()  { return g.room.encd_offset; }
 int      engine_current_room_id()   { return g.current_room_id; }
+
+// Set by vm_opcodes_v4_init(); read by opcodes that branch on v4-vs-v5
+// operand shape.
+static bool g_v4_mode = false;
+bool engine_is_v4()                 { return g_v4_mode; }
+void engine_set_v4_mode(bool on)    { g_v4_mode = on; }
 
 Span engine_local_script(int script_id, uint32_t *out_offset) {
     int idx = script_id - 200;
@@ -178,7 +430,8 @@ bool engine_change_room(int new_room) {
     room_render_background(g.room, g.vscreen_room, ROOM_BUFFER_W);
     object_load_from_room(g.room.room_chunk, &g_object_table);
     refresh_object_states(&g_object_table);
-    object_render_all(&g_object_table, g.vscreen_room, ROOM_BUFFER_W);
+    object_render_all(&g_object_table, g.vscreen_room, ROOM_BUFFER_W,
+                      g.room.width, g.room.height);
     if (!g.room.boxd_payload.empty()) {
         walkbox_load(g.room.boxd_payload, Span{nullptr, 0}, &g.walkboxes);
     } else {
@@ -362,6 +615,10 @@ bool engine_init() {
         g.palette[i*3 + 2] = (uint8_t)i;
     }
 
+    // Reset object-name pool — index of -1 == "no name".
+    for (int i = 0; i < NUM_GLOBAL_OBJECTS; i++) g_obj_name_index[i] = -1;
+    g_obj_name_count = 0;
+
     g.scale_mode = platform::ScaleMode::Fit;
     g.crop_x = 96;  // initial center for CROP
     g.crop_y = 36;
@@ -407,6 +664,12 @@ bool engine_init() {
     // Initialize actor pool before any boot script can manipulate them.
     actor_init_all();
 
+    // Initialize text/charset state — _string[0..3], charset color map.
+    // Charset 0 (901.LFL) is the main MI1 in-game font. ScummVM loads
+    // it on demand via o5_resourceRoutines case 18 (LOAD_CHARSET); we
+    // pre-load so the boot's "MI1 Floppy v1.0" banner can render.
+    string_init();
+
     // TSB_ROOM env var: skip the boot script and force-load a specific
     // room for room-data exploration. Without it, the boot script does
     // its own loadRoom and we leave the framebuffer black until then —
@@ -424,7 +687,8 @@ bool engine_init() {
                 ObjectData *o = &g_object_table.objects[i];
                 if (o->obj_id > 0) o->state = 1;
             }
-            object_render_all(&g_object_table, g.vscreen_room, ROOM_BUFFER_W);
+            object_render_all(&g_object_table, g.vscreen_room, ROOM_BUFFER_W,
+                              g.room.width, g.room.height);
         }
     }
     g.skip_boot_script = freeze_at_initial;
@@ -587,6 +851,16 @@ bool engine_tick() {
     static int last_mt = -1;
     if (mt != last_mt) { platform::log("MUSIC_TIMER=%d\n", mt); last_mt = mt; }
 
+    // Mirror ScummVM scummLoop_updateScummVars (scumm.cpp:2989-3008).
+    // delta is what ScummVM calls `_scummDeltaTime` — for v4/v5 a tick
+    // is 1/60 sec, and the per-frame delta is VAR_TIMER_NEXT (default
+    // 4 ticks ≈ 15 fps). Without this, "wait 6 ticks" loops in the
+    // boot script never advance (audit H115).
+    int dt = (int)g_vm.globals[VAR_TIMER_NEXT];
+    if (dt <= 0) dt = 4;
+    if (dt > 15) dt = 15;
+    engine_update_scumm_vars(dt);
+
     // Run scripts for this frame
     vm_run_frame(&g_vm);
 
@@ -638,6 +912,11 @@ bool engine_tick() {
                          g.walkboxes.valid ? &g.walkboxes : nullptr,
                          x0);
     }
+
+    // Drive the talk-text state machine. Mirrors ScummEngine::displayDialog
+    // called from scummLoop. When a talk message is active, this advances
+    // _talkDelay and renders the next character into vscreen_main.
+    string_tick();
 
     g.frame++;
     platform::present(g.vscreen_main, g.palette, g.scale_mode, g.crop_x, g.crop_y);

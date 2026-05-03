@@ -29,6 +29,9 @@
 #include "imuse.h"
 #include "engine.h"
 #include "object.h"
+#include "walkbox.h"
+#include "text.h"
+#include "charset.h"
 
 namespace tsb { extern ObjectTable *get_object_table(); }
 
@@ -103,10 +106,19 @@ static void freeze_other_slots(VM *vm, bool flag_condition) {
         vm->slots[csi].freeze_count = 0;
     }
 }
+// Mirrors ScummEngine::unfreezeScripts (script.cpp:935-955). Sets
+// freezeCount = 0 for every slot AND clears the high `0x80` of `status`.
+// (Earlier versions of this code decremented freeze_count by 1 — that
+// matches "decreaseFreezeCount" semantics, NOT unfreezeScripts. With
+// nested freezes a single op_freezeScripts(0) wouldn't fully release.)
 static void unfreeze_all_slots(VM *vm) {
     for (int i = 0; i < VM_MAX_SLOTS; i++) {
         Slot &s = vm->slots[i];
-        if (s.freeze_count > 0) s.freeze_count--;
+        s.freeze_count = 0;
+        // We don't track a "frozen" status bit (we use the freeze_count
+        // alone). ScummVM clears `slot.status &= 0x7F` to drop a
+        // status-bit it sets in freezeScripts. Our model: freeze_count
+        // == 0 means runnable, so clearing it is sufficient.
     }
 }
 static void unfreeze_all_slots_force(VM *vm) {
@@ -576,10 +588,19 @@ static void op_resourceRoutines(VM *vm) {
     case 17:
         // CLEAR_HEAP — no-op
         break;
-    case 18:
+    case 18: {
+        // LOAD_CHARSET — preload the helper file. Mirrors o5_resourceRoutines
+        // case 18 (script_v5.cpp:2222-2244) -> loadCharset(resid).
+        Charset cs;
+        if (charset_load_from_helper(900 + resid, &cs)) {
+            platform::log("loadCharset(%d): helper %d ready\n", resid, 900 + resid);
+        } else if (charset_load_from_helper(901, &cs)) {
+            platform::log("loadCharset(%d): fell back to 901\n", resid);
+        }
+        break;
+    }
     case 19:
-        // LOAD_CHARSET / NUKE_CHARSET — stub
-        platform::log("[stub] resourceRoutines charset op=%d id=%d\n", op, resid);
+        // NUKE_CHARSET — XIP-resident, nothing to free.
         break;
     case 20: {
         // LOAD_OBJECT — stub
@@ -711,14 +732,20 @@ static void op_pseudoRoom(VM *vm) {
 }
 
 // ===========================================================================
-// Lights — 0x70 / 0xF0 — bytes consumed: param1(byte/var), 2 raw bytes.
+// Lights (0x70 / 0xF0). Mirrors o5_lights (script_v5.cpp:1796-1810).
+// Operands: byte/var a, raw byte b, raw byte c. When c==0, set
+// VAR_CURRENT_LIGHTS = a. (c==1 sets the flashlight strip count, used by
+// Indy3 only; we accept and ignore.) ScummVM also sets _fullRedraw.
 // ===========================================================================
 static void op_lights(VM *vm) {
     int a = vm_get_var_or_byte(vm, 0x80);
-    (void)vm_fetch_byte(vm);
-    (void)vm_fetch_byte(vm);
-    (void)a;
-    // No-op for now (display lighting not modeled).
+    int b = (int)vm_fetch_byte(vm);
+    int c = (int)vm_fetch_byte(vm);
+    (void)b;
+    if (c == 0) {
+        vm_write_var(vm, VAR_CURRENT_LIGHTS, a);
+    }
+    // c == 1 (flashlight) not modelled — MI1 doesn't use it.
 }
 
 // ===========================================================================
@@ -847,6 +874,9 @@ static void op_wait(VM *vm) {
 // ===========================================================================
 // ifClassOfIs (0x1D / 0x9D)
 // ===========================================================================
+// Mirrors o5_ifClassOfIs (script_v5.cpp:1490-1517). For each requested
+// class, query getClass and check XOR with the polarity bit (cls&0x80);
+// if any mismatch, cond becomes false. Then jumpRelative(cond).
 static void op_ifClassOfIs(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
     bool cond = true;
@@ -855,23 +885,35 @@ static void op_ifClassOfIs(VM *vm) {
         if (op == 0xFF) break;
         vm->opcode = op;
         int cls = vm_get_var_or_word(vm, 0x80);
-        (void)obj; (void)cls;
-        // Without an object-class table, treat condition as false unless
-        // overridden — but to avoid breaking boot scripts, we assume true.
-        // The behavior in source is: cond starts true; if any class doesn't
-        // match the requested polarity, cond becomes false. We have no
-        // class state, so stay with cond=true. In practice scripts will
-        // need a proper implementation later.
+        bool want = (cls & 0x80) != 0;
+        bool have = engine_get_class(obj, cls);
+        if (have != want) cond = false;
     }
     vm_jump_relative(vm, cond);
 }
 
-// 0x5D / 0xDD  setClass : object, {classes} — stub
+// 0x5D / 0xDD  setClass : object, {classes...}. Mirrors o5_setClass
+// (script_v5.cpp:642-689). cls == 0 → wipe class data; else flip the
+// class bit in `_classData[obj]`. The polarity flag is the high bit
+// of the class word (`(cls & 0x80) ? true : false`).
 static void op_setClass(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
-    int32_t classes[VM_MAX_VARARG];
-    int n = vm_get_word_vararg(vm, classes);
-    (void)obj; (void)classes; (void)n;
+    while (true) {
+        uint8_t op = vm_fetch_byte(vm);
+        if (op == 0xFF) break;
+        vm->opcode = op;
+        int cls = vm_get_var_or_word(vm, 0x80);
+        if (cls == 0) {
+            engine_clear_class_data(obj);
+            // SMALL_HEADER actor side-effect (script_v5.cpp:680-685).
+            if (obj >= 1 && obj < MAX_ACTORS) {
+                Actor *a = actor_get(obj);
+                if (a) { a->flags &= ~ACTOR_FLAG_IGNORE_BOX; a->force_clip = 0; }
+            }
+        } else {
+            engine_put_class(obj, cls, (cls & 0x80) != 0);
+        }
+    }
 }
 
 // ===========================================================================
@@ -897,9 +939,13 @@ static void op_cursorCommand(VM *vm) {
         break;
     }
     case 14: {
-        // initCharset / charset_colors — vararg word list
+        // SO_CHARSET_SET — vararg word list of 16 colour-map entries.
+        // Mirrors o5_cursorCommand case 14 (script_v5.cpp:932-937).
         int32_t tmp[VM_MAX_VARARG];
-        vm_get_word_vararg(vm, tmp);
+        int n = vm_get_word_vararg(vm, tmp);
+        uint8_t cmap[16];
+        for (int i = 0; i < 16; i++) cmap[i] = (i < n) ? (uint8_t)tmp[i] : (uint8_t)i;
+        string_set_charset_colormap(cmap, 16);
         break;
     }
     default:
@@ -907,6 +953,35 @@ static void op_cursorCommand(VM *vm) {
         break;
     }
     vm->opcode = saved;
+    // ScummVM o5_cursorCommand always writes back the engine's tracked
+    // VAR_CURSORSTATE / VAR_USERPUT after handling the sub-op
+    // (script_v5.cpp:937-940). We don't model _cursor.state / _userPut
+    // dynamically yet; mirror the state-set branches above by leaving
+    // whatever the script wrote intact (boot scripts assume initial
+    // values). Concretely, scripts that poll these vars need them to
+    // be the values the cursor sub-ops just established. For sub 1/2
+    // (cursor on/off) ScummVM sets _cursor.state +/- 1; for sub 3/4
+    // (userput on/off) it sets _userPut +/- 1. Mirror that here so
+    // VAR(VAR_CURSORSTATE) and VAR(VAR_USERPUT) reflect the script's
+    // last command — boot Script 1's verb-bar enable depends on it.
+    {
+        int sub_op = sub & 0x1F;
+        int cs = (int)vm_read_var(vm, VAR_CURSORSTATE);
+        int up = (int)vm_read_var(vm, VAR_USERPUT);
+        switch (sub_op) {
+        case 1: cs = 1; break;
+        case 2: cs = 0; break;
+        case 3: up = 1; break;
+        case 4: up = 0; break;
+        case 5: cs++; break;
+        case 6: cs--; break;
+        case 7: up++; break;
+        case 8: up--; break;
+        default: break;
+        }
+        vm_write_var(vm, VAR_CURSORSTATE, cs);
+        vm_write_var(vm, VAR_USERPUT, up);
+    }
 }
 
 // ===========================================================================
@@ -1084,9 +1159,13 @@ static void op_actorOps(VM *vm) {
             if (a) { a->init_frame = (uint8_t)f; a->frame = (uint8_t)f; }
             break;
         }
-        case 16:   // actor_width
-        case 19:   // always_zclip
-        case 23:   // shadow
+        case 16: { // SO_ACTOR_WIDTH — script_v5.cpp:600-602
+            int w = vm_get_var_or_byte(vm, 0x80);
+            if (a) a->width = (uint8_t)w;
+            break;
+        }
+        case 19:   // SO_ALWAYS_ZCLIP — script_v5.cpp:617
+        case 23:   // SO_SHADOW — script_v5.cpp:631
             (void)vm_get_var_or_byte(vm, 0x80);
             break;
         case 22: { // anim_speed
@@ -1125,15 +1204,22 @@ static void op_actorOps(VM *vm) {
             (void)vm_get_var_or_byte(vm, 0x40);
             (void)vm_get_var_or_byte(vm, 0x20);
             break;
-        case 8:    // default
-            if (a) {
-                a->scalex = a->scaley = 0xFF;
-                a->elevation = 0;
-                a->flags &= ~ACTOR_FLAG_FLIP_X;
-            }
+        case 8:    // SO_DEFAULT
+            // Mirrors script_v5.cpp:503-505 a->initActor(0).
+            actor_init_one(actor_id, 0);
+            // re-fetch a (init_one preserves slot pointer but be safe)
+            a = actor_get(actor_id);
             break;
-        case 10:   // anim_default
-            if (a) { a->frame = a->init_frame; }
+        case 10:   // SO_ANIMATION_DEFAULT
+            // Mirrors script_v5.cpp:510-514 — set the five frame slots
+            // back to 1/2/3/4/5.
+            if (a) {
+                a->init_frame = 1;
+                a->walk_frame = 2;
+                a->stand_frame = 3;
+                a->talk_start_frame = 4;
+                a->talk_stop_frame = 5;
+            }
             break;
         case 18:   // never_zclip
             if (a) a->flags |= ACTOR_FLAG_NEVER_ZCLIP;
@@ -1209,30 +1295,39 @@ static void op_verbOps(VM *vm) {
 // ===========================================================================
 // matrixOps (0x30 / 0xB0)
 // ===========================================================================
+// Mirrors o5_matrixOps (script_v5.cpp:1907-1929). Sub-ops:
+//   1 setBoxFlags(box, flags)
+//   2 setBoxScale(box, scale)
+//   3 setBoxScale(box, (scale-1) | 0x8000)   — encodes "scale by Y"
+//   4 createBoxMatrix()                      — re-run Floyd-Warshall
 static void op_matrixOps(VM *vm) {
     uint8_t sub = vm_fetch_byte(vm);
     uint8_t saved = vm->opcode;
     vm->opcode = sub;
     switch (sub & 0x1F) {
-    case 1:     // set_walkbox_runstop : actor, box
-        (void)vm_get_var_or_byte(vm, 0x80);
-        (void)vm_get_var_or_byte(vm, 0x40);
-        break;
-    case 2: {   // get_walkbox_at : result, x, y
-        uint16_t result_var = vm_get_result_pos(vm);
-        (void)vm_get_var_or_byte(vm, 0x80);
-        (void)vm_get_var_or_byte(vm, 0x40);
-        vm_write_var(vm, result_var, 0);
+    case 1: {   // setBoxFlags
+        int box   = vm_get_var_or_byte(vm, 0x80);
+        int flags = vm_get_var_or_byte(vm, 0x40);
+        walkbox_set_flags(box, (uint8_t)flags);
         break;
     }
-    case 3: {   // get_walkbox : result, actor
-        uint16_t result_var = vm_get_result_pos(vm);
-        (void)vm_get_var_or_byte(vm, 0x80);
-        vm_write_var(vm, result_var, 0);
+    case 2: {   // setBoxScale
+        int box   = vm_get_var_or_byte(vm, 0x80);
+        int scale = vm_get_var_or_byte(vm, 0x40);
+        walkbox_set_scale(box, (uint16_t)scale);
         break;
     }
+    case 3: {   // setBoxScale (Y-scaled form)
+        int box   = vm_get_var_or_byte(vm, 0x80);
+        int scale = vm_get_var_or_byte(vm, 0x40);
+        walkbox_set_scale(box, (uint16_t)((scale - 1) | 0x8000));
+        break;
+    }
+    case 4:     // createBoxMatrix
+        walkbox_recompute_matrix();
+        break;
     default:
-        platform::log("[stub] matrixOps sub=0x%02X\n", sub);
+        platform::log("matrixOps unknown sub=0x%02X\n", sub);
         break;
     }
     vm->opcode = saved;
@@ -1253,89 +1348,20 @@ static void op_saveRestoreVerbs(VM *vm) {
 }
 
 // ===========================================================================
-// Print / printEgo (0x14 / 0xD8 et al) — consume the message string + sub-ops
+// Print / printEgo. Mirrors o5_print / o5_printEgo (script_v5.cpp:2058,
+// 2078). Both delegate into decodeParseString, which is implemented in
+// string.cpp.
 // ===========================================================================
 static void op_print(VM *vm) {
     int actor = vm_get_var_or_byte(vm, 0x80);
-    (void)actor;
-    while (true) {
-        uint8_t sub = vm_fetch_byte(vm);
-        if (sub == 0xFF) break;
-        uint8_t saved = vm->opcode;
-        vm->opcode = sub;
-        switch (sub & 0x0F) {
-        case 0:    // SO_AT : 2 words
-            (void)vm_get_var_or_word(vm, 0x80);
-            (void)vm_get_var_or_word(vm, 0x40);
-            break;
-        case 1:    // SO_COLOR : byte
-            (void)vm_get_var_or_byte(vm, 0x80);
-            break;
-        case 2:    // SO_CLIPPED : word
-            (void)vm_get_var_or_word(vm, 0x80);
-            break;
-        case 3:    // SO_ERASE : 2 words
-            (void)vm_get_var_or_word(vm, 0x80);
-            (void)vm_get_var_or_word(vm, 0x40);
-            break;
-        case 4:    // SO_CENTER
-        case 6:    // SO_LEFT
-        case 7:    // SO_OVERHEAD
-            break;
-        case 8:    // SO_SAY_VOICE : 2 words
-            (void)vm_get_var_or_word(vm, 0x80);
-            (void)vm_get_var_or_word(vm, 0x40);
-            break;
-        case 15:   // SO_TEXTSTRING : in-line message, terminates the loop
-            skip_message_string(vm);
-            vm->opcode = saved;
-            return;
-        default:
-            platform::log("[stub] print sub=0x%02X\n", sub);
-            break;
-        }
-        vm->opcode = saved;
-    }
+    string_decode_parse(vm, actor);
 }
 
 static void op_printEgo(VM *vm) {
-    // Same shape as o5_print but actor implicit (VAR_EGO).
-    while (true) {
-        uint8_t sub = vm_fetch_byte(vm);
-        if (sub == 0xFF) break;
-        uint8_t saved = vm->opcode;
-        vm->opcode = sub;
-        switch (sub & 0x0F) {
-        case 0:
-            (void)vm_get_var_or_word(vm, 0x80);
-            (void)vm_get_var_or_word(vm, 0x40);
-            break;
-        case 1:
-            (void)vm_get_var_or_byte(vm, 0x80);
-            break;
-        case 2:
-            (void)vm_get_var_or_word(vm, 0x80);
-            break;
-        case 3:
-            (void)vm_get_var_or_word(vm, 0x80);
-            (void)vm_get_var_or_word(vm, 0x40);
-            break;
-        case 4: case 6: case 7:
-            break;
-        case 8:
-            (void)vm_get_var_or_word(vm, 0x80);
-            (void)vm_get_var_or_word(vm, 0x40);
-            break;
-        case 15:
-            skip_message_string(vm);
-            vm->opcode = saved;
-            return;
-        default:
-            platform::log("[stub] printEgo sub=0x%02X\n", sub);
-            break;
-        }
-        vm->opcode = saved;
-    }
+    // ScummVM o5_printEgo (script_v5.cpp:2078): _actorToPrintStrFor =
+    // VAR(VAR_EGO).
+    int ego = (int)vm_read_var(vm, VAR_EGO);
+    string_decode_parse(vm, ego);
 }
 
 // ===========================================================================
@@ -1365,18 +1391,18 @@ static void op_walkActorToActor(VM *vm) {
     if (d) actor_walk_to(act, d->x, d->y);
 }
 
+// Mirrors o5_walkActorToObject (script_v5.cpp:2120-2158).
 static void op_walkActorToObject(VM *vm) {
     int act = vm_get_var_or_byte(vm, 0x80);
     int obj = vm_get_var_or_word(vm, 0x40);
-    (void)act; (void)obj;
-    // Object position lookup not yet implemented.
+    engine_walk_actor_to_object(act, obj);
 }
 
+// Mirrors o5_putActorAtObject (script_v5.cpp:2133-2158).
 static void op_putActorAtObject(VM *vm) {
     int act = vm_get_var_or_byte(vm, 0x80);
     int obj = vm_get_var_or_word(vm, 0x40);
-    (void)act; (void)obj;
-    // Object position lookup not yet implemented.
+    engine_put_actor_at_object(act, obj);
 }
 
 static void op_putActorInRoom(VM *vm) {
@@ -1397,34 +1423,98 @@ static void op_faceActor(VM *vm) {
     (void)act; (void)obj;
 }
 
-// Non-static so opcodes_v4.cpp can re-install it at v4-specific opcode slots
-// (0x25/0x45/0x65/0xA5/0xC5/0xE5) — see script_v4.cpp:32-37.
+// Mirrors o5_drawObject (script_v5.cpp:1031-1129). Two operand shapes:
+//   v4 (GF_SMALL_HEADER) — script_v5.cpp:1041-1043: TWO additional words
+//     (xpos, ypos) follow the obj-id; state is implicitly 1.
+//   v5+ — sub-byte switch over (1 setXY / 2 setState / 0x1F neither).
+//
+// The actual draw work (script_v5.cpp:1108-1128):
+//   - getObjectIndex; if -1 return.
+//   - if xpos != 0xFF: shift od.walk_x/walk_y by (xpos*8 - od.x_pos),
+//     then update od.x_pos / od.y_pos.
+//   - addObjectToDrawQue(idx).
+//   - clear state of any object sharing the same x/y/w/h footprint
+//     (objects layered at the same rect — only one is "on" at a time).
+//   - putState(obj, state).
+//
+// Non-static so opcodes_v4.cpp can re-install it at v4-specific opcode
+// slots (0x25/0x45/0x65/0xA5/0xC5/0xE5) — see script_v4.cpp:32-37.
 void op_drawObject(VM *vm);
 void op_drawObject(VM *vm) {
+    int state = 1;
+    int xpos = 255, ypos = 255;
     int obj = vm_get_var_or_word(vm, 0x80);
-    uint8_t sub = vm_fetch_byte(vm);
-    uint8_t saved = vm->opcode;
-    vm->opcode = sub;
-    switch (sub & 0x1F) {
-    case 1:   // setXY
-        (void)vm_get_var_or_word(vm, 0x80);
-        (void)vm_get_var_or_word(vm, 0x40);
-        break;
-    case 2:   // set image
-        (void)vm_get_var_or_word(vm, 0x80);
-        break;
-    default:
-        // sub-op terminator/no-args: nothing to consume
-        break;
+
+    if (engine_is_v4()) {
+        // v4 GF_SMALL_HEADER: read two follow-up words for x/y.
+        // (script_v5.cpp:1041-1043 — uses PARAM_2/PARAM_3 from the opcode
+        // byte, NOT a sub-op byte.)
+        xpos = vm_get_var_or_word(vm, 0x40);
+        ypos = vm_get_var_or_word(vm, 0x20);
+    } else {
+        uint8_t sub = vm_fetch_byte(vm);
+        uint8_t saved = vm->opcode;
+        vm->opcode = sub;
+        switch (sub & 0x1F) {
+        case 1: // draw at
+            xpos = vm_get_var_or_word(vm, 0x80);
+            ypos = vm_get_var_or_word(vm, 0x40);
+            break;
+        case 2: // set state
+            state = vm_get_var_or_word(vm, 0x80);
+            break;
+        case 0x1F: // neither
+            break;
+        default:
+            platform::log("op_drawObject: unknown subop 0x%02X\n", sub & 0x1F);
+            break;
+        }
+        vm->opcode = saved;
     }
-    vm->opcode = saved;
-    platform::log("[stub] drawObject(%d)\n", obj);
+
+    ObjectTable *t = get_object_table();
+    if (!t) return;
+    ObjectData *od = object_get_by_id(t, obj);
+    if (!od) {
+        // Object not loaded in current room — still update global state
+        // so a later room load reflects it.
+        engine_put_object_state(obj, (uint8_t)state);
+        return;
+    }
+    if (xpos != 0xFF) {
+        // ScummVM: walk_x += (xpos*8 - x_pos); x_pos = xpos*8. Our ObjectData
+        // stores x in 8-pixel strips, so the equivalent walk-coord shift is:
+        int new_x_pix = xpos * 8;
+        int new_y_pix = ypos * 8;
+        od->walk_x = (int16_t)(od->walk_x + new_x_pix - (od->x_strip * 8));
+        od->walk_y = (int16_t)(od->walk_y + new_y_pix - (od->y * 8));
+        od->x_strip = (uint8_t)xpos;
+        od->y       = (uint8_t)ypos;
+    }
+
+    // Clear any other object with the same footprint (coordinates +
+    // width + height) — script_v5.cpp:1122-1126.
+    int x = od->x_strip, y = od->y, w = od->w_strip, h = od->h;
+    for (int i = t->num_objects; i >= 1; i--) {
+        ObjectData *o = &t->objects[i];
+        if (o == od) continue;
+        if (o->obj_id == 0) continue;
+        if (o->x_strip == x && o->y == y && o->w_strip == w && o->h == h) {
+            engine_put_object_state(o->obj_id, 0);
+            o->state = 0;
+        }
+    }
+
+    // Apply the requested state — both global and the loaded slot.
+    engine_put_object_state(obj, (uint8_t)state);
+    od->state = (uint8_t)state;
 }
 
+// Mirrors o5_drawBox (script_v5.cpp:1017-1029) + gfx.cpp::drawBox. Renders
+// a filled rectangle at room coords into the room-wide composite buffer.
 static void op_drawBox(VM *vm) {
     int x1 = vm_get_var_or_word(vm, 0x80);
     int y1 = vm_get_var_or_word(vm, 0x40);
-    // Per spec: a follow-up byte gives flags for the second pair.
     uint8_t flags = vm_fetch_byte(vm);
     uint8_t saved = vm->opcode;
     vm->opcode = flags;
@@ -1432,8 +1522,7 @@ static void op_drawBox(VM *vm) {
     int y2 = vm_get_var_or_word(vm, 0x40);
     int color = vm_get_var_or_byte(vm, 0x20);
     vm->opcode = saved;
-    (void)x1; (void)y1; (void)x2; (void)y2; (void)color;
-    platform::log("[stub] drawBox\n");
+    engine_draw_box(x1, y1, x2, y2, color);
 }
 
 // Mirrors ScummEngine::setStateCommon (object.cpp) which calls putState +
@@ -1453,16 +1542,42 @@ static void op_setState(VM *vm) {
     }
 }
 
+// Mirrors ScummEngine::setOwnerOf (object.cpp:98+). owner==0 → drop
+// the object from inventory (clearOwnerOf); else assign owner. We don't
+// scan slots for FLOBJECT scripts of this object yet (audit H30 — low).
 static void op_setOwnerOf(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
     int own = vm_get_var_or_byte(vm, 0x40);
-    engine_put_object_owner(obj, (uint8_t)own);
+    if (own == 0) {
+        engine_remove_object_from_inventory(obj);
+        engine_put_object_owner(obj, OWNER_ROOM);
+    } else {
+        engine_put_object_owner(obj, (uint8_t)own);
+    }
 }
 
+// Mirrors o5_pickupObject (script_v5.cpp:2021-2034). Add to inventory,
+// flag as Untouchable, set state=1, run inventoryScript(1).
 static void op_pickupObject(VM *vm) {
     int obj  = vm_get_var_or_word(vm, 0x80);
     int room = vm_get_var_or_byte(vm, 0x40);
-    platform::log("[stub] pickupObject(%d, %d)\n", obj, room);
+    (void)room;     // room arg ignored when picking up from current room
+    int ego = (int)vm_read_var(vm, VAR_EGO);
+    engine_add_object_to_inventory(obj, ego);
+    engine_put_class(obj, 32 /*kObjectClassUntouchable*/, true);
+    engine_put_object_state(obj, 1);
+    {
+        ObjectTable *t = get_object_table();
+        if (t) {
+            ObjectData *o = object_get_by_id(t, obj);
+            if (o) o->state = 1;
+        }
+    }
+    int inv_script = (int)vm_read_var(vm, VAR_INVENTORY_SCRIPT);
+    if (inv_script) {
+        int32_t args[1] = { 1 };
+        vm_start_script(vm, inv_script, args, 1, false, false);
+    }
 }
 
 // 0x12 / 0x92 — panCameraTo. Mirrors o5_panCameraTo (script_v5.cpp:1534).
@@ -1530,23 +1645,35 @@ static void op_soundKludge(VM *vm) {
     vm_get_word_vararg(vm, args);
 }
 
+// Mirrors o5_setObjectName via loadPtrToResource(rtObjectName, ...).
+// We capture the in-line string and stash it in the object-name pool
+// so verb-bar / sentence-line lookups can resolve obj names.
 static void op_setObjectName(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
+    const uint8_t *p = vm->cur_script_data.data + vm->cur_pc;
+    int n = 0;
+    while (p[n] != 0 && (size_t)(vm->cur_pc + n) < vm->cur_script_data.size) n++;
+    engine_set_object_name(obj, p, n);
     vm_skip_string(vm);
-    platform::log("[stub] setObjectName(%d)\n", obj);
 }
 
 static void op_doSentence(VM *vm) {
     // ScummVM o5_doSentence: read verb via getVarOrDirectByte(P1) first.
-    // If verb == 0xFE: short form, no further operands. Else read PARAM_2
-    // word and PARAM_3 word.
+    // If verb == 0xFE: short form, stop the sentence script + clear
+    // _sentenceNum + clearClickedStatus (script_v5.cpp:1004-1009).
     int verb = vm_get_var_or_byte(vm, 0x80);
     if (verb == 0xFE) {
-        return;     // short form — no further operands
+        int ssid = (int)vm_read_var(vm, VAR_SENTENCE_SCRIPT);
+        if (ssid) vm_stop_script(vm, ssid);
+        // _sentenceNum = 0 — we don't yet model the sentence stack, so
+        // the var-side state is enough.
+        return;
     }
     int obj1 = vm_get_var_or_word(vm, 0x40);
     int obj2 = vm_get_var_or_word(vm, 0x20);
-    platform::log("[stub] doSentence(%d, %d, %d)\n", verb, obj1, obj2);
+    (void)obj1; (void)obj2;
+    // Sentence stack push not modelled yet (audit H93); the verb opcodes
+    // that consume it are still stubs.
 }
 
 // ===========================================================================
@@ -1609,11 +1736,12 @@ static void op_getActorWalkBox(VM *vm) {
     vm_write_var(vm, result_var, (a && a->walkbox != INVALID_BOX) ? a->walkbox : 0);
 }
 
+// Mirrors o5_getActorWidth (script_v5.cpp:1340-1345).
 static void op_getActorWidth(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
-    (void)act;
-    vm_write_var(vm, result_var, 0);
+    Actor *a = actor_get(act);
+    vm_write_var(vm, result_var, a ? a->width : 24);
 }
 
 static void op_getActorScale(VM *vm) {
@@ -1630,57 +1758,83 @@ static void op_getAnimCounter(VM *vm) {
     vm_write_var(vm, result_var, 0);
 }
 
+// Mirrors o5_getActorFromPos (script_v5.cpp:1188-1194). Walks all actors
+// in the current room; returns the first whose footprint encloses (x,y).
+// Footprint matches ScummVM Actor::isInsideActorBox: the actor's pos
+// minus half-width to plus half-width, top edge at pos.y - height.
 static void op_actorFromPos(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int x = vm_get_var_or_word(vm, 0x80);
     int y = vm_get_var_or_word(vm, 0x40);
-    (void)x; (void)y;
-    vm_write_var(vm, result_var, 0);
+    int found = 0;
+    for (int i = 1; i < MAX_ACTORS; i++) {
+        Actor *a = actor_get(i);
+        if (!a || !(a->flags & ACTOR_FLAG_VISIBLE)) continue;
+        int hw = (a->width / 2) ? (a->width / 2) : 12;
+        if (x >= a->x - hw && x <= a->x + hw &&
+            y >= a->y - 32 && y <= a->y) { found = i; break; }
+    }
+    vm_write_var(vm, result_var, found);
 }
 
+// Mirrors o5_getDist (script_v5.cpp:1406-1421) — the engine helper
+// getObjActToObjActDist returns Chebyshev distance between two
+// object/actor positions. We resolve each operand to (x,y) using
+// actor pos for actor IDs (1..MAX_ACTORS-1) or object walk_pos.
+static bool resolve_world_xy(int id, int *out_x, int *out_y) {
+    if (id < MAX_ACTORS) {
+        Actor *a = actor_get(id);
+        if (!a) return false;
+        if (out_x) *out_x = a->x;
+        if (out_y) *out_y = a->y;
+        return true;
+    }
+    int dir = 0;
+    return engine_object_walk_pos(id, out_x, out_y, &dir);
+}
 static void op_getDist(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int o1 = vm_get_var_or_word(vm, 0x80);
     int o2 = vm_get_var_or_word(vm, 0x40);
-    (void)o1; (void)o2;
-    vm_write_var(vm, result_var, 100);   // far enough not to trip "near" checks
+    int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+    if (!resolve_world_xy(o1, &x1, &y1)) { vm_write_var(vm, result_var, 0xFF); return; }
+    if (!resolve_world_xy(o2, &x2, &y2)) { vm_write_var(vm, result_var, 0xFF); return; }
+    vm_write_var(vm, result_var, engine_world_dist(x1, y1, x2, y2));
 }
 
 static void op_getInventoryCount(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
-    (void)act;
-    vm_write_var(vm, result_var, 0);
+    vm_write_var(vm, result_var, engine_inventory_count(act));
 }
 
 static void op_findInventory(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     int n   = vm_get_var_or_byte(vm, 0x40);
-    (void)act; (void)n;
-    vm_write_var(vm, result_var, 0);
+    vm_write_var(vm, result_var, engine_find_inventory(act, n));
 }
 
+// Mirrors o5_findObject (script_v5.cpp:1211-1218).
 static void op_findObject(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int x = vm_get_var_or_byte(vm, 0x80);
     int y = vm_get_var_or_byte(vm, 0x40);
-    (void)x; (void)y;
-    vm_write_var(vm, result_var, 0);
+    vm_write_var(vm, result_var, engine_find_object_at(x, y));
 }
 
+// Mirrors o5_getObjectState (script_v5.cpp:1433-1436).
 static void op_getObjectState(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int obj = vm_get_var_or_word(vm, 0x80);
-    (void)obj;
-    vm_write_var(vm, result_var, 0);
+    vm_write_var(vm, result_var, engine_get_object_state(obj));
 }
 
+// Mirrors o5_getObjectOwner (script_v5.cpp:1428-1431).
 static void op_getObjectOwner(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int obj = vm_get_var_or_word(vm, 0x80);
-    (void)obj;
-    vm_write_var(vm, result_var, 0);
+    vm_write_var(vm, result_var, engine_get_object_owner(obj));
 }
 
 static void op_getStringWidth(VM *vm) {
@@ -1698,26 +1852,43 @@ static void op_getVerbEntrypoint(VM *vm) {
     vm_write_var(vm, result_var, 0);
 }
 
+// Mirrors o5_getClosestObjActor (script_v5.cpp:1379-1404). For an actor's
+// (or object's) X position, find the listed object/actor with minimum
+// |x - their.x|.
 static void op_getClosestObjActor(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
-    // First operand x(0x80), then a vararg list of object IDs (terminated 0xFF).
-    int x = vm_get_var_or_word(vm, 0x80);
+    int seed = vm_get_var_or_word(vm, 0x80);
+    int seed_x = 0, seed_y = 0;
+    if (!resolve_world_xy(seed, &seed_x, &seed_y)) {
+        vm_write_var(vm, result_var, 0); return;
+    }
     int32_t args[VM_MAX_VARARG];
-    vm_get_word_vararg(vm, args);
-    (void)x;
-    vm_write_var(vm, result_var, 0);
+    int n = vm_get_word_vararg(vm, args);
+    int best = 0; int best_d = 0x7FFFFFFF;
+    for (int i = 0; i < n; i++) {
+        int x = 0, y = 0;
+        if (!resolve_world_xy((int)args[i], &x, &y)) continue;
+        int d = x > seed_x ? (x - seed_x) : (seed_x - x);
+        if (d < best_d) { best_d = d; best = (int)args[i]; }
+    }
+    vm_write_var(vm, result_var, best);
 }
 
 // ===========================================================================
 // isActorInBox (0x1F / 0x5F / 0x9F / 0xDF) — stub: jump to !cond, i.e. always
 // take the jump (no actor system to check).
 // ===========================================================================
+// Mirrors o5_isActorInBox (script_v5.cpp:1524-1530). Jump if the actor
+// is NOT inside the queried walkbox.
 static void op_isActorInBox(VM *vm) {
     int act = vm_get_var_or_byte(vm, 0x80);
     int box = vm_get_var_or_byte(vm, 0x40);
-    (void)act; (void)box;
-    // Without an actor system, treat as "not in box" -> jump.
-    vm_jump_relative(vm, false);
+    Actor *a = actor_get(act);
+    bool in_box = false;
+    if (a) {
+        in_box = walkbox_contains(box, a->x, a->y);
+    }
+    vm_jump_relative(vm, in_box);
 }
 
 // ===========================================================================

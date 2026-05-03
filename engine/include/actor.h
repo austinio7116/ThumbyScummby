@@ -62,10 +62,18 @@ struct Actor {
     uint8_t  talk_color;
     uint8_t  shadow_mode;
     int16_t  talk_pos_x, talk_pos_y;
+    // Actor::_width — default 24 (ScummVM actor.cpp:195 initActor). Used
+    // by walkActorToActor distance and centred talk-text placement.
+    uint8_t  width;
 
     uint8_t  flags;
     uint8_t  layer;
     uint8_t  force_clip;
+    // ScummVM Actor::_walkScript / _talkScript — script numbers invoked
+    // by startWalkAnim / runActorTalkScript. 0 = default (built-in
+    // setDirection / startAnimActor path).
+    uint16_t walk_script;
+    uint16_t talk_script;
 
     // Walk destination & current-leg waypoint
     int16_t  dest_x, dest_y;
@@ -91,6 +99,17 @@ void   actor_set_costume(int actor_num, int costume_id);
 void   actor_walk_to(int actor_num, int x, int y);
 void   actor_animate(int actor_num, int anim);
 void   actor_face_object(int actor_num, int object);
+void   actor_set_facing(int actor_num, int direction);  // setDirection
+// Re-init one actor — mirrors ScummEngine::Actor::initActor with `mode`:
+//   -1 = full reset (used at game-startup);
+//    0 = soft reset (preserves room/cost/pos/facing — o5_actorOps SO_DEFAULT);
+//    1 = same as -1 but skips animVariable (rare, used by setOwnerOf).
+void   actor_init_one(int actor_num, int mode);
+
+// Class-data flip for o5_setClass (object.cpp::putClass action on
+// actors: if the object is in actor range, classChanged toggles
+// _ignoreBoxes / _forceClip flags). Mirrors actor.cpp::classChanged.
+void   actor_class_changed(int actor_num, int cls, bool set);
 
 // Per-frame walking + costume render hooks called from the engine main loop.
 // `wbg` is the current room's walkbox graph (may be nullptr if the room has

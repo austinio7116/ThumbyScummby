@@ -243,6 +243,72 @@ static void closest_pt_on_seg(int ax, int ay, int bx, int by,
     *oy = ay + (int)((int64_t)dotp * dy / len2);
 }
 
+// Provided by engine.cpp — pointer to the current room's WalkboxGraph,
+// or nullptr if the room has no walkboxes (e.g. inventory screen).
+extern WalkboxGraph *engine_active_walkbox_graph();
+
+bool walkbox_contains(int box_id, int x, int y) {
+    WalkboxGraph *g = engine_active_walkbox_graph();
+    if (!g || !g->valid) return false;
+    if (box_id < 0 || box_id >= g->num_boxes) return false;
+    return point_in_box(&g->boxes[box_id], x, y);
+}
+
+void walkbox_set_flags(int box_id, uint8_t flags) {
+    WalkboxGraph *g = engine_active_walkbox_graph();
+    if (!g || !g->valid) return;
+    if (box_id < 0 || box_id >= g->num_boxes) return;
+    g->boxes[box_id].flags = flags;
+}
+
+void walkbox_set_scale(int box_id, uint16_t scale) {
+    WalkboxGraph *g = engine_active_walkbox_graph();
+    if (!g || !g->valid) return;
+    if (box_id < 0 || box_id >= g->num_boxes) return;
+    g->boxes[box_id].scale = scale;
+}
+
+// Mirrors ScummEngine::createBoxMatrix (boxes.cpp): rebuild the
+// itinerary matrix using the current set of boxes/flags. We re-run the
+// same Floyd-Warshall as walkbox_load, on the existing box records.
+void walkbox_recompute_matrix() {
+    WalkboxGraph *g = engine_active_walkbox_graph();
+    if (!g || !g->valid) return;
+    int n = g->num_boxes;
+    static uint8_t adj[MAX_BOXES * MAX_BOXES];
+    for (int i = 0; i < MAX_BOXES * MAX_BOXES; i++) g->matrix[i] = INVALID_BOX;
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            int idx = i * MAX_BOXES + j;
+            if (i == j) { adj[idx] = 0; g->matrix[idx] = (uint8_t)j; }
+            else if (boxes_share_edge(&g->boxes[i], &g->boxes[j])) {
+                adj[idx] = 1; g->matrix[idx] = (uint8_t)j;
+            } else {
+                adj[idx] = 255; g->matrix[idx] = INVALID_BOX;
+            }
+        }
+    }
+    for (int k = 0; k < n; k++) {
+        for (int i = 0; i < n; i++) {
+            if (i == k) continue;
+            uint8_t d_ik = adj[i * MAX_BOXES + k];
+            if (d_ik == 255) continue;
+            for (int j = 0; j < n; j++) {
+                if (i == j) continue;
+                uint8_t d_kj = adj[k * MAX_BOXES + j];
+                if (d_kj == 255) continue;
+                int sum = (int)d_ik + (int)d_kj;
+                if (sum > 254) sum = 254;
+                if (sum < adj[i * MAX_BOXES + j]) {
+                    adj[i * MAX_BOXES + j] = (uint8_t)sum;
+                    g->matrix[i * MAX_BOXES + j] =
+                        g->matrix[i * MAX_BOXES + k];
+                }
+            }
+        }
+    }
+}
+
 void walkbox_closest_pt(const WalkBox *box, int px, int py,
                         int *out_x, int *out_y) {
     int best_x = box->ulx, best_y = box->uly;

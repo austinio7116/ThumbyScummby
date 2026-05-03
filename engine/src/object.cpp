@@ -140,8 +140,15 @@ void object_mark_all_dirty(ObjectTable *t) {
 // only if every ancestor's (state & 0xF) equals the immediate child's
 // `parentstate`. A top-level object (parent == 0) draws unconditionally
 // (the caller's `state & mask` gate has already filtered it).
+//
+// Clipping: the destination is the room-wide composite buffer of width
+// `buf_w` (== ScummEngine `_roomWidth`), NOT the 320-pixel viewport.
+// Earlier versions of this code clamped to VIRTUAL_SCREEN_W/H, which
+// silently dropped right-side scenery in any room wider than 320 px
+// (audit F6 / scummvm-upstream/engines/scumm/object.cpp:600+).
 static void draw_one_object(const ObjectTable *t, int slot,
-                            uint8_t *vscreen_back, int pitch) {
+                            uint8_t *vscreen_back, int pitch,
+                            int buf_w, int buf_h) {
     constexpr int mask = 0x0F;
     const ObjectData *od = &t->objects[slot];
     if (slot < 1 || od->obj_id < 1 || !od->state) return;
@@ -168,9 +175,9 @@ static void draw_one_object(const ObjectTable *t, int slot,
     int h_pix = od->h * 8;
     if (x_pix < 0 || y_pix < 0) return;
     if (w_pix <= 0 || h_pix <= 0) return;
-    if (x_pix >= VIRTUAL_SCREEN_W || y_pix >= VIRTUAL_SCREEN_H) return;
-    if (x_pix + w_pix > VIRTUAL_SCREEN_W) return;
-    if (y_pix + h_pix > VIRTUAL_SCREEN_H) return;
+    if (x_pix >= buf_w || y_pix >= buf_h) return;
+    if (x_pix + w_pix > buf_w) return;
+    if (y_pix + h_pix > buf_h) return;
 
     Span bm = od->obim_payload.sub(2);
     uint8_t *dst = vscreen_back + (size_t)y_pix * pitch + x_pix;
@@ -180,12 +187,15 @@ static void draw_one_object(const ObjectTable *t, int slot,
 // Mirrors ScummEngine::drawRoomObjects (object.cpp:620-645). v4 path:
 // iterate slots N..1 in reverse, gated by (state & 0xF).
 void object_render_all(const ObjectTable *t,
-                       uint8_t *vscreen_back, int pitch) {
+                       uint8_t *vscreen_back, int pitch,
+                       int buf_w, int buf_h) {
     constexpr int mask = 0x0F;
+    if (buf_w <= 0) buf_w = pitch;
+    if (buf_h <= 0) buf_h = VIRTUAL_SCREEN_H;
     for (int i = t->num_objects; i >= 1; i--) {
         const ObjectData *o = &t->objects[i];
         if (o->obj_id > 0 && (o->state & mask)) {
-            draw_one_object(t, i, vscreen_back, pitch);
+            draw_one_object(t, i, vscreen_back, pitch, buf_w, buf_h);
         }
     }
 }

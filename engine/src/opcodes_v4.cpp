@@ -41,20 +41,25 @@ static void op_v4_ifNotState(VM *vm) {
     vm_jump_relative(vm, s != state);
 }
 
-// 0x50 / 0xD0 — pickupObjectOld(obj)
-//   set owner=ego, state=1, add to inventory, run inventory script.
-//   For now: stub that just consumes the operand.
+// 0x50 / 0xD0 — pickupObjectOld(obj). Mirrors o4_pickupObject
+// (script_v4.cpp:95-116): putOwner(EGO), putClass(Untouchable, 1),
+// putState(1), markObjectRectAsDirty, clearDrawObjectQueue,
+// runInventoryScript(1).
 static void op_v4_pickupObjectOld(VM *vm) {
     int obj = vm_get_var_or_word(vm, 0x80);
-    platform::log("[stub] o4_pickupObject(%d)\n", obj);
-    // Real semantics (script_v4.cpp:95-116): putOwner(EGO), putClass(Untouchable,1),
-    // putState(1), runInventoryScript(1). Minimal: just flip state so the
-    // object disappears from the room view.
+    int ego = (int)vm_read_var(vm, VAR_EGO);
+    engine_add_object_to_inventory(obj, ego);
+    engine_put_class(obj, 32 /*kObjectClassUntouchable*/, true);
     engine_put_object_state(obj, 1);
     ObjectTable *t = get_object_table();
     if (t) {
         ObjectData *o = object_get_by_id(t, obj);
         if (o) o->state = 1;
+    }
+    int inv_script = (int)vm_read_var(vm, VAR_INVENTORY_SCRIPT);
+    if (inv_script) {
+        int32_t args[1] = { 1 };
+        vm_start_script(vm, inv_script, args, 1, false, false);
     }
 }
 
@@ -127,8 +132,13 @@ static void op_v4_saveLoadGame(VM *vm) {
     platform::log("[stub] o4_saveLoadGame sub=%d\n", sub);
 }
 
+// Provided by engine.cpp — flips `engine_is_v4()` so opcodes that take
+// different shapes between v4 and v5 can branch.
+extern void engine_set_v4_mode(bool on);
+
 // Install v4 overrides — call AFTER vm_opcodes_init().
 void vm_opcodes_v4_init() {
+    engine_set_v4_mode(true);
     vm_opcode_table[0x0F] = op_v4_ifState;
     vm_opcode_table[0x4F] = op_v4_ifState;
     vm_opcode_table[0x8F] = op_v4_ifState;

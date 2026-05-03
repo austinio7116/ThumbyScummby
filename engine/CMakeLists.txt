@@ -19,6 +19,7 @@ add_library(thumbyscummby_engine STATIC
     src/walkbox.cpp
     src/object.cpp
     src/charset.cpp
+    src/string.cpp
     src/opl2.cpp
     src/adlib.cpp
     src/imuse.cpp

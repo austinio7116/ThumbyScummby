@@ -46,6 +46,9 @@ constexpr int VAR_OVERRIDE         = 5;
 constexpr int VAR_MACHINE_SPEED    = 6;
 constexpr int VAR_ME               = 7;
 constexpr int VAR_NUM_ACTOR        = 8;
+// VAR_CURRENT_LIGHTS — set by o5_lights, queried by costume rendering
+// (LIGHTMODE_actor_use_colors etc). v5 (inherited by v4): 9. v3: 12.
+constexpr int VAR_CURRENT_LIGHTS   = 9;
 constexpr int VAR_CURRENTDRIVE     = 10;
 constexpr int VAR_TMR_1            = 11;
 constexpr int VAR_TMR_2            = 12;

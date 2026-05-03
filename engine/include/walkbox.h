@@ -78,4 +78,16 @@ uint8_t walkbox_next(const WalkboxGraph *g, uint8_t from, uint8_t to);
 void walkbox_closest_pt(const WalkBox *box, int px, int py,
                         int *out_x, int *out_y);
 
+// Mirror of ScummEngine::checkXYInBoxBounds (boxes.cpp): does the point
+// (x,y) lie inside the named box of the current room? Used by
+// o5_isActorInBox. Returns false if box is out of range or invalid.
+bool walkbox_contains(int box_id, int x, int y);
+
+// Set / get walkbox flag bits — mirrors o5_matrixOps case 1 (setBoxFlags)
+// and the runtime side of o5_matrixOps case 4 (createBoxMatrix).
+void walkbox_set_flags(int box_id, uint8_t flags);
+void walkbox_set_scale(int box_id, uint16_t scale);
+// Recompute the itinerary matrix — mirrors createBoxMatrix.
+void walkbox_recompute_matrix();
+
 }  // namespace tsb
