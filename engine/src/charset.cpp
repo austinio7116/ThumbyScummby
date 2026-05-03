@@ -68,24 +68,36 @@ void charset_draw_char(const Charset *cs, char c, int dx, int dy,
 
     int x = dx + ox;
     int y = dy + oy;
-    int bit = 0;
 
+    // Mirrors CharsetRendererClassic::drawBitsN
+    // (scummvm-upstream/engines/scumm/charset.cpp:1391-1434):
+    //   bits = *src++; numbits = 8;
+    //   for each pixel: color = (bits >> (8 - bpp)) & 0xFF;
+    //                   bits <<= bpp; numbits -= bpp;
+    //                   if numbits==0 refill from *src++
+    // The pixel value is the TOP `bpp` bits of `bits` (MSB-first
+    // packing); a previous reading of this routine accumulated LSB-
+    // first so 2bpp glyphs came out bit-reversed (pixel "10" -> 1
+    // instead of 2), which made readable English render as gibberish.
+    int bpp = cs->bpp;
+    if (bpp <= 0 || bpp > 8) return;
+    uint8_t bits_buf = *bits++;
+    int numbits = 8;
     for (int gy = 0; gy < h; gy++) {
         for (int gx = 0; gx < w; gx++) {
+            uint8_t color = (uint8_t)((bits_buf >> (8 - bpp)) & 0xFF);
             int sx = x + gx, sy = y + gy;
-            if (sx < 0 || sx >= VIRTUAL_SCREEN_W ||
-                sy < 0 || sy >= VIRTUAL_SCREEN_H) {
-                bit += cs->bpp;
-                continue;
+            if (color != 0 &&
+                sx >= 0 && sx < VIRTUAL_SCREEN_W &&
+                sy >= 0 && sy < VIRTUAL_SCREEN_H) {
+                vscreen[sy * pitch + sx] =
+                    color_table ? color_table[color] : color;
             }
-            uint8_t v = 0;
-            for (int b = 0; b < cs->bpp; b++) {
-                int bb = bit + b;
-                v |= ((bits[bb >> 3] >> (7 - (bb & 7))) & 1) << b;
-            }
-            bit += cs->bpp;
-            if (v != 0) {
-                vscreen[sy * pitch + sx] = color_table ? color_table[v] : v;
+            bits_buf = (uint8_t)(bits_buf << bpp);
+            numbits -= bpp;
+            if (numbits == 0) {
+                bits_buf = *bits++;
+                numbits = 8;
             }
         }
     }

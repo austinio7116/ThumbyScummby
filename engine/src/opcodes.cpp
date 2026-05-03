@@ -968,16 +968,19 @@ static void op_cursorCommand(VM *vm) {
             args_read[i] = vm_get_var_or_byte(vm, masks[i]);
         }
         if ((sub & 0x1F) == 13) {
-            // initCharset(id) — script_v5.cpp:907.
+            // initCharset(id) — script_v5.cpp:907 / ScummEngine::initCharset.
+            // Upstream sets `_string[i]._default.charset = id` for every
+            // slot — i.e. it changes the DEFAULT, which loadDefault() then
+            // copies into the live slot on the next print. Writing to
+            // `_string[i].charset` directly would last only until the
+            // next print's loadDefault(), so the boot's "use big title
+            // font" command (initCharset(2/3) before the splash) would
+            // be reverted by the splash itself.
             Charset cs;
-            if (charset_load_from_helper(900 + args_read[0], &cs)) {
-                string_set_charset_colormap(nullptr, 0);   // no-op
+            (void)charset_load_from_helper(900 + args_read[0], &cs);
+            for (int s = 0; s < NUM_STRING_SLOTS; s++) {
+                string_set_default_charset(s, args_read[0]);
             }
-            // Set _string[0..3].charset = id (mirrors initCharset's loop
-            // — string.cpp:initCharset). For our slot model, just stamp
-            // the talk-slot 0 charset.
-            StringSettings *ss0 = string_get(0);
-            if (ss0) ss0->charset = (uint8_t)args_read[0];
         }
         break;
     }

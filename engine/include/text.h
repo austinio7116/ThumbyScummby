@@ -96,4 +96,11 @@ void     string_set_keep_text(bool on);
 // >=2bpp glyphs.
 void     string_set_charset_colormap(const uint8_t *table, int n);
 
+// Set the per-slot default charset. Mirrors ScummEngine::initCharset
+// (string.cpp): writes `_string[slot]._default.charset = id`, NOT
+// `_string[slot].charset` — the latter gets stomped on every print
+// by `_string[slot].loadDefault()` so the live value must come from
+// the default.
+void     string_set_default_charset(int slot, int charset_id);
+
 }  // namespace tsb

@@ -88,6 +88,17 @@ void string_save_default(int slot) {
     g_string_default[slot] = g_string[slot];
 }
 
+void string_set_default_charset(int slot, int charset_id) {
+    if (slot < 0 || slot >= NUM_STRING_SLOTS) return;
+    if (charset_id < 0 || charset_id > 0xFF) return;
+    g_string_default[slot].charset = (uint8_t)charset_id;
+    // Also push to the live slot so an in-progress print picks the
+    // change up immediately. ScummVM's initCharset only sets the
+    // default, but talk text reads via load_default each call so it
+    // converges to the same effective value within one frame.
+    g_string[slot].charset = (uint8_t)charset_id;
+}
+
 StringSettings *string_get(int slot) {
     if (slot < 0 || slot >= NUM_STRING_SLOTS) return nullptr;
     return &g_string[slot];
@@ -113,8 +124,13 @@ void string_set_charset_colormap(const uint8_t *table, int n) {
 static bool ensure_charset(int id) {
     if (id < 0 || id >= 8) return false;
     if (g_charset_loaded[id]) return true;
-    // ScummVM maps charset id -> resource file 901+id (loadCharset).
-    int helper = 901 + id;
+    // Mirrors ScummEngine_v4::loadCharset (resource_v4.cpp:178-198):
+    //   sprintf_s(buf, "%03d.LFL", 900 + no);
+    // So charset id N maps to file 9NN.LFL — id 0 is invalid (no
+    // 900.LFL ships with MI1), id 1 = 901.LFL, id 2 = 902.LFL, etc.
+    // (A previous reading of this used `901 + id` which made
+    // initCharset(N) load the wrong helper file.)
+    int helper = 900 + id;
     if (charset_load_from_helper(helper, &g_charsets[id])) {
         g_charset_loaded[id] = true;
         return true;
@@ -365,14 +381,22 @@ void string_print(int slot, const uint8_t *msg) {
 // stopTalk; setTalkingActor; pick _charsetColor from actor's talkColor;
 // _haveMsg = 0xFF; VAR_HAVE_MSG = 0xFF; _talkDelay = 0; displayDialog.
 void string_actor_talk(int actor_to_print_for, const uint8_t *msg) {
-    int n = string_convert_message(msg, g_charset_buffer,
-                                   sizeof(g_charset_buffer));
-    g_charset_buf_len = n;
-    g_charset_buf_pos = 0;
-
+    // Order matters: ScummEngine::actorTalk (actor.cpp:3466-3520) calls
+    // stopTalk() BEFORE convertMessageToString. We had it backwards —
+    // converted into g_charset_buffer first, then stop_talk reset
+    // buf_len/buf_pos to 0, then set g_have_msg. Result: string_tick
+    // saw g_have_msg=0xFF but buf_len=0 so never emitted any glyphs.
     if (actor_to_print_for == 0xFF) {
         if (!g_keep_text) string_stop_talk();
         g_talking_actor = 0xFF;
+        // No actor → take the colour from the per-call slot 0 setting,
+        // which decodeParseString just populated via SO_COLOR. (Mirrors
+        // ScummEngine::actorTalk colour-of-narrator path: when there is
+        // no _actorToPrintStrFor, _charsetColor stays in sync with
+        // _string[0].color.) Without this we'd render the splash text
+        // (Lucasfilm credits, "Deep in the Caribbean…") in whatever
+        // colour the previous talk left in _charsetColor.
+        g_charset_color = g_string[0].color;
     } else {
         Actor *a = actor_get(actor_to_print_for);
         if (!a) return;
@@ -383,6 +407,11 @@ void string_actor_talk(int actor_to_print_for, const uint8_t *msg) {
         a->frame = a->talk_start_frame;
         g_charset_color = a->talk_color;
     }
+
+    int n = string_convert_message(msg, g_charset_buffer,
+                                   sizeof(g_charset_buffer));
+    g_charset_buf_len = n;
+    g_charset_buf_pos = 0;
 
     g_have_msg = 0xFF;
     g_vm.globals[VAR_HAVE_MSG] = 0xFF;
