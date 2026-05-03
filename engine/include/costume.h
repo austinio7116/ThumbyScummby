@@ -68,6 +68,13 @@ int  costume_new_dir_to_old(int dir);
 // Render one limb image at (dx, dy) into the 320x200 8bpp main virtual
 // screen.
 //
+// `xmove_io`/`ymove_io` are the per-actor xMove/yMove accumulators
+// (mirrors ScummVM ClassicCostumeRenderer::{_xMove,_yMove}, costume.cpp:
+// 638-644). On entry they hold the running offset built up by previous
+// limbs in the same costume draw call; on exit we add this cel's
+// `moveX` (and subtract `moveY`) so subsequent limbs anchor relative
+// to the same chain.
+//
 //  cost          — parsed costume.
 //  limb_idx      — 0..15.
 //  cel_index     — index into the limb's frame table (the value pulled from
@@ -93,6 +100,7 @@ void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
                          const uint8_t *actor_palette,
                          const uint8_t *mask_buf, int num_strips,
                          uint8_t *vscreen, int vscreen_pitch,
-                         uint8_t transparent_color);
+                         uint8_t transparent_color,
+                         int *xmove_io = nullptr, int *ymove_io = nullptr);
 
 }  // namespace tsb

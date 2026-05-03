@@ -611,16 +611,21 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
         CostumeData cd{};
         if (!costume_parse(cspan, &cd)) continue;
 
-        // Determine the cel index. In v5 the actor's `frame` field is an
-        // animation index, which maps via animCmds[curpos[limb]] to a code.
-        // Without the full anim machine, fall back to: for each limb, draw
-        // the limb's first cel (cel index 0) if its frame_offsets entry is
-        // non-zero. Tracks at minimum the limb=0 base sprite.
-        bool flip = (a.flags & ACTOR_FLAG_FLIP_X) != 0;
-        if (cd.mirror) {
-            // costume can be drawn mirrored when actor faces left
-            flip = flip ^ (a.facing >= 180 && a.facing < 360);
-        }
+        // _drawActorToRight — mirrors ClassicCostumeRenderer::setFacing
+        // (costume.cpp:831-833): newDirToOldDir(_facing) != 0 ||
+        // _loaded._mirror. dir 0 = west, others = right-half. So for a
+        // facing of 0..70 / 290..359 (north / west) we draw left-to-right
+        // unless the costume mirror flag forces it.
+        int old_dir = costume_new_dir_to_old(a.facing);
+        bool draw_to_right = (old_dir != 0) || cd.mirror;
+        // Our flip_x flips the source columns; when draw_to_right is
+        // false we want a mirrored draw.
+        bool flip = !draw_to_right;
+        if (a.flags & ACTOR_FLAG_FLIP_X) flip = !flip;
+
+        // Per-actor xMove/yMove accumulators — reset for this draw call.
+        // Mirrors ScummVM _xMove/_yMove (costume.cpp:618-644).
+        int xmove = 0, ymove = 0;
 
         for (int l = 0; l < 16; l++) {
             // Mirrors ClassicCostumeRenderer::drawLimb (costume.cpp:594):
@@ -655,7 +660,8 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
                                 a.palette,
                                 /*mask_buf=*/nullptr, num_strips,
                                 vscreen_main, pitch,
-                                /*transparent_color=*/0);
+                                /*transparent_color=*/0,
+                                &xmove, &ymove);
         }
     }
 }

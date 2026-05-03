@@ -341,6 +341,40 @@ void engine_draw_box(int x1, int y1, int x2, int y2, int color) {
     }
 }
 
+// Sentence stack. Mirrors ScummEngine::_sentence[] + _sentenceNum.
+static SentenceEntry g_sentence[NUM_SENTENCE];
+static int           g_sentence_num = 0;
+
+void engine_sentence_push(int verb, int obj_a, int obj_b) {
+    if (g_sentence_num >= NUM_SENTENCE) return;
+    SentenceEntry &st = g_sentence[g_sentence_num++];
+    st.verb         = (uint8_t)verb;
+    st.object_a     = (uint16_t)obj_a;
+    st.object_b     = (uint16_t)obj_b;
+    st.preposition  = (obj_b != 0);
+    st.freeze_count = 0;
+}
+
+void engine_sentence_tick() {
+    int sentence_script = (int)g_vm.globals[VAR_SENTENCE_SCRIPT];
+    if (sentence_script == 0) return;
+    // Mirrors script.cpp:1178-1183: don't pop if the sentence script
+    // is currently running and not frozen.
+    for (int i = 0; i < VM_MAX_SLOTS; i++) {
+        if (g_vm.slots[i].script_num == (uint16_t)sentence_script &&
+            g_vm.slots[i].status != SS_DEAD &&
+            g_vm.slots[i].freeze_count == 0) return;
+    }
+    if (g_sentence_num <= 0) return;
+    if (g_sentence[g_sentence_num - 1].freeze_count) return;
+    g_sentence_num--;
+    SentenceEntry &st = g_sentence[g_sentence_num];
+    // For v3+ (script.cpp:1195): if (preposition && objectB == objectA) return.
+    if (st.preposition && st.object_b == st.object_a) return;
+    int32_t args[3] = { st.verb, st.object_a, st.object_b };
+    vm_start_script(&g_vm, sentence_script, args, 3, false, false);
+}
+
 // Mirrors ScummEngine::getVerbEntrypoint (script.cpp:167-258) for v4
 // SMALL_HEADER. The verb-script directory in OBCD starts at chunk
 // offset 19 (i.e. payload + 13 in our parser, which strips the 6-byte
@@ -973,6 +1007,12 @@ bool engine_tick() {
         g_vm.room_change_pending = false;
         engine_change_room(g_vm.pending_room_id);
     }
+
+    // Sentence dispatch — mirrors checkAndRunSentenceScript (script.cpp:
+    // 1166-1207). Pop the top _sentence[] entry and run the
+    // VAR_SENTENCE_SCRIPT with (verb, objA, objB) when no sentence script
+    // is already running.
+    engine_sentence_tick();
 
     // Tick walking + animation BEFORE rendering, so position used for draw
     // is up-to-date.

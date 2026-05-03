@@ -54,29 +54,6 @@ static int32_t simple_random(int32_t max) {
     return (int32_t)((rng_state >> 16) % (uint32_t)max);
 }
 
-// Skip a SCUMM in-line message string (used by print/printEgo/setObjectName).
-// Strings end at 0x00. Some escape codes (0xFF xx ...) consume extra bytes:
-//   0xFF 0x01 : newline
-//   0xFF 0x02 : keep text
-//   0xFF 0x03 : wait (no extra)
-//   0xFF 0x04..0x0A : take 2 extra bytes (a 16-bit operand)
-static void skip_message_string(VM *vm) {
-    while (vm->cur_pc < vm->cur_script_data.size) {
-        uint8_t c = vm->cur_script_data.data[vm->cur_pc++];
-        if (c == 0x00) return;
-        if (c == 0xFF) {
-            if (vm->cur_pc >= vm->cur_script_data.size) return;
-            uint8_t code = vm->cur_script_data.data[vm->cur_pc++];
-            if (code >= 4 && code <= 10) {
-                if (vm->cur_pc + 2 <= vm->cur_script_data.size)
-                    vm->cur_pc += 2;
-                else
-                    vm->cur_pc = vm->cur_script_data.size;
-            }
-        }
-    }
-}
-
 // Common stack helpers for o5_expression
 static void stack_push(VM *vm, int32_t v) {
     if (vm->stack_pos < VM_STACK_DEPTH) vm->stack[vm->stack_pos++] = v;
@@ -119,11 +96,6 @@ static void unfreeze_all_slots(VM *vm) {
         // alone). ScummVM clears `slot.status &= 0x7F` to drop a
         // status-bit it sets in freezeScripts. Our model: freeze_count
         // == 0 means runnable, so clearing it is sufficient.
-    }
-}
-static void unfreeze_all_slots_force(VM *vm) {
-    for (int i = 0; i < VM_MAX_SLOTS; i++) {
-        vm->slots[i].freeze_count = 0;
     }
 }
 
@@ -976,13 +948,29 @@ static void op_cursorCommand(VM *vm) {
     case 5: case 6: case 7: case 8:
         break;     // no-op cursor on/off etc.
     case 10: case 11: case 12: case 13: {
-        // Various sub-ops with 1-3 byte/var operands
+        // 10 SO_CURSOR_IMAGE: 2 byte/var args (i, j) — script_v5.cpp:888-892.
+        // 11 SO_CURSOR_HOTSPOT: 3 byte/var args (i, j, k) — :893-898.
+        // 12 SO_CURSOR_SET: 1 byte/var arg (cursor id 0..3) — :899-905.
+        // 13 SO_CHARSET_SET: 1 byte/var arg (charset id) -> initCharset.
         int n_args = (sub & 0x1F) == 11 ? 3 :
                      (sub & 0x1F) == 12 ? 1 :
                      (sub & 0x1F) == 13 ? 1 : 2;
         const uint8_t masks[3] = { 0x80, 0x40, 0x20 };
+        int args_read[3] = {0,0,0};
         for (int i = 0; i < n_args; i++) {
-            (void)vm_get_var_or_byte(vm, masks[i]);
+            args_read[i] = vm_get_var_or_byte(vm, masks[i]);
+        }
+        if ((sub & 0x1F) == 13) {
+            // initCharset(id) — script_v5.cpp:907.
+            Charset cs;
+            if (charset_load_from_helper(900 + args_read[0], &cs)) {
+                string_set_charset_colormap(nullptr, 0);   // no-op
+            }
+            // Set _string[0..3].charset = id (mirrors initCharset's loop
+            // — string.cpp:initCharset). For our slot model, just stamp
+            // the talk-slot 0 charset.
+            StringSettings *ss0 = string_get(0);
+            if (ss0) ss0->charset = (uint8_t)args_read[0];
         }
         break;
     }
@@ -1730,23 +1718,20 @@ static void op_setObjectName(VM *vm) {
     vm_skip_string(vm);
 }
 
+// Mirrors o5_doSentence (script_v5.cpp:1004-1029). 0xFE clears the
+// pending sentence; 0xFF (varies) is "no-op". Otherwise push (verb,
+// objectA, objectB) onto the sentence stack for the engine main loop
+// to dispatch through VAR_SENTENCE_SCRIPT.
 static void op_doSentence(VM *vm) {
-    // ScummVM o5_doSentence: read verb via getVarOrDirectByte(P1) first.
-    // If verb == 0xFE: short form, stop the sentence script + clear
-    // _sentenceNum + clearClickedStatus (script_v5.cpp:1004-1009).
     int verb = vm_get_var_or_byte(vm, 0x80);
     if (verb == 0xFE) {
         int ssid = (int)vm_read_var(vm, VAR_SENTENCE_SCRIPT);
         if (ssid) vm_stop_script(vm, ssid);
-        // _sentenceNum = 0 — we don't yet model the sentence stack, so
-        // the var-side state is enough.
         return;
     }
-    int obj1 = vm_get_var_or_word(vm, 0x40);
-    int obj2 = vm_get_var_or_word(vm, 0x20);
-    (void)obj1; (void)obj2;
-    // Sentence stack push not modelled yet (audit H93); the verb opcodes
-    // that consume it are still stubs.
+    int obj_a = vm_get_var_or_word(vm, 0x40);
+    int obj_b = vm_get_var_or_word(vm, 0x20);
+    engine_sentence_push(verb, obj_a, obj_b);
 }
 
 // ===========================================================================

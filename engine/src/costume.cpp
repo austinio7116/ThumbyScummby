@@ -288,7 +288,8 @@ void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
                          const uint8_t *actor_palette,
                          const uint8_t *mask_buf, int num_strips,
                          uint8_t *vscreen, int vscreen_pitch,
-                         uint8_t transparent_color)
+                         uint8_t transparent_color,
+                         int *xmove_io, int *ymove_io)
 {
     if (!cost || !cost->valid) return;
     if (limb_idx < 0 || limb_idx >= 16) return;
@@ -320,16 +321,22 @@ void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
     if (cel + 12 > res_end) return;
 
     // Cel header: width, height, rel_x, rel_y, move_x, move_y (all LE16).
-    // We use rel_x/rel_y; move_x/y are accumulated by the upstream actor
-    // code over multiple frames (shoulder/foot offsets) — we ignore them
-    // for the simple per-frame draw.
+    // Mirrors ScummVM ClassicCostumeRenderer::mainDraw (costume.cpp:638-644):
+    //   xmoveCur = _xMove + relX;
+    //   ymoveCur = _yMove + relY;
+    //   _xMove += moveX;  _yMove -= moveY;
     uint16_t cw   = read_le16(cel + 0);
     uint16_t ch   = read_le16(cel + 2);
     int16_t  rx   = read_le16s(cel + 4);
     int16_t  ry   = read_le16s(cel + 6);
-    // int16  mx   = read_le16s(cel + 8);
-    // int16  my   = read_le16s(cel + 10);
+    int16_t  mx   = read_le16s(cel + 8);
+    int16_t  my   = read_le16s(cel + 10);
     const uint8_t *src = cel + 12;
+
+    int xmove_pre = xmove_io ? *xmove_io : 0;
+    int ymove_pre = ymove_io ? *ymove_io : 0;
+    if (xmove_io) *xmove_io += mx;
+    if (ymove_io) *ymove_io -= my;
 
     if (cw == 0 || ch == 0) return;
     if (cw > 320 || ch > 200) return;     // sanity
@@ -339,12 +346,14 @@ void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
     if (cost->num_colors == 32) { shr = 3; mask_bits = 0x07; }
     else                         { shr = 4; mask_bits = 0x0F; }
 
-    // Position: actor base (dx, dy) plus the cel's relative offset.
-    // For a flipped (mirrored) draw, the relative-X meaning flips and we
-    // step the column to the left.
+    // Position: actor base (dx, dy) plus xmove/ymove accumulator plus
+    // this cel's relative offset (xmoveCur/ymoveCur). For a flipped
+    // draw, the X offset is mirrored and we step columns leftward.
     int x_step = flip_x ? -1 : +1;
-    int start_x = flip_x ? (dx - rx) : (dx + rx);
-    int start_y = dy + ry;
+    int xmove_cur = xmove_pre + rx;
+    int ymove_cur = ymove_pre + ry;
+    int start_x = flip_x ? (dx - xmove_cur) : (dx + xmove_cur);
+    int start_y = dy + ymove_cur;
 
     byle_rle_decode(src, res_end,
                     cw, ch,

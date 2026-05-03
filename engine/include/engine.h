@@ -164,6 +164,23 @@ int      engine_run_object_script(int obj_id, int verb,
                                   bool freeze_resistant, bool recursive,
                                   const int32_t *args, int n_args);
 
+// Sentence stack — mirrors ScummEngine::_sentence[NUM_SENTENCE]
+// (script.cpp:1137 doSentence push, :1166 checkAndRunSentenceScript pop).
+// Used by op_doSentence to queue verb-object-object actions, and by the
+// engine main loop to dispatch them through VAR_SENTENCE_SCRIPT.
+constexpr int NUM_SENTENCE = 6;
+struct SentenceEntry {
+    uint8_t  verb;
+    uint16_t object_a;
+    uint16_t object_b;
+    bool     preposition;
+    uint8_t  freeze_count;
+};
+void     engine_sentence_push(int verb, int obj_a, int obj_b);
+// Mirrors checkAndRunSentenceScript (script.cpp:1166-1207). Called once
+// per engine_tick.
+void     engine_sentence_tick();
+
 // Camera control — mirrors ScummEngine setCameraAt / panCameraTo /
 // setCameraFollows. Called from the matching opcode handlers.
 void engine_camera_set_at(int pos_x);
