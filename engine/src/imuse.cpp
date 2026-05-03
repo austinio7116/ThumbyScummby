@@ -758,14 +758,12 @@ void imuse_tick(uint32_t elapsed_us) {
 // budget. Real playback still uses the unmodified parser tick.
 int imuse_get_music_timer() {
     if (!g_song.playing || g_song.ppqn == 0) return 0;
-    // Hard scale (host-only) so trace runs can clear long music waits
-    // within the 4-second test budget. Set 1 for true real-time.
-#ifdef THUMBY_DEVICE
-    constexpr uint32_t kScale = 1;
-#else
-    constexpr uint32_t kScale = 10;
-#endif
-    return (int)((g_song.total_ticks * 2u * kScale) / g_song.ppqn);
+    // Real-time music timer on host AND device. The earlier 10x host fudge
+    // traded trace correctness for fast smoke runs — but it caused
+    // music-driven script counters (e.g. Script 149's stage variable at
+    // global slot 100) to advance ahead of upstream, so our trace and
+    // ScummVM's diverged once the intro entered any music-gated branch.
+    return (int)((g_song.total_ticks * 2u) / g_song.ppqn);
 }
 
 }  // namespace tsb
