@@ -1026,18 +1026,21 @@ static void op_roomOps(VM *vm) {
         (void)vm_get_var_or_word(vm, 0x80);
         (void)vm_get_var_or_word(vm, 0x40);
         break;
-    case 4:
-        // room_palette (large header) : a/b/c word(P1/P2/P3), fresh sub-flag,
-        // d byte(P1). ScummVM:
-        //   a = getVarOrDirectWord(P1); b = getVarOrDirectWord(P2);
-        //   c = getVarOrDirectWord(P3); _opcode = fetchScriptByte();
+    case 4: {
+        // SO_ROOM_PALETTE — setPalColor. ScummVM o5_roomOps case 4
+        // (script_v5.cpp:2333+):
+        //   r = getVarOrDirectWord(P1); g = getVarOrDirectWord(P2);
+        //   b = getVarOrDirectWord(P3); _opcode = fetchScriptByte();
         //   d = getVarOrDirectByte(P1);
-        (void)vm_get_var_or_word(vm, 0x80);
-        (void)vm_get_var_or_word(vm, 0x40);
-        (void)vm_get_var_or_word(vm, 0x20);
-        vm->opcode = vm_fetch_byte(vm);              // refresh flag bits
-        (void)vm_get_var_or_byte(vm, 0x80);
+        //   setPalColor(d, r, g, b);
+        int r_ = vm_get_var_or_word(vm, 0x80);
+        int g_ = vm_get_var_or_word(vm, 0x40);
+        int b_ = vm_get_var_or_word(vm, 0x20);
+        vm->opcode = vm_fetch_byte(vm);
+        int d_ = vm_get_var_or_byte(vm, 0x80);
+        engine_set_pal_color(d_, r_, g_, b_);
         break;
+    }
     case 5: case 6:
         // shake on/off — no operands
         break;
@@ -1067,10 +1070,27 @@ static void op_roomOps(VM *vm) {
         // room_fade : effect (word)
         (void)vm_get_var_or_word(vm, 0x80);
         break;
-    case 11:
+    case 11: {
+        // SO_RGB_ROOM_INTENSITY — darkenPalette. Mirrors o5_roomOps
+        // case 11:
+        //   rs = word; gs = word; bs = word; _opcode = fetchByte;
+        //   start = byte; end = byte;
+        //   darkenPalette(rs, gs, bs, start, end);
+        int rs = vm_get_var_or_word(vm, 0x80);
+        int gs = vm_get_var_or_word(vm, 0x40);
+        int bs = vm_get_var_or_word(vm, 0x20);
+        vm->opcode = vm_fetch_byte(vm);
+        int s = vm_get_var_or_byte(vm, 0x80);
+        int e = vm_get_var_or_byte(vm, 0x40);
+        engine_darken_palette(rs, gs, bs, s, e);
+        break;
+    }
     case 12:
-        // rgb_room_intensity / room_shadow : a/b/c word(P1/P2/P3), fresh
-        // sub-flag, d/e byte(P1/P2). (ScummVM o5_roomOps case 11/12.)
+        // room_shadow — script-driven setShadowPalette (palette.cpp:935).
+        // Consume operands matching ScummVM's same-shaped operand layout
+        // as case 11; the shadow-palette manipulation it would perform
+        // is unused by MI1 boot (audit H75 SEVERITY low). We accept the
+        // bytes so PC stays aligned.
         (void)vm_get_var_or_word(vm, 0x80);
         (void)vm_get_var_or_word(vm, 0x40);
         (void)vm_get_var_or_word(vm, 0x20);

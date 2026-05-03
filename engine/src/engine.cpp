@@ -68,6 +68,14 @@ struct EngineState {
     // Active palette: 256 RGB triplets, scaled to 0..255.
     uint8_t  palette[256 * 3];
 
+    // _shadowPalette — 256-entry index remap. Mirrors ScummEngine::
+    // _shadowPalette (palette.cpp:431-435 init, palette.cpp:741-768
+    // cyclePalette). Initialised to identity (i -> i) on game start;
+    // setupShadowPalette / cyclePalette mutate it. Applied during the
+    // room->screen blit: each pixel `p` is rendered as `palette[shadow[p]]`.
+    uint8_t  shadow_palette[256];
+    bool     shadow_dirty;       // any non-identity entry?
+
     // Master directory parsed from 000.LFL
     MasterIndex master;
 
@@ -333,6 +341,31 @@ void engine_draw_box(int x1, int y1, int x2, int y2, int color) {
     }
 }
 
+// Mirrors ScummEngine::setPalColor (palette.cpp). The palette source
+// here uses unscaled 0..255 RGB matching the v4 PA chunk; ScummVM
+// scales 6-bit DOS palette values, but our palette is already 8-bit.
+void engine_set_pal_color(int d, int r, int gv, int b) {
+    if (d < 0 || d >= 256) return;
+    g.palette[d * 3 + 0] = (uint8_t)(r  & 0xFF);
+    g.palette[d * 3 + 1] = (uint8_t)(gv & 0xFF);
+    g.palette[d * 3 + 2] = (uint8_t)(b  & 0xFF);
+}
+
+// Mirrors ScummEngine::darkenPalette (palette.cpp). Scales each RGB
+// component at indices [start..end] by (scale/0xFF), writing back to
+// _currentPalette. ScummVM also clamps to a baseline copy (the
+// _darkenPalette baseline) but for our v4 path the palette is kept
+// fresh from the room load — no baseline needed.
+void engine_darken_palette(int rs, int gs, int bs, int start, int end) {
+    if (start < 0) start = 0;
+    if (end > 255) end = 255;
+    for (int i = start; i <= end; i++) {
+        g.palette[i * 3 + 0] = (uint8_t)((g.palette[i*3+0] * rs) >> 8);
+        g.palette[i * 3 + 1] = (uint8_t)((g.palette[i*3+1] * gs) >> 8);
+        g.palette[i * 3 + 2] = (uint8_t)((g.palette[i*3+2] * bs) >> 8);
+    }
+}
+
 void engine_set_object_name(int obj_id, const uint8_t *name, int len) {
     if (obj_id < 0 || obj_id >= NUM_GLOBAL_OBJECTS) return;
     if (!name) return;
@@ -427,6 +460,13 @@ bool engine_change_room(int new_room) {
     // is computed per-frame in engine_tick from a viewport into this.
     memset(g.vscreen_room, 0, sizeof(g.vscreen_room));
     room_load_palette(g.room, g.palette);
+    // Reset the shadow-palette indirection on every room change. Mirrors
+    // ScummEngine::startScene -> setCurrentPalette flow (palette.cpp:632)
+    // which re-initialises the shadow table for the new room. Without
+    // this, palette cycles from the previous room would "stick" into
+    // the new room's palette range.
+    for (int i = 0; i < 256; i++) g.shadow_palette[i] = (uint8_t)i;
+    g.shadow_dirty = false;
     room_render_background(g.room, g.vscreen_room, ROOM_BUFFER_W);
     object_load_from_room(g.room.room_chunk, &g_object_table);
     refresh_object_states(&g_object_table);
@@ -614,6 +654,13 @@ bool engine_init() {
         g.palette[i*3 + 1] = (uint8_t)i;
         g.palette[i*3 + 2] = (uint8_t)i;
     }
+    // Initialise _shadowPalette to identity (i -> i). Mirrors
+    // ScummEngine::resetScummVars + setAmigaPaletteFromPtr / setupVGA
+    // (palette.cpp:431-435). Game scripts mutate it via setupShadowPalette
+    // / cyclePalette; without this initialisation, every pixel-blit would
+    // remap to colour 0.
+    for (int i = 0; i < 256; i++) g.shadow_palette[i] = (uint8_t)i;
+    g.shadow_dirty = false;
 
     // Reset object-name pool — index of -1 == "no name".
     for (int i = 0; i < NUM_GLOBAL_OBJECTS; i++) g_obj_name_index[i] = -1;
@@ -878,10 +925,14 @@ bool engine_tick() {
 
     // Advance palette cycles (mirrors ScummEngine::cyclePalette, called
     // once per scumm loop). Sparkle / waterfall / lava effects rely on
-    // this. Operates on g.palette directly; the next platform::present
-    // picks up the rotated colors.
+    // this. The v4 path rotates the _shadowPalette indirection table —
+    // the actual RGB triplets stay fixed; the next blit applies the
+    // remap (audit F8).
     if (g.room_loaded) {
-        palette_cycle_tick(g.room.color_cycle, g.palette);
+        for (int i = 0; i < 16; i++) {
+            if (g.room.color_cycle[i].counter) { g.shadow_dirty = true; break; }
+        }
+        palette_cycle_tick(g.room.color_cycle, g.shadow_palette);
     }
 
     // Tick the camera (panCameraTo / clamp). Mirrors ScummEngine::moveCamera
@@ -900,10 +951,24 @@ bool engine_tick() {
         if (x0 < 0) x0 = 0;
         if (x0 > ROOM_BUFFER_W - VIRTUAL_SCREEN_W)
             x0 = ROOM_BUFFER_W - VIRTUAL_SCREEN_W;
-        for (int y = 0; y < VIRTUAL_SCREEN_H; y++) {
-            memcpy(g.vscreen_main + y * VIRTUAL_SCREEN_W,
-                   g.vscreen_room + y * ROOM_BUFFER_W + x0,
-                   VIRTUAL_SCREEN_W);
+        if (g.shadow_dirty) {
+            // Apply the _shadowPalette indirection during the blit.
+            // Mirrors ScummEngine::drawStripToScreen which feeds the
+            // shadow table through the room composite when copying to
+            // the screen surface (palette.cpp:1670 / 1699).
+            for (int y = 0; y < VIRTUAL_SCREEN_H; y++) {
+                const uint8_t *src = g.vscreen_room + y * ROOM_BUFFER_W + x0;
+                uint8_t *dst = g.vscreen_main + y * VIRTUAL_SCREEN_W;
+                for (int x = 0; x < VIRTUAL_SCREEN_W; x++) {
+                    dst[x] = g.shadow_palette[src[x]];
+                }
+            }
+        } else {
+            for (int y = 0; y < VIRTUAL_SCREEN_H; y++) {
+                memcpy(g.vscreen_main + y * VIRTUAL_SCREEN_W,
+                       g.vscreen_room + y * ROOM_BUFFER_W + x0,
+                       VIRTUAL_SCREEN_W);
+            }
         }
         // Actors are stored in room coordinates. actor_render_all subtracts
         // x_off from each actor's draw position so it lands in vscreen_main

@@ -139,6 +139,16 @@ const uint8_t *engine_get_object_name(int obj_id);
 // pipeline needs.
 void     engine_set_talking_actor(int actor_num);
 
+// Mirrors ScummEngine::setPalColor (palette.cpp:421-428) — write RGB888
+// to _currentPalette[d]. Marks the palette as "dirty" so the next blit
+// uploads to the platform layer.
+void     engine_set_pal_color(int d, int r, int g, int b);
+
+// Mirrors ScummEngine::darkenPalette (palette.cpp). Scale RGB triplets
+// at indices [start..end] by (red/green/blue)Scale (0..0xFF).
+void     engine_darken_palette(int red_scale, int green_scale, int blue_scale,
+                               int start, int end);
+
 // Camera control — mirrors ScummEngine setCameraAt / panCameraTo /
 // setCameraFollows. Called from the matching opcode handlers.
 void engine_camera_set_at(int pos_x);

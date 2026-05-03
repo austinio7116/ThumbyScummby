@@ -42,6 +42,29 @@ struct CostumeData {
 
 bool costume_parse(Span resource, CostumeData *out);
 
+// Forward — keep includes light. Defined in actor.h.
+struct Actor;
+
+// Mirrors ClassicCostumeLoader::costumeDecodeData (costume.cpp:722-795).
+// For an actor, parse anim record at _dataOffsets[anim*2], walk the
+// 16-bit usemask, and update _cost.curpos / start / end / frame for
+// each requested limb. Special markers 0x79 (stop limb) and 0x7A
+// (start limb) toggle the stopped_mask bit.
+void costume_decode_data(Actor *a, int frame, unsigned usemask);
+
+// Mirrors ClassicCostumeLoader::increaseAnim (costume.cpp:849-901). For
+// a single limb slot, advance curpos through the animation command
+// stream until the next valid drawable command. Returns true if the
+// limb's draw command changed.
+bool costume_increase_anim(Actor *a, int slot);
+
+// Mirrors ClassicCostumeLoader::increaseAnims (costume.cpp:839-847).
+// Iterates all 16 limbs.
+bool costume_increase_anims(Actor *a);
+
+// ScummVM util.cpp:41-49 — direction (0..359) -> 0/1/2/3 (W/E/S/N).
+int  costume_new_dir_to_old(int dir);
+
 // Render one limb image at (dx, dy) into the 320x200 8bpp main virtual
 // screen.
 //

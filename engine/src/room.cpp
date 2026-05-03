@@ -228,33 +228,25 @@ bool room_load_palette(const Room &room, uint8_t *out_palette) {
 
 // ---------------------------------------------------------------------------
 // Palette cycle tick. Mirrors the v4 (GF_SMALL_HEADER) branch of
-// ScummEngine::cyclePalette in palette.cpp:741-768, using direct rotation
-// of the RGB triplets at indices [start..end] rather than ScummVM's
-// _shadowPalette indirection. Counter advances by 1 each call (one pixel
-// position per frame); ScummVM's cyclePalette runs at the same cadence.
+// ScummEngine::cyclePalette (palette.cpp:741-768). Rotates the
+// _shadowPalette[start..end] indirection table by one step per call;
+// the next room->screen blit picks up the new mapping. The actual
+// _currentPalette RGB stays fixed.
 // ---------------------------------------------------------------------------
-void palette_cycle_tick(ColorCycle cycles[16], uint8_t *palette) {
+void palette_cycle_tick(ColorCycle cycles[16], uint8_t *shadow_palette) {
     for (int i = 0; i < 16; i++) {
         ColorCycle &c = cycles[i];
         if (!c.counter) continue;
         c.counter++;
         if (c.counter > c.end) c.counter = c.start;
-        if (c.start >= c.end) continue;
+        if (c.start > c.end) continue;
 
-        // Rotate palette[start..end] left by 1 (RGB triplet step).
-        uint8_t saved[3] = {
-            palette[c.start * 3 + 0],
-            palette[c.start * 3 + 1],
-            palette[c.start * 3 + 2]
-        };
-        for (int j = c.start; j < c.end; j++) {
-            palette[j * 3 + 0] = palette[(j + 1) * 3 + 0];
-            palette[j * 3 + 1] = palette[(j + 1) * 3 + 1];
-            palette[j * 3 + 2] = palette[(j + 1) * 3 + 2];
+        // palette.cpp:754-760 verbatim algorithm.
+        uint8_t cycle_val = (uint8_t)c.counter;
+        for (int j = c.start; j <= c.end; j++) {
+            shadow_palette[j] = cycle_val--;
+            if (cycle_val < c.start) cycle_val = (uint8_t)c.end;
         }
-        palette[c.end * 3 + 0] = saved[0];
-        palette[c.end * 3 + 1] = saved[1];
-        palette[c.end * 3 + 2] = saved[2];
     }
 }
 

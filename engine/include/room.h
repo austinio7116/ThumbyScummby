@@ -83,11 +83,21 @@ bool room_render_background(const Room &room, uint8_t *out_buf, int out_pitch);
 // (768 bytes). Handles 6-bit→8-bit upscaling.
 bool room_load_palette(const Room &room, uint8_t *out_palette);
 
-// Advance every active cycle by one tick. For each cycle whose counter is
-// non-zero, increments the counter (wrapping start..end), and rotates the
-// RGB triplets at indices [start..end] left by one. Mirrors the v4 path
-// of ScummEngine::cyclePalette (palette.cpp:741-768) using direct palette
-// rotation rather than ScummVM's _shadowPalette indirection.
-void palette_cycle_tick(ColorCycle cycles[16], uint8_t *palette);
+// Advance every active cycle by one tick. For each cycle whose counter
+// is non-zero, increment the counter (wrapping start..end), then rotate
+// _shadowPalette[start..end] one step. Mirrors the v4 (GF_SMALL_HEADER)
+// branch of ScummEngine::cyclePalette (palette.cpp:741-768):
+//
+//   if (start <= end) {
+//       byte cycleVal = _colorCycle[i].counter;
+//       for (j = start; j <= end; j++) {
+//           _shadowPalette[j] = cycleVal--;
+//           if (cycleVal < start) cycleVal = end;
+//       }
+//   }
+//
+// `shadow_palette` is a 256-byte index remap. The actual RGB triplets in
+// _currentPalette are NOT modified here.
+void palette_cycle_tick(ColorCycle cycles[16], uint8_t *shadow_palette);
 
 }  // namespace tsb

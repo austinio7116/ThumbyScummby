@@ -100,6 +100,17 @@ void   actor_walk_to(int actor_num, int x, int y);
 void   actor_animate(int actor_num, int anim);
 void   actor_face_object(int actor_num, int object);
 void   actor_set_facing(int actor_num, int direction);  // setDirection
+
+// Mirrors Actor::startAnimActor (actor.cpp:2692-2759). Decodes the
+// chore redirect sentinels (CHORE_REDIRECT_INIT/WALK/STAND/...), then
+// runs costumeDecodeData(frame, ~0) to refresh per-limb state. Also
+// resets _cost on initFrame.
+void   actor_start_anim(int actor_num, int frame);
+
+// Mirrors Actor::animateActor (actor.cpp:2817-2874): chore = anim>>2,
+// dir = oldDirToNewDir(anim & 3). Chore 2 = stop walking, 3 =
+// setDirection, 4 = turnToDirection, default = startAnimActor.
+void   actor_animate_chore(int actor_num, int anim);
 // Re-init one actor — mirrors ScummEngine::Actor::initActor with `mode`:
 //   -1 = full reset (used at game-startup);
 //    0 = soft reset (preserves room/cost/pos/facing — o5_actorOps SO_DEFAULT);

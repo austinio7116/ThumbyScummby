@@ -151,14 +151,90 @@ void actor_class_changed(int n, int cls, bool set) {
 // Mirrors ScummEngine::Actor::setDirection (actor.cpp:1577-1623). For
 // version <= 6 this updates _facing and (when costume is set) walks the
 // per-limb _cost.frame[] table to redecode each non-empty limb in the
-// new facing. Costume re-decode is handled by costumeDecodeData; here we
-// just set facing and let the per-frame draw pick up the change.
+// new facing.
 void actor_set_facing(int n, int direction) {
     Actor *a = actor_get(n); if (!a) return;
     direction = ((direction % 360) + 360) % 360;
     if (a->facing == (uint16_t)direction) return;
     a->facing = (uint16_t)direction;
     a->target_facing = (uint16_t)direction;
+    if (a->costume == 0) return;
+
+    // costume.cpp:1599-1620: walk all 16 limbs; for any non-empty
+    // _cost.frame[i], if the encoded direction (v <= 6: low 2 bits of
+    // _cost.frame[i]) doesn't match newDirToOldDir(_facing), redecode
+    // with usemask = aMask (single-bit). This refreshes cels for
+    // facing-aware limbs.
+    int new_dir = costume_new_dir_to_old(direction);
+    unsigned aMask = 0x8000;
+    for (int i = 0; i < 16; i++, aMask >>= 1) {
+        uint16_t vald = a->cost.frame[i];
+        if (vald == 0xFFFF) continue;
+        // GF_NEW_COSTUMES is false for v4/v5 — store direction in the
+        // frame field's low 2 bits (actor.cpp:1610).
+        if (((int)vald & 3) == new_dir) continue;
+        // Decode using only this limb (aMask)
+        costume_decode_data(a, vald >> 2, aMask);
+    }
+}
+
+// Mirrors Actor::startAnimActor (actor.cpp:2692-2759). For v3+ if frame
+// equals _initFrame, _cost.reset() is called first; then
+// costumeDecodeData(frame, (uint)-1) refreshes every limb.
+void actor_start_anim(int n, int frame) {
+    Actor *a = actor_get(n); if (!a) return;
+    // Resolve chore-redirect sentinels (actor.cpp:2714-2733):
+    switch (frame) {
+    case 0xFE: frame = a->init_frame; break;       // CHORE_REDIRECT_INIT
+    case 0xFD: frame = a->walk_frame; break;       // CHORE_REDIRECT_WALK
+    case 0xFC: frame = a->stand_frame; break;      // CHORE_REDIRECT_STAND
+    case 0xFB: frame = a->talk_start_frame; break; // CHORE_REDIRECT_START_TALK
+    case 0xFA: frame = a->talk_stop_frame; break;  // CHORE_REDIRECT_STOP_TALK
+    default: break;
+    }
+    if (a->costume == 0) return;
+    a->anim_progress = 0;
+    if (frame == a->init_frame) {
+        for (int l = 0; l < 16; l++) {
+            a->cost.curpos[l] = 0xFFFF;
+            a->cost.start[l]  = 0xFFFF;
+            a->cost.end[l]    = 0xFFFF;
+            a->cost.frame[l]  = 0xFFFF;
+        }
+        a->cost.stopped_mask = 0xFFFF;
+    }
+    costume_decode_data(a, frame, (unsigned)-1);
+    a->frame = (uint8_t)frame;
+}
+
+// Mirrors Actor::animateActor (actor.cpp:2817-2874).
+//   chore = anim >> 2; dir = oldDirToNewDir(anim & 3).
+//   case 2 = stop walking + startAnimActor(_standFrame).
+//   case 3 = setDirection (clear MF_TURN).
+//   case 4 = turnToDirection.
+//   default = startAnimActor(anim).
+void actor_animate_chore(int n, int anim) {
+    Actor *a = actor_get(n); if (!a) return;
+    int chore = anim >> 2;
+    static const int new_dir_table[4] = { 270, 90, 180, 0 };
+    int dir = new_dir_table[anim & 3];
+    // Convert "old chore code" — actor.cpp:2836: chore = 0x3F - chore + 2.
+    chore = 0x3F - chore + 2;
+    switch (chore) {
+    case 2: // stop walking
+        actor_start_anim(n, a->stand_frame);
+        a->moving = 0;
+        break;
+    case 3: // change direction immediately
+        actor_set_facing(n, dir);
+        break;
+    case 4: // turn to direction (smooth)
+        a->target_facing = (uint16_t)dir;
+        break;
+    default:
+        actor_start_anim(n, anim);
+        break;
+    }
 }
 
 Actor *actor_get(int n) {
@@ -181,12 +257,20 @@ void actor_put_in_room(int n, int room) {
 void actor_set_costume(int n, int cost) {
     Actor *a = actor_get(n); if (!a) return;
     a->costume = (uint16_t)cost;
-    // Reset per-limb anim — keep existing positions but un-stop.
+    // Mirrors ScummEngine::Actor::setActorCostume (actor.cpp:3690-3711)
+    // for v4/v5 (non-GF_OLD_BUNDLE):
+    //   _cost.reset();
+    //   for (i = 0; i < 32; i++) _palette[i] = 0xFF;
+    //   _animProgress = 0; _needRedraw = true; _costumeNeedsInit = true;
     a->cost.stopped_mask = 0xFFFF;
     for (int l = 0; l < 16; l++) {
         a->cost.curpos[l] = 0xFFFF;
+        a->cost.start[l]  = 0xFFFF;
+        a->cost.end[l]    = 0xFFFF;
         a->cost.frame[l]  = 0xFFFF;
     }
+    for (int p = 0; p < 32; p++) a->palette[p] = 0xFF;
+    a->anim_progress = 0;
 }
 
 void actor_walk_to(int n, int x, int y) {
@@ -195,9 +279,9 @@ void actor_walk_to(int n, int x, int y) {
     a->moving |= MOVE_NEW_LEG;
 }
 
+// Mirrors o5_animateActor -> Actor::animateActor (actor.cpp:2817-2874).
 void actor_animate(int n, int anim) {
-    Actor *a = actor_get(n); if (!a) return;
-    a->frame = (uint8_t)anim;
+    actor_animate_chore(n, anim);
 }
 
 void actor_face_object(int n, int object) {
@@ -316,6 +400,23 @@ static bool step_leg(Actor *a) {
     return (a->x == a->next_x && a->y == a->next_y);
 }
 
+// Mirrors Actor::startWalkAnim (actor.cpp:919-943). cmd 1 = start walk
+// (startAnimActor(walkFrame)); cmd 3 = stop walk (startAnimActor(standFrame)).
+static void start_walk_anim(Actor *a, int cmd, int angle) {
+    if (a->walk_script) {
+        // ScummVM: runScript(_walkScript, args[number, cmd, angle]). We
+        // don't surface a runScript helper to actor.cpp without a
+        // forward dependency on vm.h; for now the built-in path is
+        // taken even if walk_script is set. (None of MI1's main actors
+        // use a walk script, per Actor::initActor defaults.)
+    }
+    if (cmd == 3 || cmd == 1) {
+        actor_set_facing((int)a->number, angle == -1 ? a->facing : angle);
+    }
+    if (cmd == 1)      actor_start_anim((int)a->number, a->walk_frame);
+    else if (cmd == 3) actor_start_anim((int)a->number, a->stand_frame);
+}
+
 // Advance the walk state for one actor.
 static void tick_walk(Actor *a, const WalkboxGraph *wbg) {
     if (!(a->moving & (MOVE_NEW_LEG | MOVE_IN_LEG))) return;
@@ -326,6 +427,7 @@ static void tick_walk(Actor *a, const WalkboxGraph *wbg) {
     }
 
     if (a->moving & MOVE_NEW_LEG) {
+        bool was_idle = !(a->moving & MOVE_IN_LEG);
         a->moving &= ~MOVE_NEW_LEG;
         // Pick next waypoint.
         int target_x = a->dest_x;
@@ -376,6 +478,12 @@ static void tick_walk(Actor *a, const WalkboxGraph *wbg) {
                 a->moving = 0;
             }
         }
+        // Trigger walk-frame on idle->moving transition. Mirrors
+        // ScummEngine::Actor::walkActor which calls startWalkAnim(1)
+        // when MF_NEW_LEG initiates motion.
+        if (was_idle && (a->moving & MOVE_IN_LEG)) {
+            start_walk_anim(a, 1, a->target_facing);
+        }
         return;
     }
 
@@ -388,6 +496,10 @@ static void tick_walk(Actor *a, const WalkboxGraph *wbg) {
                 a->cur_box = walkbox_at(wbg, a->x, a->y);
             if (a->moving & MOVE_LAST_LEG) {
                 a->moving = 0;
+                // Stop-walk anim. Mirrors actor.cpp:957-963 — when
+                // MF_LAST_LEG completes, startAnimActor(_standFrame)
+                // and turnToDirection(_walkdata.destdir).
+                start_walk_anim(a, 3, a->target_facing);
             } else {
                 // Plan next leg.
                 a->moving |= MOVE_NEW_LEG;
@@ -396,34 +508,58 @@ static void tick_walk(Actor *a, const WalkboxGraph *wbg) {
     }
 }
 
-// Tick one actor's animation frame counter.
-static void tick_anim(Actor *a) {
-    if (a->anim_speed > 0) {
-        if (++a->anim_progress >= a->anim_speed) {
-            a->anim_progress = 0;
-            // Advance per-limb curpos when we have a costume animation in
-            // progress. For now we just bump a generic frame counter; the
-            // costume command-stream walker is a stub.
-            for (int l = 0; l < 16; l++) {
-                if (a->cost.curpos[l] == 0xFFFF) continue;
-                if (a->cost.curpos[l] >= a->cost.end[l]) {
-                    a->cost.curpos[l] = a->cost.start[l];
-                } else {
-                    a->cost.curpos[l]++;
-                }
-            }
-        }
+// Mirrors ScummEngine::Actor::setupActorScale (actor.cpp:451-474).
+// For v4 the scale comes from the actor's current walkbox: if the
+// box.scale 16-bit value has bit 0x8000 set it would index a SCAL
+// slot (not loaded in v4), else it is the flat scale directly.
+static void setup_actor_scale(Actor *a, const WalkboxGraph *wbg) {
+    if (a->flags & ACTOR_FLAG_IGNORE_BOX) return;
+    if (!wbg || !wbg->valid) return;
+    if (a->walkbox >= wbg->num_boxes) return;
+    uint16_t s = wbg->boxes[a->walkbox].scale;
+    if (s & 0x8000) {
+        // SCAL slot lookup — not modelled (v4 BOXM/SCAL absent in MI1).
+        return;
     }
-    // Sync facing toward target_facing (snap for now)
-    a->facing = a->target_facing;
+    if (s == 0) return;
+    if (s > 0xFF) s = 0xFF;
+    a->scalex = (uint8_t)s;
+    a->scaley = (uint8_t)s;
+}
+
+// Mirrors Actor::animateCostume (actor.cpp:2877-2895). Once per frame
+// (gated by _animSpeed), call increaseAnims to step every active limb.
+static void tick_anim(Actor *a) {
+    if (a->costume == 0) return;
+    a->anim_progress++;
+    if (a->anim_progress >= a->anim_speed) {
+        a->anim_progress = 0;
+        costume_increase_anims(a);
+    }
+    // Sync facing toward target_facing. ScummVM does smooth turning via
+    // updateActorDirection (actor.cpp:945-979); for now keep snap-to.
+    if (a->facing != a->target_facing) {
+        actor_set_facing((int)a->number, a->target_facing);
+    }
 }
 
 void actor_tick_all(const WalkboxGraph *wbg) {
     for (int i = 0; i < MAX_ACTORS; i++) {
         Actor &a = g_actors[i];
         if (!(a.flags & ACTOR_FLAG_VISIBLE)) continue;
+        // Refresh walkbox-derived scale before walking — needed because
+        // the actor may have stepped into a new box on the previous
+        // frame. Mirrors ScummEngine::Actor::setupActorScale called at
+        // the top of walkActor (actor.cpp:949).
+        if (wbg && wbg->valid && a.walkbox == INVALID_BOX) {
+            a.walkbox = walkbox_at(wbg, a.x, a.y);
+        }
+        setup_actor_scale(&a, wbg);
         tick_walk(&a, wbg);
         tick_anim(&a);
+        // Re-evaluate walkbox after the step.
+        if (wbg && wbg->valid)
+            a.walkbox = walkbox_at(wbg, a.x, a.y);
     }
 }
 
@@ -487,22 +623,27 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
         }
 
         for (int l = 0; l < 16; l++) {
-            // Skip empty limbs (frame_offsets entry is 0).
+            // Mirrors ClassicCostumeRenderer::drawLimb (costume.cpp:594):
+            // skip if curpos[l] == 0xFFFF or stopped & (1<<l).
+            uint16_t cp = a.cost.curpos[l];
+            if (cp == 0xFFFF) continue;
+            if (a.cost.stopped_mask & (1 << l)) continue;
+
+            // Frame-offsets must have an entry for this limb.
             const uint8_t *fo_entry = cd.frame_offsets + l * 2;
-            if (fo_entry + 2 >
-                cd.resource.data + cd.resource.size) break;
+            if (fo_entry + 2 > cd.resource.data + cd.resource.size) break;
             uint16_t limb_off = read_le16(fo_entry);
             if (limb_off == 0) continue;
 
-            // Determine cel: if the actor has set up curpos[l], use it
-            // through the command stream; else default cel 0.
+            // Resolve the cel index by reading the anim-cmd byte at the
+            // current position (low 7 bits = cel; 0x7B = no-draw).
             int cel = 0;
-            uint16_t cp = a.cost.curpos[l];
-            if (cp != 0xFFFF && cd.anim_cmds) {
+            if (cd.anim_cmds) {
                 size_t cmd_off = (size_t)((cd.anim_cmds - cd.baseptr) +
                                           (cp & 0x7FFF));
                 if (cmd_off < cd.resource.size) {
                     uint8_t cmd = cd.baseptr[cmd_off];
+                    if ((cmd & 0x7F) == 0x7B) continue;   // no-draw
                     cel = cmd & 0x7F;
                 }
             }
