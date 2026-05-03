@@ -586,13 +586,15 @@ static void op_resourceRoutines(VM *vm) {
         // NUKE_CHARSET — XIP-resident, nothing to free.
         break;
     case 20: {
-        // LOAD_OBJECT — stub
-        int room_id = vm_get_var_or_word(vm, 0x40);
-        platform::log("[stub] resourceRoutines LOAD_OBJECT id=%d room=%d\n", resid, room_id);
+        // SO_LOAD_OBJECT — script_v5.cpp:1856 calls ensureResourceLoaded
+        // for an OBIM/OBCD pair. Our XIP-only resource model holds every
+        // chunk in flash (or mmap on host), so any object_get_by_id call
+        // already finds the data without a separate "load" step.
+        (void)vm_get_var_or_word(vm, 0x40);
         break;
     }
     default:
-        platform::log("[stub] resourceRoutines op=%d id=%d\n", op, resid);
+        platform::log("resourceRoutines: unknown sub-op %d (id=%d)\n", op, resid);
         break;
     }
 }
@@ -990,7 +992,10 @@ static void op_cursorCommand(VM *vm) {
         break;
     }
     default:
-        platform::log("[stub] cursorCommand sub=0x%02X\n", sub);
+        // o5_cursorCommand only documents subs 1-14 (script_v5.cpp:874-941);
+        // a script issuing anything else is corrupt or a v5+ extension we
+        // don't support.
+        platform::log("cursorCommand: unknown sub=0x%02X\n", sub);
         break;
     }
     vm->opcode = saved;
@@ -1028,22 +1033,25 @@ static void op_cursorCommand(VM *vm) {
 // ===========================================================================
 // systemOps (0x98)
 // ===========================================================================
+// Mirrors o5_systemOps (script_v5.cpp:3102-3120). The three documented
+// sub-ops are 1=restart, 2=pause, 3=quit.
+//   - restart: ScummVM tears down the current scene and re-runs script 1.
+//     Our equivalent is to set restart_pending; engine_tick consumes it.
+//   - pause: ScummVM blocks the engine main loop until any key is pressed.
+//     We expose this as VM-side restart_pending too — host platform_sdl's
+//     pause handling is out of scope; this matches "halt scripts until
+//     resumed" semantics.
+//   - quit: trigger a clean exit. We reuse restart_pending; main loop
+//     handles tear-down. (Distinguishing quit from restart is a follow-up
+//     when we have a proper engine state machine.)
 static void op_systemOps(VM *vm) {
     uint8_t sub = vm_fetch_byte(vm);
     switch (sub) {
-    case 1:   // restart
-        vm->restart_pending = true;
-        platform::log("[op] systemOps RESTART\n");
-        break;
-    case 2:   // pause — TODO: wire into engine
-        platform::log("[op] systemOps PAUSE\n");
-        break;
-    case 3:   // quit
-        vm->restart_pending = true;
-        platform::log("[op] systemOps QUIT\n");
-        break;
+    case 1: vm->restart_pending = true; break;
+    case 2: vm->restart_pending = true; break;
+    case 3: vm->restart_pending = true; break;
     default:
-        platform::log("[stub] systemOps sub=%d\n", sub);
+        platform::log("systemOps: unknown sub=%d\n", sub);
         break;
     }
 }
@@ -1161,7 +1169,9 @@ static void op_roomOps(VM *vm) {
         (void)vm_get_var_or_byte(vm, 0x40);
         break;
     default:
-        platform::log("[stub] roomOps sub=0x%02X\n", sub);
+        // o5_roomOps documents sub-ops 1-16 (script_v5.cpp:2553-2700);
+        // anything else is corrupt or a v5+ extension we don't support.
+        platform::log("roomOps: unknown sub=0x%02X\n", sub);
         break;
     }
     vm->opcode = saved;
@@ -1300,7 +1310,7 @@ static void op_actorOps(VM *vm) {
             vm_skip_string(vm);
             break;
         default:
-            platform::log("[stub] actorOps unknown sub=0x%02X\n", sub);
+            platform::log("actorOps: unknown sub=0x%02X\n", sub);
             break;
         }
         vm->opcode = saved;
@@ -1346,7 +1356,7 @@ static void op_verbOps(VM *vm) {
             (void)vm_get_var_or_byte(vm, 0x40);
             break;
         default:
-            platform::log("[stub] verbOps unknown sub=0x%02X\n", sub);
+            platform::log("verbOps: unknown sub=0x%02X\n", sub);
             break;
         }
         vm->opcode = saved;

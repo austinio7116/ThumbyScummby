@@ -109,9 +109,13 @@ static void op_v4_saveLoadVars(VM *vm) {
             vm->opcode = saved;
             return;   // ScummVM saveVars/loadVars exit the loop here
         default:
-            platform::log("[stub] o4_saveLoadVars unknown subop %02X\n", op);
+            // o4_saveLoadVars (script_v4.cpp:172-192) only documents
+            // sub-ops 0x01..0x04 and 0x1F. Anything else is corrupt and
+            // would desync the script PC, so we abort the loop rather
+            // than guess operand widths.
+            platform::log("o4_saveLoadVars: unknown subop %02X — aborting\n", op);
             vm->opcode = saved;
-            return;  // bail to avoid further drift
+            return;
         }
         vm->opcode = saved;
     }
@@ -121,15 +125,31 @@ static void op_v4_saveLoadVars(VM *vm) {
 // 0x25/0x45/0x65/0xA5/0xC5/0xE5 overrides.
 extern void op_drawObject(VM *vm);
 
-// Stub for v4 0x22/0xA2 saveLoadGame. Mirrors ScummVM's o4_saveLoadGame
-// (script_v4.cpp:284..318): result-var word, then a sub-byte (operation).
-// We don't implement save/load yet — just consume operands so PC stays
-// correct.
+// 0x22 / 0xA2 — o4_saveLoadGame. Mirrors ScummVM script_v4.cpp:284-318.
+// Operand layout: result-var (2 or 4 bytes via getResultPos) + a sub-
+// byte. The sub byte's high nibble selects the operation (0=load+open,
+// 1=save, 2=load, 3=save+close, 4=close, 5=delete) and the low nibble
+// is the slot index.
+//
+// Save/load against persistent storage is a feature we have not built
+// out — there's no save-game container, no slot directory, no host
+// platform write hook. Until that lands, we mirror upstream's failure
+// path: write a non-zero error code into the result variable so the
+// caller's "save failed" / "load failed" branch fires and game state
+// is not silently corrupted by a partial restore. The byte values
+// match script_v4.cpp:298-306 (0=success, 1=read failure, 2=write
+// failure, 3=name-too-long, 4=etc).
 static void op_v4_saveLoadGame(VM *vm) {
-    (void)vm_get_result_pos(vm);          // result-var (2 or 4 bytes)
+    uint16_t result_var = vm_get_result_pos(vm);
     int sub = vm_get_var_or_byte(vm, 0x80);
-    (void)sub;
-    platform::log("[stub] o4_saveLoadGame sub=%d\n", sub);
+    int op  = (sub >> 4) & 0x0F;
+    int slot = sub & 0x0F;
+    (void)slot;
+    // 1 = read failure, 2 = write failure (per script_v4.cpp:298-306).
+    int err = (op == 1 || op == 3) ? 2 : 1;
+    vm_write_var(vm, result_var, err);
+    platform::log("o4_saveLoadGame op=%d slot=%d -> error %d "
+                  "(save/load not implemented)\n", op, slot, err);
 }
 
 // Provided by engine.cpp — flips `engine_is_v4()` so opcodes that take

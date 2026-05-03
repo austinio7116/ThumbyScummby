@@ -21,6 +21,7 @@
 #include "costume.h"
 #include "walkbox.h"
 #include "resource.h"
+#include "object.h"
 #include "platform.h"
 
 #include <string.h>
@@ -284,9 +285,33 @@ void actor_animate(int n, int anim) {
     actor_animate_chore(n, anim);
 }
 
+// Mirrors Actor::faceToObject (scummvm-upstream/engines/scumm/actor.cpp:1651).
+// v4 picks one of four cardinal directions based on which axis has the
+// larger delta to the target; we encode the result directly in our 0..359°
+// facing convention (0=down, 90=right, 180=up, 270=left) instead of the
+// upstream 4-bit `oldDir` -> `newDir` indirection.
 void actor_face_object(int n, int object) {
-    (void)n; (void)object;
-    // TODO: needs object-position lookup
+    Actor *a = actor_get(n);
+    if (!a || a->room == 0) return;
+
+    extern ObjectTable *get_object_table();
+    ObjectTable *t = get_object_table();
+    if (!t) return;
+    ObjectData *od = object_get_by_id(t, object);
+    if (!od) return;
+
+    int ox = od->x_strip * 8 + (od->w_strip * 8) / 2;
+    int oy = od->y * 8 + (od->h * 8) / 2;
+    int dx = ox - a->x;
+    int dy = oy - a->y;
+
+    int dir;
+    if ((dx >= 0 ? dx : -dx) >= (dy >= 0 ? dy : -dy)) {
+        dir = (dx >= 0) ? 90 : 270;
+    } else {
+        dir = (dy >= 0) ? 0 : 180;
+    }
+    actor_set_facing(n, dir);
 }
 
 // ---------------------------------------------------------------------------
