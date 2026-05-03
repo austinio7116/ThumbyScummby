@@ -62,7 +62,7 @@ void actor_init_one(int n, int mode) {
             a.cost.end[l]       = 0xFFFF;
             a.cost.frame[l]     = 0xFFFF;
         }
-        a.cost.stopped_mask = 0xFFFF;
+        a.cost.stopped_mask = 0;
         a.walk_script = 0;
     }
 
@@ -203,7 +203,10 @@ void actor_start_anim(int n, int frame) {
             a->cost.end[l]    = 0xFFFF;
             a->cost.frame[l]  = 0xFFFF;
         }
-        a->cost.stopped_mask = 0xFFFF;
+        // Mirrors CostumeData::reset() (actor.h:81): no limbs are
+        // stopped at the start of an init-frame anim — the decode
+        // sets bits via 0x79 cmds, and clears them via 0x7A.
+        a->cost.stopped_mask = 0;
     }
     costume_decode_data(a, frame, (unsigned)-1);
     a->frame = (uint8_t)frame;
@@ -261,10 +264,12 @@ void actor_set_costume(int n, int cost) {
     a->costume = (uint16_t)cost;
     // Mirrors ScummEngine::Actor::setActorCostume (actor.cpp:3690-3711)
     // for v4/v5 (non-GF_OLD_BUNDLE):
-    //   _cost.reset();
+    //   _cost.reset();        — CostumeData::reset() at actor.h:78-89
+    //                           sets stopped = 0 (NOT 0xFFFF), all
+    //                           curpos/start/end/frame = 0xFFFF.
     //   for (i = 0; i < 32; i++) _palette[i] = 0xFF;
     //   _animProgress = 0; _needRedraw = true; _costumeNeedsInit = true;
-    a->cost.stopped_mask = 0xFFFF;
+    a->cost.stopped_mask = 0;
     for (int l = 0; l < 16; l++) {
         a->cost.curpos[l] = 0xFFFF;
         a->cost.start[l]  = 0xFFFF;
