@@ -39,3 +39,4 @@ compile_commands.json
 scummvm.ini
 scummvm
 *.ini
+tmp/
