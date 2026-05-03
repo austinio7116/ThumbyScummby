@@ -73,7 +73,13 @@ static Span lookup_in_room_lflf(const ResourceEntry &entry, uint16_t tag,
 }
 
 void resource_init() {
-    // No-op for now (XIP-only model).
+    // No state to initialise — every resource lookup goes straight to
+    // platform::data_disk() / data_master_index() spans, which the
+    // platform layer mmaps (host) or maps from XIP flash (device) at
+    // boot. There is no LRU cache, age table, or pinned-set, so there
+    // is nothing for resource_init to set up. The function exists so
+    // the engine can call it symmetrically with other subsystems and
+    // so a future paged loader has a hook to add later.
 }
 
 Span resource_get_script(int script_id) {

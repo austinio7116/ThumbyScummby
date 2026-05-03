@@ -56,7 +56,11 @@ bool parse_master_index(Span data, MasterIndex *out) {
         Span body = data.sub(cursor + 6, blocksize - 6);
         switch (blocktype) {
         case BT_NR:
-            // Room names: ignore for now (debugging info)
+            // 'NR' carries the per-room name strings the original
+            // SCUMM tools embed for debugging. ScummVM only uses them
+            // for `--debugflags=RESOURCE` traces; nothing in the
+            // runtime engine reads them. Skip the body — the cursor
+            // advance below moves past the chunk.
             break;
         case BT_R0:
             if (!read_dir(body, out->rooms, MAX_ROOMS, &out->num_rooms)) return false;

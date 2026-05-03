@@ -1057,8 +1057,9 @@ static void op_systemOps(VM *vm) {
 }
 
 // ===========================================================================
-// roomOps (0x33 / 0x73 / 0xB3 / 0xF3) — stub. Each sub-op consumes a fixed
-// pattern; we approximate from the spec table.
+// roomOps (0x33 / 0x73 / 0xB3 / 0xF3). Mirrors o5_roomOps
+// (script_v5.cpp:2553-2700). Each sub-op consumes a fixed operand
+// pattern documented in upstream's switch.
 // ===========================================================================
 static void op_roomOps(VM *vm) {
     uint8_t sub = vm_fetch_byte(vm);

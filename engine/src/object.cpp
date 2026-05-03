@@ -117,7 +117,14 @@ ObjectData *object_get_by_id(ObjectTable *t, int obj_id) {
 }
 
 void object_mark_all_dirty(ObjectTable *t) {
-    (void)t; // No-op for now; full renderer is repaint-every-frame
+    // ScummVM uses dirty-rect tracking so changing an object's state
+    // can mark only its strips for redraw on the next frame
+    // (gfx.cpp:1108 testGfxUsageBit / addDirtyRect). Our pipeline
+    // recomposites the room-wide buffer + viewport every frame
+    // unconditionally, so per-object dirty bits would never gate any
+    // work. The function stays as a public hook so callers compile
+    // unchanged; it is intentionally a no-op for our render model.
+    (void)t;
 }
 
 // V4 small-header OBIM (OI chunk) layout — mirrors ScummVM's
