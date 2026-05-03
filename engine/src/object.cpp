@@ -207,6 +207,21 @@ void object_render_all(const ObjectTable *t,
     }
 }
 
+void object_draw_single(const ObjectTable *t, int obj_id,
+                        uint8_t *vscreen_back, int pitch,
+                        int buf_w, int buf_h) {
+    if (!t || obj_id <= 0) return;
+    if (buf_w <= 0) buf_w = pitch;
+    if (buf_h <= 0) buf_h = VIRTUAL_SCREEN_H;
+    for (int i = t->num_objects; i >= 1; i--) {
+        const ObjectData *o = &t->objects[i];
+        if (o->obj_id == obj_id) {
+            draw_one_object(t, i, vscreen_back, pitch, buf_w, buf_h);
+            return;
+        }
+    }
+}
+
 int object_find_at(const ObjectTable *t, int x, int y) {
     for (int i = t->num_objects; i >= 1; i--) {
         const ObjectData *o = &t->objects[i];

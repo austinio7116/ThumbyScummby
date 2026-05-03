@@ -66,6 +66,16 @@ void object_render_all(const ObjectTable *t,
 // Look up object by ID. Returns nullptr if not in table.
 ObjectData *object_get_by_id(ObjectTable *t, int obj_id);
 
+// Draw a single object (by obj_id) into the room composite. Mirrors
+// ScummVM `processDrawQue`/`drawObject` (object.cpp:1178-1185, 647)
+// which paint the queued object's image into the bg buffer the same
+// frame the script's o5_drawObject fires. Without this, drawObject
+// only updates the object's state; the painted image only appears at
+// the next room load.
+void object_draw_single(const ObjectTable *t, int obj_id,
+                        uint8_t *vscreen_back, int pitch,
+                        int buf_w, int buf_h);
+
 // Find which object (if any) is at screen position (x,y). Used by
 // findObject opcode and click handling.
 int  object_find_at(const ObjectTable *t, int x, int y);

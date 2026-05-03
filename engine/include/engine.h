@@ -120,6 +120,14 @@ void     engine_walk_actor_to_object(int actor_num, int obj_id);
 // o5_putActorAtObject (script_v5.cpp:2133-2158).
 void     engine_put_actor_at_object(int actor_num, int obj_id);
 
+// Access to the room-wide composite buffer (vscreen_room) and its
+// dimensions. Used by op_drawObject to repaint a single object into
+// the bg AFTER the room is loaded — mirrors processDrawQue + drawObject
+// (object.cpp:1178-1185).
+uint8_t *engine_room_buffer();
+int      engine_room_width();
+int      engine_room_height();
+
 // Direct pixel-aligned filled box on the main viewport surface.
 // Mirrors ScummEngine::drawBox (gfx.cpp). Coordinates are room-space
 // (bg buffer) — caller already has a wide-room buffer. We render into

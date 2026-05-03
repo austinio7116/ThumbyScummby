@@ -582,6 +582,9 @@ uint32_t engine_room_excd_offset()  { return g.room.excd_offset; }
 Span     engine_room_encd_payload() { return g.room.encd_payload; }
 uint32_t engine_room_encd_offset()  { return g.room.encd_offset; }
 int      engine_current_room_id()   { return g.current_room_id; }
+uint8_t *engine_room_buffer()       { return g.vscreen_room; }
+int      engine_room_width()        { return g.room_loaded ? g.room.width  : ROOM_BUFFER_W; }
+int      engine_room_height()       { return g.room_loaded ? g.room.height : VIRTUAL_SCREEN_H; }
 
 // Set by vm_opcodes_v4_init(); read by opcodes that branch on v4-vs-v5
 // operand shape.

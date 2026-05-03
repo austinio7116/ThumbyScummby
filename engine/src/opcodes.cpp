@@ -1591,6 +1591,23 @@ void op_drawObject(VM *vm) {
     // Apply the requested state — both global and the loaded slot.
     engine_put_object_state(obj, (uint8_t)state);
     od->state = (uint8_t)state;
+
+    // ScummVM `o5_drawObject` ends with `addObjectToDrawQue(idx)`
+    // (script_v5.cpp:1117) and the next scummLoop tick runs
+    // `processDrawQue()` (object.cpp:1178-1185) which paints the
+    // object's image into the bg via `drawObject(j, 0)`. Without an
+    // equivalent step here, our op_drawObject only mutated state — the
+    // object's image (e.g. the MONKEY ISLAND title at script 149
+    // offset 0x19c, obj_id=113) never appeared because we only paint
+    // objects at room-load time. Paint it now into vscreen_room so it
+    // shows up on the next composite.
+    if (state) {
+        object_draw_single(t, obj,
+                           engine_room_buffer(),
+                           ROOM_BUFFER_W,
+                           engine_room_width(),
+                           engine_room_height());
+    }
 }
 
 // Mirrors o5_drawBox (script_v5.cpp:1017-1029) + gfx.cpp::drawBox. Renders
