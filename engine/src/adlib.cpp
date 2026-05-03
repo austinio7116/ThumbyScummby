@@ -176,6 +176,12 @@ struct AdlibVoice {
     uint8_t velocity;
     uint8_t in_use;
     uint8_t released;
+    // ScummVM AdLibVoice::_waitForPedal (audio/adlib.cpp:225). Set when
+    // a note-off arrives while the channel's sustain pedal (CC 64) is
+    // depressed; the actual key-off is deferred until the pedal lifts
+    // (sustain(false) at adlib.cpp:1252-1257). Required for any score
+    // that uses MIDI sustain — without it our notes cut off mid-pedal.
+    uint8_t wait_for_pedal;
     uint16_t age;          // for LRU stealing - increments each note-on
 };
 
@@ -184,6 +190,14 @@ struct AdlibChannel {
     uint8_t  volume;
     uint8_t  pan;
     uint8_t  program;
+    // ScummVM AdLibPart::_pitchBendFactor (audio/adlib.cpp:87). Defaults
+    // to 2 (= ±2 semitones at full pitch wheel) per the constructor at
+    // adlib.cpp:113. CC 16 (pitchBendFactor) overrides; CC 121 resets
+    // to 0. Multiplies the raw pitch_bend before applying to fnum.
+    uint8_t  pitch_bend_factor;
+    // ScummVM AdLibPart::_pedal (audio/adlib.cpp:92). True while sustain
+    // pedal (CC 64) is held; defers note-offs to wait_for_pedal voices.
+    bool     pedal;
 
     // When `has_custom_instrument` is true, `custom_instrument` overrides
     // GM lookup. Used by AD-resource music (MI1/MI2 v4 floppy) which
@@ -256,11 +270,14 @@ static void program_voice(int v_idx, uint8_t midi_ch, uint8_t note, uint8_t velo
 
     opl2_write_reg(0xC0 + v_idx, inst.feedback);
 
-    // Pitch + key-on
+    // Pitch + key-on. Mirrors ScummVM's AdLibPart::noteOn → adlibNoteOn
+    // call site (adlib.cpp:1094): the bend applied to the note is
+    // (pitch_bend * pitch_bend_factor) / 8192 in semitones. With factor
+    // = 2 (default), full ±8192 wheel travel = ±2 semitones.
     int n = (int)note;
     if (mch.pitch_bend) {
-        // Rough: ±2 semitones over ±8192 range. Just shift the note number.
-        n += mch.pitch_bend / 4096;
+        int bend = (int)mch.pitch_bend * (int)mch.pitch_bend_factor;
+        n += bend / 8192;
     }
     if (n < 0) n = 0;
     if (n > 127) n = 127;
@@ -272,45 +289,35 @@ static void program_voice(int v_idx, uint8_t midi_ch, uint8_t note, uint8_t velo
 }
 
 static int allocate_voice(uint8_t midi_ch) {
-    // Prefer free voice. If none free, steal oldest released. Else oldest in_use.
-    int free_v = -1;
-    int oldest_released = -1;
-    int oldest_in_use = -1;
-    uint16_t oldest_released_age = 0xFFFF;
-    uint16_t oldest_in_use_age = 0xFFFF;
+    // Mirrors `MidiDriver_ADLIB::allocateVoice` (scummvm
+    // audio/adlib.cpp:1968-1993). For SCUMM v3/v4 small_header (which
+    // includes MI1 floppy), ScummVM uses a "first-comes-wins" policy:
+    // round-robin scan for a FREE voice; if all 9 voices are still
+    // sounding, RETURN NULLPTR (drop the new note) rather than steal.
+    // The comment at scummvm:1987 reads:
+    //   /* SCUMM V3 games don't have note priorities, first comes wins. */
+    // We previously used age-based stealing, which cut instruments off
+    // mid-release whenever the song crossed 9 simultaneous voices —
+    // audible as random instruments dropping out during the intro.
+    //
+    // We also accept "released" voices (note_off fired, envelope still
+    // decaying) because we already mark them in_use=0 in note_off; the
+    // hardware envelope tail ends naturally with the new note's key-on
+    // overriding the previous A0/B0 register state.
+    static int s_round_robin = -1;
     for (int i = 0; i < 9; i++) {
-        AdlibVoice &v = s_voices[i];
+        if (++s_round_robin >= 9) s_round_robin = 0;
+        AdlibVoice &v = s_voices[s_round_robin];
         if (!v.in_use) {
-            if (free_v < 0) free_v = i;
-        } else if (v.released) {
-            // Use age counter to find "oldest". Smaller age = older.
-            if (v.age < oldest_released_age) {
-                oldest_released_age = v.age;
-                oldest_released = i;
-            }
-        } else {
-            if (v.age < oldest_in_use_age) {
-                oldest_in_use_age = v.age;
-                oldest_in_use = i;
-            }
+            v.in_use = 1;
+            v.released = 0;
+            v.channel = midi_ch;
+            v.age = ++s_age_counter;
+            return s_round_robin;
         }
     }
-    int chosen = free_v;
-    if (chosen < 0) chosen = oldest_released;
-    if (chosen < 0) chosen = oldest_in_use;
-    if (chosen < 0) return -1;
-
-    AdlibVoice &v = s_voices[chosen];
-    if (v.in_use) {
-        // key-off the existing voice first
-        uint8_t prev = opl2_read_reg(0xB0 + chosen);
-        opl2_write_reg(0xB0 + chosen, prev & ~0x20);
-    }
-    v.in_use = 1;
-    v.released = 0;
-    v.channel = midi_ch;
-    v.age = ++s_age_counter;
-    return chosen;
+    // All 9 voices sounding — drop the note (small-header policy).
+    return -1;
 }
 
 static void note_on(uint8_t midi_ch, uint8_t note, uint8_t velocity) {
@@ -325,6 +332,15 @@ static void note_off(uint8_t midi_ch, uint8_t note) {
     for (int i = 0; i < 9; i++) {
         AdlibVoice &v = s_voices[i];
         if (v.in_use && !v.released && v.channel == midi_ch && v.note == note) {
+            // ScummVM partKeyOff (audio/adlib.cpp:1944-1955): if the
+            // channel's sustain pedal is held, defer the actual key-off
+            // by marking voice->_waitForPedal = true. The pedal-up event
+            // then sweeps these and calls mcOff. Without this, scores
+            // that use CC 64 cut off mid-pedal.
+            if (s_channels[midi_ch].pedal) {
+                v.wait_for_pedal = 1;
+                return;
+            }
             // key-off via clearing bit 5 of B0+n; envelope releases out
             uint8_t prev = opl2_read_reg(0xB0 + i);
             opl2_write_reg(0xB0 + i, prev & ~0x20);
@@ -358,6 +374,10 @@ void adlib_init() {
         s_channels[i].pan = 64;
         s_channels[i].program = 0;
         s_channels[i].pitch_bend = 0;
+        // ScummVM AdLibPart constructor (audio/adlib.cpp:113):
+        // _pitchBendFactor = 2 (default ±2-semitone wheel range).
+        s_channels[i].pitch_bend_factor = 2;
+        s_channels[i].pedal = false;
         s_channels[i].has_custom_instrument = false;
     }
     s_age_counter = 0;
@@ -425,20 +445,77 @@ void adlib_midi_event(uint8_t status, uint8_t d1, uint8_t d2) {
         uint8_t cc = d1 & 0x7F;
         uint8_t v  = d2 & 0x7F;
         switch (cc) {
-            case 7:                                     // volume
+            case 7: {                                   // volume
+                // ScummVM AdLibPart::volume (audio/adlib.cpp:1167-1198):
+                // updates _volEff AND walks the part's voice list,
+                // rewriting reg 0x40+op2 (carrier total level) and
+                // reg 0x40+op1 (modulator, two-channel only) to scale
+                // every active voice by the new volume. Without this
+                // a CC 7 mid-note left voices stuck at the volume in
+                // effect when they were keyed-on, causing dropouts on
+                // crescendo/decrescendo.
                 s_channels[ch].volume = v;
+                for (int i = 0; i < 9; i++) {
+                    AdlibVoice &voice = s_voices[i];
+                    if (!voice.in_use || voice.released) continue;
+                    if (voice.channel != ch) continue;
+                    const AdlibInstrument &inst =
+                        s_channels[ch].has_custom_instrument
+                          ? s_channels[ch].custom_instrument
+                          : GM_INSTRUMENTS[s_channels[ch].program & 0x7F];
+                    uint8_t op1 = kOp1Offset[i];
+                    uint8_t op2 = kOp2Offset[i];
+                    // Carrier op always scales with volume.
+                    opl2_write_reg(0x40 + op2,
+                        scale_level(inst.car_level, v, voice.velocity));
+                    // Modulator op scales only when feedback selects
+                    // two-operator additive (FM-mode bit 0). Mirrors
+                    // scummvm's _twoChan check (adlib.cpp:1175-1178).
+                    if (inst.feedback & 0x01) {
+                        opl2_write_reg(0x40 + op1,
+                            scale_level(inst.mod_level, v, voice.velocity));
+                    }
+                }
                 break;
+            }
             case 10:                                    // pan
                 s_channels[ch].pan = v;
                 break;
-            case 64:                                    // sustain pedal
-                if (v < 64) {
-                    // Pedal up: release any held notes - simplest: nothing to do
-                    // since AdLib release was already triggered on note-off in
-                    // games that use 64. For now ignore.
+            case 16:                                    // pitch bend factor
+                // ScummVM AdLibPart::pitchBendFactor (adlib.cpp:1221-1233):
+                // store and re-apply to active voices. We store; the next
+                // 0xE0 pitch wheel event picks it up via the fnum rewrite.
+                s_channels[ch].pitch_bend_factor = v;
+                break;
+            case 64: {                                  // sustain pedal
+                // ScummVM AdLibPart::sustain (adlib.cpp:1248-1257). On
+                // pedal release, key-off all voices on this channel that
+                // had been deferred via wait_for_pedal.
+                bool pedal_on = (v >= 64);
+                bool releasing = s_channels[ch].pedal && !pedal_on;
+                s_channels[ch].pedal = pedal_on;
+                if (releasing) {
+                    for (int i = 0; i < 9; i++) {
+                        AdlibVoice &voice = s_voices[i];
+                        if (voice.in_use && voice.channel == ch &&
+                            voice.wait_for_pedal) {
+                            uint8_t prev = opl2_read_reg(0xB0 + i);
+                            opl2_write_reg(0xB0 + i, prev & ~0x20);
+                            voice.released = 1;
+                            voice.in_use = 0;
+                            voice.wait_for_pedal = 0;
+                        }
+                    }
                 }
                 break;
-            case 121: case 120:                         // reset all / all sound off
+            }
+            case 121:                                   // reset all controllers
+                // ScummVM adlib.cpp:1140-1146: modWheel=0, pbFactor=0,
+                // detune=0, sustain=off.
+                s_channels[ch].pitch_bend_factor = 0;
+                s_channels[ch].pedal = false;
+                break;
+            case 120:                                   // all sound off
                 all_notes_off_on_channel(ch);
                 break;
             case 123:                                   // all notes off
@@ -466,7 +543,9 @@ void adlib_midi_event(uint8_t status, uint8_t d1, uint8_t d2) {
             AdlibVoice &voice = s_voices[i];
             if (!voice.in_use || voice.released) continue;
             if (voice.channel != ch) continue;
-            int n = (int)voice.note + s_channels[ch].pitch_bend / 4096;
+            int bend = (int)s_channels[ch].pitch_bend
+                       * (int)s_channels[ch].pitch_bend_factor;
+            int n = (int)voice.note + bend / 8192;
             if (n < 0)   n = 0;
             if (n > 127) n = 127;
             uint8_t block;
