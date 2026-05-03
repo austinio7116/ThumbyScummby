@@ -100,15 +100,13 @@ struct Song {
 
     uint8_t     running_status;     // for SMF running-status decoding
 
-    bool        first_ad_event;     // PT_AD: first event has no leading VLQ (legacy, unused)
+    bool        first_ad_event;     // PT_AD: skip VLQ read on first peek;
+                                    // delta is forced to ppqn/3 (the silent
+                                    // lead-in scummvm prepends — see
+                                    // peek_next_ad_event).
     bool        loop_song;          // PT_AD: restart on EOT (play_once=0)
     uint32_t    ad_track_start;     // PT_AD: byte offset of first event
     uint32_t    ad_track_end;       // PT_AD: byte offset just past last byte
-    // PT_AD: synthetic silence prefix before the first event of the
-    // track. ScummVM convertADResource (sound.cpp:1791-1794) injects
-    // ppqn/3 ticks of leading silence that we honour here so the music
-    // doesn't start ~206 ms early.
-    uint32_t    ticks_until_next_prefix;
 
     PendingEvent next;              // peeked but not yet dispatched
 
@@ -349,24 +347,17 @@ static bool init_ad_song(Span sound_resource, uint32_t body_off,
     g_song.pos            = g_song.ad_track_start;
     g_song.stream_size    = g_song.ad_track_end;
     // ScummVM convertADResource (sound.cpp:1791-1794) prepends a
-    // ppqn/3 = 160 tick silent lead-in before the AD track, then
-    // copies the raw track verbatim. The track's first byte IS its own
-    // VLQ delta. Our parser was setting first_ad_event=true to fake a
-    // zero-delta on the first peek — that:
-    //   (a) skipped the synthetic 160-tick prefix entirely, so music
-    //       started ~206 ms early relative to scummvm; and
-    //   (b) consumed what is actually the track's first VLQ delta as a
-    //       MIDI status byte, producing a garbage-event at song start
-    //       (the "random notes before the deep tones" the user heard).
-    // Drop the shortcut and inject the prefix delay properly.
-    g_song.first_ad_event = false;
+    // ppqn/3 = 160-tick silent lead-in BEFORE the AD track bytes.
+    // The track itself starts directly with a status byte (no leading
+    // VLQ delta), so we keep first_ad_event=true to skip the VLQ
+    // read on the first peek and force its delta to ppqn/3 (the
+    // lead-in). Without the lead-in, music started ~206 ms early
+    // relative to scummvm and produced spurious notes at song start.
+    g_song.first_ad_event = true;
     g_song.loop_song      = (kind == 0x80) && (play_once == 0);
     g_song.ppqn           = kAdPpqn;
     g_song.tempo_us_per_tick = us_per_tick;
     g_song.running_status = 0;
-    // Prefix wait — peek_next will read its own delta from the track
-    // bytes, but we owe ppqn/3 ticks of silence FIRST.
-    g_song.ticks_until_next_prefix = kAdPpqn / 3;
 
     platform::log("imuse: AD sound: kind=%s ticks=%u play_once=%u num_instr=%u "
                   "tempo=%u us/quarter (%u us/tick)\n",
@@ -417,7 +408,6 @@ bool imuse_start_sound(int sound_id, Span sound_resource) {
     g_song.ad_track_start = 0;
     g_song.ad_track_end = 0;
     g_song.total_ticks = 0;
-    g_song.ticks_until_next_prefix = 0;
 
     if (pt == PT_RO) {
         g_song.ppqn = kRoPpqn;
@@ -620,21 +610,19 @@ static void peek_next_ad_event() {
     g_song.next.valid = false;
     g_song.next.meta_type = 0;
 
-    // ScummVM convertADResource (sound.cpp:1791-1794) prepends a
-    // ppqn/3 silent lead-in BEFORE the first track byte. Honour it
-    // by emitting a single no-op event with that delta the first time
-    // we peek after song start.
-    if (g_song.ticks_until_next_prefix) {
-        g_song.next.delta_ticks = g_song.ticks_until_next_prefix;
-        g_song.ticks_until_next_prefix = 0;
-        g_song.next.status = 0;        // dispatch_pending treats 0 as no-op
-        g_song.next.valid = true;
-        return;
-    }
-
     while (g_song.pos < g_song.stream_size) {
-        uint32_t delta = read_vlq(g_song.stream_base, &g_song.pos, g_song.stream_size);
-        if (g_song.pos >= g_song.stream_size) return;
+        uint32_t delta;
+        if (g_song.first_ad_event) {
+            // The AD track starts directly with a status byte (no
+            // leading VLQ). Inject the ppqn/3 silent lead-in that
+            // scummvm convertADResource (sound.cpp:1791-1794) prepends
+            // before the verbatim track copy.
+            delta = g_song.ppqn ? (g_song.ppqn / 3) : 160;
+            g_song.first_ad_event = false;
+        } else {
+            delta = read_vlq(g_song.stream_base, &g_song.pos, g_song.stream_size);
+            if (g_song.pos >= g_song.stream_size) return;
+        }
 
         uint8_t status = g_song.stream_base[g_song.pos];
         if (status & 0x80) {
