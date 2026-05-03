@@ -62,6 +62,11 @@ constexpr uint8_t kPanningCameraMode     = 3;
 struct EngineState {
     uint8_t  vscreen_room[ROOM_BUFFER_W * VIRTUAL_SCREEN_H];
     uint8_t  vscreen_main[VIRTUAL_SCREEN_W * VIRTUAL_SCREEN_H];
+    // Mirrors ScummVM kTextVirtScreen — overlaid on top of vscreen_main
+    // after the room+actor composite. Pixel value 0 = transparent
+    // (passes the underlying main pixel). Cleared on stopTalk so the
+    // displayed text doesn't bleed across talks. Audit H88.
+    uint8_t  vscreen_text[VIRTUAL_SCREEN_W * VIRTUAL_SCREEN_H];
 
     Camera   camera;
 
@@ -496,10 +501,17 @@ WalkboxGraph *engine_active_walkbox_graph() {
     return g.walkboxes.valid ? &g.walkboxes : nullptr;
 }
 
-// Exposed to string.cpp — the main VirtScreen (320×200) where talk text
-// and verb labels are drawn. Mirrors ScummVM _virtscr[kMainVirtScreen].
-uint8_t *engine_main_vscreen()       { return g.vscreen_main; }
+// Exposed to string.cpp — the text VirtScreen. Mirrors ScummVM
+// kTextVirtScreen: a transparent overlay drawn on top of the main
+// composite each frame. Pixel value 0 == "no text here, fall through".
+// Lets us erase old text just by clearing this buffer (audit H88).
+uint8_t *engine_main_vscreen()       { return g.vscreen_text; }
 int      engine_main_vscreen_pitch() { return VIRTUAL_SCREEN_W; }
+
+// Clear the text overlay — called by stopTalk and at engine init.
+void engine_clear_text_vscreen() {
+    memset(g.vscreen_text, 0, sizeof(g.vscreen_text));
+}
 
 Span     engine_room_excd_payload() { return g.room.excd_payload; }
 uint32_t engine_room_excd_offset()  { return g.room.excd_offset; }
@@ -1075,8 +1087,20 @@ bool engine_tick() {
 
     // Drive the talk-text state machine. Mirrors ScummEngine::displayDialog
     // called from scummLoop. When a talk message is active, this advances
-    // _talkDelay and renders the next character into vscreen_main.
+    // _talkDelay and renders the next character into vscreen_text.
     string_tick();
+
+    // Overlay the text VirtScreen onto the main composite. Mirrors
+    // ScummVM's kTextVirtScreen blit step (gfx.cpp). Pixel value 0 in
+    // vscreen_text = transparent (skip). Otherwise overwrite. This
+    // means previously-rendered text persists until clearTextVscreen
+    // is called (e.g. via stopTalk).
+    if (g.room_loaded) {
+        for (int p = 0; p < VIRTUAL_SCREEN_W * VIRTUAL_SCREEN_H; p++) {
+            uint8_t t = g.vscreen_text[p];
+            if (t != 0) g.vscreen_main[p] = t;
+        }
+    }
 
     g.frame++;
     platform::present(g.vscreen_main, g.palette, g.scale_mode, g.crop_x, g.crop_y);

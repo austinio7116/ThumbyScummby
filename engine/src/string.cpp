@@ -392,6 +392,10 @@ void string_stop_talk() {
     g_vm.globals[VAR_HAVE_MSG] = 0;
     g_charset_buf_pos = 0;
     g_charset_buf_len = 0;
+    // Clear the text overlay so the previous talk's pixels don't bleed
+    // into the next room. Mirrors ScummVM restoreCharsetBg which is
+    // called on stopTalk + scene change. Audit H88.
+    engine_clear_text_vscreen();
 }
 
 // Mirrors ScummEngine::displayDialog (string.cpp:1033-1331), the

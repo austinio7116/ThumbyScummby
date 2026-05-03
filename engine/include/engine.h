@@ -139,6 +139,10 @@ const uint8_t *engine_get_object_name(int obj_id);
 // pipeline needs.
 void     engine_set_talking_actor(int actor_num);
 
+// Clear the text overlay VirtScreen (vscreen_text). Called by stopTalk
+// and o5_print when starting a new (non-keep) message.
+void     engine_clear_text_vscreen();
+
 // Mirrors ScummEngine::setPalColor (palette.cpp:421-428) — write RGB888
 // to _currentPalette[d]. Marks the palette as "dirty" so the next blit
 // uploads to the platform layer.
