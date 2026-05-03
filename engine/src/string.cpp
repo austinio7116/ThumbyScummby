@@ -74,8 +74,15 @@ void string_init() {
     memset(g_string_default, 0, sizeof(g_string_default));
     memset(g_charsets, 0, sizeof(g_charsets));
     memset(g_charset_loaded, 0, sizeof(g_charset_loaded));
-    // Default _charsetData mapping: 0..15 -> 0..15 (passthrough).
-    for (int i = 0; i < 16; i++) g_charset_color_map[i] = (uint8_t)i;
+    // _charsetColorMap defaults to all zeros (matches
+    // ScummEngine::ScummEngine constructor at scumm.cpp:240
+    // `memset(_charsetColorMap, 0, sizeof(_charsetColorMap))`).
+    // Index 1 gets the live talk colour at draw time
+    // (charset.cpp:1100 `_vm->_charsetColorMap[1] = _color`); other
+    // entries stay 0 = palette index 0 = transparent/black, which
+    // for v4 2bpp glyphs renders as the dark "shadow" pixels under
+    // the foreground colour.
+    memset(g_charset_color_map, 0, sizeof(g_charset_color_map));
 }
 
 void string_load_default(int slot) {
@@ -430,6 +437,12 @@ void string_stop_talk() {
     g_vm.globals[VAR_HAVE_MSG] = 0;
     g_charset_buf_pos = 0;
     g_charset_buf_len = 0;
+    // Mirrors actor.cpp:3598 — stopTalk also clears _keepText so the
+    // sticky "keep prior text on screen" flag from a \xFF\x02 escape
+    // does not survive past the next stopTalk. Without this, every
+    // print after one \xFF\x02 would stack on top of the previous,
+    // producing the credit-roll overlap behaviour.
+    g_keep_text = false;
     // Clear the text overlay so the previous talk's pixels don't bleed
     // into the next room. Mirrors ScummVM restoreCharsetBg which is
     // called on stopTalk + scene change. Audit H88.
