@@ -228,18 +228,19 @@ static void note_to_block_fnum(int note, uint8_t *block_out, uint16_t *fnum_out)
 }
 
 // Apply MIDI volume + note velocity to operator total-level.
-// ScummVM uses: out_level = (scaling_output_level | 0x3F) - vol, where vol is
-// a velocity-scaled value 0..63.
-static uint8_t scale_level(uint8_t scaling_output_level, uint8_t midi_vol, uint8_t velocity) {
-    // Combined volume in 0..127, mapped to 0..63.
-    int v = (int)midi_vol * (int)velocity;          // 0..16129
-    int vol = v >> 8;                               // 0..63 roughly
-    if (vol > 63) vol = 63;
-    int out = (int)(scaling_output_level | 0x3F) - vol;
-    if (out < 0) out = 0;
-    if (out > 0x3F) out = 0x3F;
-    // OR back the KSL bits (high 2 bits) from scaling_output_level
-    return (uint8_t)((scaling_output_level & 0xC0) | out);
+// FOR SMALL-HEADER (V3/V4) GAMES: scummvm writes the instrument's
+// ScalingOutputLevel byte VERBATIM at keyOn — neither velocity nor
+// part-volume scales the level (audio/adlib.cpp:2026-2028, :2040-2042
+// + the algebra at adlibSetupChannel:2113 cancels the vol-subtraction
+// for the small-header branch). The AD-format track already has its
+// per-channel volume baked into the instrument byte the script
+// uploads via the channel-instrument table.
+//
+// We previously velocity- and volume-scaled this byte, which mangled
+// the modulator/carrier balance and produced harsh transients on
+// percussive instruments — audible as "popping" through the intro.
+static uint8_t scale_level_small_header(uint8_t scaling_output_level) {
+    return scaling_output_level;
 }
 
 static void program_voice(int v_idx, uint8_t midi_ch, uint8_t note, uint8_t velocity) {
@@ -257,16 +258,20 @@ static void program_voice(int v_idx, uint8_t midi_ch, uint8_t note, uint8_t velo
     // essentially random envelope settings (slow attacks, fast decays,
     // silent sustains) — symptom: clicks instead of full notes.
     opl2_write_reg(0x20 + op1, inst.mod_freq);
-    opl2_write_reg(0x40 + op1, scale_level(inst.mod_level, mch.volume, velocity));
+    opl2_write_reg(0x40 + op1, scale_level_small_header(inst.mod_level));
     opl2_write_reg(0x60 + op1, inst.mod_attack_decay);
     opl2_write_reg(0x80 + op1, inst.mod_sustain_release);
     opl2_write_reg(0xE0 + op1, inst.mod_wave & 3);
 
     opl2_write_reg(0x20 + op2, inst.car_freq);
-    opl2_write_reg(0x40 + op2, scale_level(inst.car_level, mch.volume, velocity));
+    opl2_write_reg(0x40 + op2, scale_level_small_header(inst.car_level));
     opl2_write_reg(0x60 + op2, inst.car_attack_decay);
     opl2_write_reg(0x80 + op2, inst.car_sustain_release);
     opl2_write_reg(0xE0 + op2, inst.car_wave & 3);
+    (void)velocity; // small-header keyOn ignores velocity for level
+                    // (per scummvm adlib.cpp:2026 mcKeyOn _scummSmallHeader
+                    // branch); per-channel volume CC is also no-op at keyOn,
+                    // although it affects the running voice via CC 7 below.
 
     opl2_write_reg(0xC0 + v_idx, inst.feedback);
 
@@ -454,7 +459,17 @@ void adlib_midi_event(uint8_t status, uint8_t d1, uint8_t d2) {
                 // a CC 7 mid-note left voices stuck at the volume in
                 // effect when they were keyed-on, causing dropouts on
                 // crescendo/decrescendo.
+                // For SCUMM v3/v4 small-header, scummvm's CC 7 handler
+                // (audio/adlib.cpp:1167-1198) walks active voices and
+                // rewrites reg 0x40+op2 (and op1 if two-channel) using
+                // a 2D lookup `g_volumeTable[g_volumeLookupTable[vol2]
+                // [volEff>>2]]`. We don't have the upstream tables, so
+                // approximate with a linear attenuation: scale the
+                // 6-bit total-level field by (volEff/127), preserving
+                // the KSL bits (7-6).
                 s_channels[ch].volume = v;
+                int volEff = v;
+                if (volEff > 127) volEff = 127;
                 for (int i = 0; i < 9; i++) {
                     AdlibVoice &voice = s_voices[i];
                     if (!voice.in_use || voice.released) continue;
@@ -465,15 +480,22 @@ void adlib_midi_event(uint8_t status, uint8_t d1, uint8_t d2) {
                           : GM_INSTRUMENTS[s_channels[ch].program & 0x7F];
                     uint8_t op1 = kOp1Offset[i];
                     uint8_t op2 = kOp2Offset[i];
-                    // Carrier op always scales with volume.
-                    opl2_write_reg(0x40 + op2,
-                        scale_level(inst.car_level, v, voice.velocity));
+                    // Carrier always scales with volume.
+                    auto attenuate = [volEff](uint8_t lvl) -> uint8_t {
+                        // Larger TL value = quieter on OPL2.
+                        // Increase TL by (127 - volEff) * (0x3F - TL) / 127
+                        int tl = lvl & 0x3F;
+                        int extra_attn = ((0x3F - tl) * (127 - volEff)) / 127;
+                        int new_tl = tl + extra_attn;
+                        if (new_tl > 0x3F) new_tl = 0x3F;
+                        return (uint8_t)((lvl & 0xC0) | new_tl);
+                    };
+                    opl2_write_reg(0x40 + op2, attenuate(inst.car_level));
                     // Modulator op scales only when feedback selects
                     // two-operator additive (FM-mode bit 0). Mirrors
                     // scummvm's _twoChan check (adlib.cpp:1175-1178).
                     if (inst.feedback & 0x01) {
-                        opl2_write_reg(0x40 + op1,
-                            scale_level(inst.mod_level, v, voice.velocity));
+                        opl2_write_reg(0x40 + op1, attenuate(inst.mod_level));
                     }
                 }
                 break;
