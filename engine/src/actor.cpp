@@ -273,6 +273,16 @@ void actor_set_costume(int n, int cost) {
     }
     for (int p = 0; p < 32; p++) a->palette[p] = 0xFF;
     a->anim_progress = 0;
+    // Mirrors Actor::setActorCostume (actor.cpp:3672-3677): when the
+    // actor is visible, immediately startAnimActor(_initFrame) so the
+    // costume's idle pose plays. Without this, every limb stays at
+    // 0xFFFF (cost.curpos == "empty") and the costume render path
+    // skips them, producing invisible actors — symptom: MI1 cloud
+    // actors (cost=111) flagged visible at room enter rendered
+    // nothing until the boot script later issued an animateActor.
+    if (a->flags & ACTOR_FLAG_VISIBLE) {
+        actor_start_anim(n, a->init_frame);
+    }
 }
 
 void actor_walk_to(int n, int x, int y) {

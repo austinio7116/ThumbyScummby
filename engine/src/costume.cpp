@@ -406,10 +406,15 @@ void costume_decode_data(Actor *a, int frame, unsigned usemask) {
     if (r == cd.baseptr) return;            // no data for this anim
     if (r >= res_end) return;
 
-    // Per-anim limb mask: 16-bit big-endian for v3+ (READ_BE_UINT16 in
-    // ScummVM costume.cpp:749), little-endian for v1 only. We're v4.
+    // Per-anim limb mask: 16-bit little-endian for v2+
+    // (`mask = READ_LE_UINT16(r)` at scummvm-upstream/engines/scumm/
+    // costume.cpp:749). v1 packs only one byte (`mask = *r++ << 8`).
+    // We target v4, so always LE16 here. (An earlier comment in this
+    // file claimed BE — that was wrong, and led to limb-bit mismatches
+    // that left animations like MI1's cloud actors stuck with all
+    // limbs at 0xFFFF.)
     if (r + 2 > res_end) return;
-    unsigned mask = ((unsigned)r[0] << 8) | r[1];   // BE
+    unsigned mask = (unsigned)read_le16(r);
     r += 2;
 
     int i = 0;
