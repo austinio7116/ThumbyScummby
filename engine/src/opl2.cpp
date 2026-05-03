@@ -74,9 +74,10 @@ uint8_t opl2_read_reg(uint8_t reg) {
 }
 
 // dbopl produces 32-bit signed mono samples in a transient buffer.
-// We scale and saturate to int16. The right-shift below leaves a
-// few bits of headroom so co-existing SFX would not clip if mixed
-// in later; tune later if it sounds too quiet.
+// Saturate to int16. dbopl's full-mix peak is around ±2^14 so we
+// pass through unscaled — a previous shim divided by 4 to leave
+// "headroom for the mix bus" but produced a dull, very quiet
+// output instead of full-range AdLib audio.
 static inline int16_t clip_to_int16(int32_t s) {
     if (s > 32767) return 32767;
     if (s < -32768) return -32768;
@@ -91,10 +92,7 @@ static void render_into(int16_t *out, int n_samples, bool add) {
         int n = n_samples < kChunk ? n_samples : kChunk;
         g_chip.GenerateBlock2((DbBitu)n, buf);
         for (int i = 0; i < n; i++) {
-            // dbopl raw output magnitude tops near ±2^14; >>2 leaves
-            // some headroom for the rest of the engine's mix bus.
-            int32_t s = buf[i] >> 2;
-            int16_t v = clip_to_int16(s);
+            int16_t v = clip_to_int16(buf[i]);
             out[i] = add ? clip_to_int16((int32_t)out[i] + v) : v;
         }
         out += n;
