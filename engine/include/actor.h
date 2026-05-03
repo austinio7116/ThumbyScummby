@@ -26,6 +26,9 @@ constexpr int MOVE_NEW_LEG  = 1;
 constexpr int MOVE_IN_LEG   = 2;
 constexpr int MOVE_TURN     = 4;
 constexpr int MOVE_LAST_LEG = 8;
+// Mirrors Actor::MF_FROZEN (actor.h:54). Set by freezeActors / cleared
+// by unfreezeActors. While set, walkActor / animateCostume become no-ops.
+constexpr int MOVE_FROZEN   = 0x80;
 
 // Per-limb costume animation state. Mirrors ScummVM CostumeData (one slot
 // per limb). 0xFFFF in `frame` / `curpos` means "limb empty/stopped".

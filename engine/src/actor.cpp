@@ -547,6 +547,9 @@ void actor_tick_all(const WalkboxGraph *wbg) {
     for (int i = 0; i < MAX_ACTORS; i++) {
         Actor &a = g_actors[i];
         if (!(a.flags & ACTOR_FLAG_VISIBLE)) continue;
+        // MF_FROZEN — set by freezeActors. While frozen, walkActor and
+        // animateCostume are skipped (actor.cpp:945+, 2877+).
+        if (a.moving & MOVE_FROZEN) continue;
         // Refresh walkbox-derived scale before walking — needed because
         // the actor may have stepped into a new box on the previous
         // frame. Mirrors ScummEngine::Actor::setupActorScale called at

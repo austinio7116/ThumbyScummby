@@ -127,6 +127,18 @@ void     engine_put_actor_at_object(int actor_num, int obj_id);
 // up. -1 sentinel for `color` matches ScummVM's "background colour".
 void     engine_draw_box(int x1, int y1, int x2, int y2, int color);
 
+// String resource pool — mirrors rtString in ScummVM. Slots 0..127,
+// each up to 256 bytes. Used by op_stringOps (1=load, 2=copy, 3=set
+// char, 4=get char, 5=create-empty) — see script_v5.cpp:3041-3122.
+constexpr int STRING_SLOT_COUNT = 128;
+constexpr int STRING_SLOT_SIZE  = 256;
+void          engine_string_load(int slot, const uint8_t *src);
+void          engine_string_create_empty(int slot, int size);
+uint8_t      *engine_string_data(int slot, int *out_size);
+void          engine_string_set_char(int slot, int idx, uint8_t c);
+uint8_t       engine_string_get_char(int slot, int idx);
+void          engine_string_copy(int dst_slot, int src_slot);
+
 // Object-name store. Mirrors ScummEngine's rtObjectName resource pool
 // (loaded via op_setObjectName / OBNA chunks). Returns nullptr when no
 // name is set. Used by string convertMessageToString \xFF\x06 and by

@@ -124,6 +124,58 @@ static uint32_t g_object_classes[NUM_GLOBAL_OBJECTS] = {};
 constexpr int INVENTORY_MAX = 80;
 static uint16_t g_inventory[INVENTORY_MAX + 1];   // indexed 1..INVENTORY_MAX
 
+// String resource pool (rtString in ScummVM). Used by op_stringOps.
+struct StringSlot { uint8_t data[STRING_SLOT_SIZE]; int size; bool present; };
+static StringSlot g_strings[STRING_SLOT_COUNT];
+
+void engine_string_load(int slot, const uint8_t *src) {
+    if (slot < 0 || slot >= STRING_SLOT_COUNT) return;
+    int n = 0;
+    if (src) {
+        while (src[n] != 0 && n < STRING_SLOT_SIZE - 1) n++;
+        memcpy(g_strings[slot].data, src, (size_t)n);
+    }
+    g_strings[slot].data[n] = 0;
+    g_strings[slot].size = n + 1;
+    g_strings[slot].present = true;
+}
+
+void engine_string_create_empty(int slot, int size) {
+    if (slot < 0 || slot >= STRING_SLOT_COUNT) return;
+    if (size < 0) size = 0;
+    if (size > STRING_SLOT_SIZE) size = STRING_SLOT_SIZE;
+    memset(g_strings[slot].data, 0, (size_t)size);
+    g_strings[slot].size = size;
+    g_strings[slot].present = (size > 0);
+}
+
+uint8_t *engine_string_data(int slot, int *out_size) {
+    if (slot < 0 || slot >= STRING_SLOT_COUNT) return nullptr;
+    if (!g_strings[slot].present) return nullptr;
+    if (out_size) *out_size = g_strings[slot].size;
+    return g_strings[slot].data;
+}
+
+void engine_string_set_char(int slot, int idx, uint8_t c) {
+    if (slot < 0 || slot >= STRING_SLOT_COUNT) return;
+    if (!g_strings[slot].present) return;
+    if (idx < 0 || idx >= g_strings[slot].size) return;
+    g_strings[slot].data[idx] = c;
+}
+
+uint8_t engine_string_get_char(int slot, int idx) {
+    if (slot < 0 || slot >= STRING_SLOT_COUNT) return 0;
+    if (!g_strings[slot].present) return 0;
+    if (idx < 0 || idx >= g_strings[slot].size) return 0;
+    return g_strings[slot].data[idx];
+}
+
+void engine_string_copy(int dst_slot, int src_slot) {
+    if (dst_slot < 0 || dst_slot >= STRING_SLOT_COUNT) return;
+    if (src_slot < 0 || src_slot >= STRING_SLOT_COUNT) return;
+    g_strings[dst_slot] = g_strings[src_slot];
+}
+
 // Object-name pool. ScummVM uses rtObjectName resource type with one
 // entry per global object id; storage is variable-length so we use a
 // small fixed pool of slots and an index map. 32 bytes per name covers

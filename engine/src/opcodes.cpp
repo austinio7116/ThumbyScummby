@@ -799,48 +799,53 @@ static void op_expression(VM *vm) {
 }
 
 // ===========================================================================
-// String ops (0x27 / 0xA7) — stubs (no string resource pool yet)
+// String ops (0x27). Mirrors o5_stringOps (script_v5.cpp:3041-3122).
+//   1 loadstring: load in-line string into slot.
+//   2 copystring: copy slot src -> slot dst.
+//   3 set char: write a byte at idx.
+//   4 get char: read byte at idx into result var.
+//   5 create empty: allocate `size` bytes (zeroed).
 // ===========================================================================
 static void op_stringOps(VM *vm) {
     uint8_t sub = vm_fetch_byte(vm);
     uint8_t saved = vm->opcode;
     vm->opcode = sub;
     switch (sub & 0x1F) {
-    case 1: {   // loadstring : var-or-direct byte (slot), then in-line string
+    case 1: {
         int slot = vm_get_var_or_byte(vm, 0x80);
+        const uint8_t *src = vm->cur_script_data.data + vm->cur_pc;
         vm_skip_string(vm);
-        platform::log("[stub] stringOps loadstring slot=%d\n", slot);
+        engine_string_load(slot, src);
         break;
     }
-    case 2: {   // copystring : dst, src
+    case 2: {
         int dst = vm_get_var_or_byte(vm, 0x80);
         int src = vm_get_var_or_byte(vm, 0x40);
-        platform::log("[stub] stringOps copystring %d <- %d\n", dst, src);
+        engine_string_copy(dst, src);
         break;
     }
-    case 3: {   // set string char : slot, idx, char
+    case 3: {
         int slot = vm_get_var_or_byte(vm, 0x80);
         int idx  = vm_get_var_or_byte(vm, 0x40);
         int ch   = vm_get_var_or_byte(vm, 0x20);
-        (void)slot; (void)idx; (void)ch;
+        engine_string_set_char(slot, idx, (uint8_t)ch);
         break;
     }
-    case 4: {   // get string char : result, slot, idx
+    case 4: {
         uint16_t result_var = vm_get_result_pos(vm);
         int slot = vm_get_var_or_byte(vm, 0x80);
         int idx  = vm_get_var_or_byte(vm, 0x40);
-        (void)slot; (void)idx;
-        vm_write_var(vm, result_var, 0);
+        vm_write_var(vm, result_var, engine_string_get_char(slot, idx));
         break;
     }
-    case 5: {   // create empty string : slot, size
+    case 5: {
         int slot = vm_get_var_or_byte(vm, 0x80);
         int size = vm_get_var_or_byte(vm, 0x40);
-        (void)slot; (void)size;
+        engine_string_create_empty(slot, size);
         break;
     }
     default:
-        platform::log("[stub] stringOps unknown sub=0x%02X\n", sub);
+        platform::log("stringOps unknown sub=0x%02X\n", sub);
         break;
     }
     vm->opcode = saved;
