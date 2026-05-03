@@ -385,13 +385,17 @@ int audio_init(int requested_rate, AudioCallback cb, void *user) {
     want.freq = requested_rate;
     want.format = AUDIO_S16SYS;
     want.channels = 1;
-    // 2048 samples @ 22050 Hz = ~93ms of slack. The smaller 1024-sample
-    // buffer (~46ms) was tight enough that any host-thread scheduling
-    // hiccup or a longer-than-average dbopl/iMUSE callback produced an
-    // audible dropout. SDL's audio thread is independent of our main
-    // thread but the system mixer still has to deliver this buffer in
-    // real time. Doubled the buffer for headroom.
-    want.samples = 2048;
+    // 512 samples @ 22050 Hz = ~23ms per audio callback. iMUSE events
+    // get dispatched at audio-buffer boundaries (we tick imuse for the
+    // chunk's worth of time at the START of each callback), so the
+    // buffer size IS the timing-quantization granularity for note
+    // events. The earlier 2048-sample (~93ms) buffer was audible as
+    // jittery pacing — multiple events that should be ~30ms apart got
+    // collapsed into the same callback boundary. 512 still has 23ms
+    // of dropout slack — far more than dbopl + iMUSE actually need
+    // (we measured ~300us per 2048-sample callback earlier, so 512
+    // costs ~75us of the 23000us budget, comfortable).
+    want.samples = 512;
     want.callback = sdl_audio_cb_thunk;
     g.audio_cb = cb;
     g.audio_user = user;
