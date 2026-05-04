@@ -98,6 +98,17 @@ void actor_init_all();
 Actor *actor_get(int actor_num);  // bounds-checked; returns nullptr on bad id
 void   actor_put_at(int actor_num, int x, int y);
 void   actor_put_in_room(int actor_num, int room);
+void   actor_hide(int actor_num);
+void   actor_hide_all();
+
+// Mirrors scummvm `_egoPositioned`. Set true by actor_put_at when the
+// actor being placed IS the ego (VAR_EGO). loadRoomWithEgo clears it
+// before running ENCD; if ENCD positions the ego, the flag becomes
+// true and the v4 "walk-pos fallback" is skipped. Without this we
+// always teleport the ego to the object's walk-pos, overriding
+// whatever the entry script set.
+bool   actor_ego_positioned_get();
+void   actor_ego_positioned_set(bool v);
 void   actor_set_costume(int actor_num, int costume_id);
 void   actor_walk_to(int actor_num, int x, int y);
 void   actor_animate(int actor_num, int anim);

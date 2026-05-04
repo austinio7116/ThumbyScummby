@@ -83,19 +83,17 @@ static void freeze_other_slots(VM *vm, bool flag_condition) {
         vm->slots[csi].freeze_count = 0;
     }
 }
-// Mirrors ScummEngine::unfreezeScripts (script.cpp:935-955). Sets
-// freezeCount = 0 for every slot AND clears the high `0x80` of `status`.
-// (Earlier versions of this code decremented freeze_count by 1 — that
-// matches "decreaseFreezeCount" semantics, NOT unfreezeScripts. With
-// nested freezes a single op_freezeScripts(0) wouldn't fully release.)
+// Mirrors ScummEngine::unfreezeScripts (script.cpp:935-955). scummvm
+// DECREMENTS freezeCount per slot; only when the count reaches zero is
+// the freeze actually released. This is required for nested freeze
+// blocks (cutscene-inside-freezeScripts) to unwind correctly — each
+// freezeScripts pairs with exactly one freezeScripts(0)/endCutscene.
+// Our previous "force everything to 0" logic would prematurely thaw
+// scripts inside the outer freeze block when an inner cutscene ended.
 static void unfreeze_all_slots(VM *vm) {
     for (int i = 0; i < VM_MAX_SLOTS; i++) {
         Slot &s = vm->slots[i];
-        s.freeze_count = 0;
-        // We don't track a "frozen" status bit (we use the freeze_count
-        // alone). ScummVM clears `slot.status &= 0x7F` to drop a
-        // status-bit it sets in freezeScripts. Our model: freeze_count
-        // == 0 means runnable, so clearing it is sufficient.
+        if (s.freeze_count > 0) s.freeze_count--;
     }
 }
 
@@ -428,7 +426,14 @@ static void op_stopObjectScript(VM *vm) {
 // and run VAR_CUTSCENE_START_SCRIPT (which gets the same args[]).
 // Mirrors ScummEngine::beginCutscene (script.cpp:1624).
 static void op_cutscene(VM *vm) {
-    int32_t args[VM_MAX_VARARG];
+    // Mirrors scummvm script_v5.cpp:940-952: zero the local-arg buffer
+    // before parsing the vararg list, because the buffer is passed
+    // wholesale to runScript(VAR_CUTSCENE_START_SCRIPT) and copied into
+    // the new slot's locals[0..VM_MAX_VARARG-1]. Without this, slots
+    // beyond the actual vararg count get whatever stack garbage was
+    // there, which shows up as nondeterministic locals in the
+    // cutscene-start script (verb-bar suppression, cursor mode).
+    int32_t args[VM_MAX_VARARG] = {0};
     int n = vm_get_word_vararg(vm, args);
     (void)n;
 
@@ -462,13 +467,23 @@ static void op_cutscene(VM *vm) {
 }
 
 // 0xC0  endCutscene : pop a cutscene, run VAR_CUTSCENE_END_SCRIPT.
-// Mirrors ScummEngine::endCutscene (script.cpp:1642). Does NOT touch freeze
-// counts (that's freezeScripts' job).
+// Mirrors ScummEngine::endCutscene (script.cpp:1642-1679). Order matters:
+// scummvm captures cutSceneData[depth] as args[0] BEFORE decrementing the
+// stack pointer, then clears the stack slot, then decrements, then runs
+// the end script with that arg. MI1's CUTSCENE_END_SCRIPT (75) reads
+// Local[0] to identify which cutscene just ended so it can restore the
+// matching cursor / verb state.
 static void op_endCutscene(VM *vm) {
-    if (vm->cutscene.depth > 0) vm->cutscene.depth--;
+    int32_t args[VM_MAX_VARARG] = {0};
+    if (vm->cutscene.depth > 0) {
+        int idx = vm->cutscene.depth - 1;
+        args[0] = (int32_t)vm->cutscene.data[idx];
+        vm->cutscene.script_num[idx] = 0;
+        vm->cutscene.ptr[idx]        = 0;
+        vm->cutscene.depth--;
+    }
     vm_write_var(vm, VAR_OVERRIDE, 0);
     vm->cutscene.override_active = false;
-    int32_t args[VM_MAX_VARARG] = {0};
     int end = (int)vm_read_var(vm, VAR_CUTSCENE_END_SCRIPT);
     if (end) {
         vm_start_script(vm, end, args, VM_MAX_VARARG, false, false);
@@ -545,9 +560,18 @@ static void op_delay(VM *vm) {
 }
 
 // 0x2B  delayVariable
+// 0x2B  delayVariable — read the delay count from a var, set ssPaused
+// and yield. scummvm script_v5.cpp:982-987 mirrors o5_delay's yield:
+//   vm.slot[_currentScript].delay = getVar();
+//   vm.slot[_currentScript].status = ssPaused;
+//   o5_breakHere();
+// Without yielding, the script keeps running this frame and the delay
+// is effectively a no-op until the slot is later re-dispatched.
 static void op_delayVariable(VM *vm) {
-    uint16_t var = vm_get_result_pos(vm);
-    vm->slots[vm->cur_slot].delay = vm_read_var(vm, var);
+    uint16_t var = vm_fetch_uword(vm);
+    vm->slots[vm->cur_slot].delay  = vm_read_var(vm, var);
+    vm->slots[vm->cur_slot].status = SS_PAUSED;
+    vm->cur_slot = -1;   // yield sentinel, same as op_breakHere
 }
 
 // ===========================================================================
@@ -644,6 +668,15 @@ static void op_loadRoom(VM *vm) {
 // (script_v5.cpp:1857-1902): putActor(ego, 0, 0, room); startScene(room,
 // ego, obj); if (!egoPositioned) getObjectXYPos(obj, x, y); centerCamera;
 // if (x != -1) walkActor(ego, x, y); _fullRedraw = true.
+// Mirror of scummvm o5_loadRoomWithEgo (script_v5.cpp:1857-1902).
+//   1. putActor(ego, room) — assign room only (no x/y position).
+//   2. Save oldDir, clear _egoPositioned.
+//   3. Set VAR_WALKTO_OBJ = obj; startScene(room, ego, obj); VAR_WALKTO_OBJ = 0.
+//      (startScene runs ENCD which may putActor(ego, x, y, room), setting
+//      _egoPositioned via actor_put_at.)
+//   4. v4 fallback: if ENCD didn't position the ego, getObjectXYPos(obj),
+//      putActor(ego, x2, y2, room), if facing unchanged setDirection(dir+180).
+//   5. setCameraFollows(ego), and if x != -1 walk to x,y.
 static void op_loadRoomWithEgo(VM *vm) {
     int obj  = vm_get_var_or_word(vm, 0x80);
     int room = vm_get_var_or_byte(vm, 0x40);
@@ -653,37 +686,42 @@ static void op_loadRoomWithEgo(VM *vm) {
     int ego = (int)vm_read_var(vm, VAR_EGO);
     Actor *a = actor_get(ego);
     if (a) a->room = (uint8_t)room;
+    int old_dir = a ? (int)a->facing : 0;
+    actor_ego_positioned_set(false);
 
-    // Mirror scummvm o5_loadRoomWithEgo (script_v5.cpp:1874-1876):
-    //   VAR(VAR_WALKTO_OBJ) = obj;
-    //   startScene(a->_room, a, obj);
-    //   VAR(VAR_WALKTO_OBJ) = 0;
-    // startScene runs the exit/entry script chain — without it, ENCD
-    // (and the script that triggers per-room setup like the lookout
-    // cutscene) never fires.
-    int32_t saved_walkto = (int32_t)vm_read_var(vm, VAR_WALKTO_OBJ);
+    // VAR_WALKTO_OBJ guards ENCD's "did the user click an object" check.
     vm_write_var(vm, VAR_WALKTO_OBJ, obj);
     engine_start_scene(vm, room);
     vm_write_var(vm, VAR_WALKTO_OBJ, 0);
-    (void)saved_walkto;
 
-    // Get the object's walk-pos in the new room. If found, snap the
-    // ego there (the ScummVM script_v5 idiom is putActor(obj_pos);
-    // then walkActor(walk_pos) if the script provided x/y).
-    int obj_x = 0, obj_y = 0, obj_dir = 0;
-    if (engine_object_walk_pos(obj, &obj_x, &obj_y, &obj_dir)) {
-        actor_put_at(ego, obj_x, obj_y);
-        if (a) { a->facing = (uint16_t)obj_dir; a->target_facing = (uint16_t)obj_dir; }
+    // v4 fallback: ENCD may or may not have positioned the ego. Only
+    // snap to the object's walk-pos if it didn't.
+    if (!actor_ego_positioned_get()) {
+        int obj_x = 0, obj_y = 0, obj_dir = 0;
+        if (engine_object_walk_pos(obj, &obj_x, &obj_y, &obj_dir)) {
+            actor_put_at(ego, obj_x, obj_y);
+            if (a) {
+                // scummvm: if facing didn't change during ENCD,
+                // turn 180° so the ego enters facing AWAY from the
+                // walk-target object (matches "approach from outside").
+                if ((int)a->facing == old_dir) {
+                    int new_dir = (obj_dir + 180) & 0x1FF;
+                    a->facing = (uint16_t)new_dir;
+                    a->target_facing = (uint16_t)new_dir;
+                } else {
+                    a->facing = (uint16_t)obj_dir;
+                    a->target_facing = (uint16_t)obj_dir;
+                }
+            }
+        }
     }
+    if (a) a->moving = 0;
 
-    // Centre camera on ego (setCameraFollows pattern).
+    // Centre camera on ego (scummvm setCameraFollows + camera._cur.x set).
     engine_camera_set_follows(ego, /*force=*/true);
 
     // If the script provided explicit walk-to coords (x != -1), walk.
     if (x != -1) actor_walk_to(ego, x, y);
-
-    platform::log("[op] loadRoomWithEgo(obj=%d, room=%d, x=%d, y=%d)\n",
-                  obj, room, x, y);
 }
 
 // 0xCC  pseudoRoom : map IDs to a pseudo-room. No-op (we don't simulate
@@ -1029,8 +1067,29 @@ static void op_roomOps(VM *vm) {
     uint8_t saved = vm->opcode;
     vm->opcode = sub;
     switch (sub & 0x1F) {
-    case 1: case 3:
-        // room_scroll / room_screen : 2 words
+    case 1: {
+        // SO_ROOM_SCROLL — set camera horizontal bounds. scummvm
+        // script_v5.cpp:2361-2376: clamps a/b to room limits then writes
+        // VAR_CAMERA_MIN_X = a; VAR_CAMERA_MAX_X = b. Without this the
+        // camera follows clamp to the engine's room-load defaults
+        // (always full width), which is why Mêlée docks / lookout
+        // intro scrolls were wrong.
+        int a = vm_get_var_or_word(vm, 0x80);
+        int b = vm_get_var_or_word(vm, 0x40);
+        // scummvm clamps to half-screen-from-edges (160 = SCREEN_W/2).
+        if (a < 160 / 2) a = 160 / 2;
+        if (b < 160 / 2) b = 160 / 2;
+        int rw = engine_room_width();
+        if (a > rw - 160 / 2) a = rw - 160 / 2;
+        if (b > rw - 160 / 2) b = rw - 160 / 2;
+        vm_write_var(vm, VAR_CAMERA_MIN_X, a);
+        vm_write_var(vm, VAR_CAMERA_MAX_X, b);
+        break;
+    }
+    case 3:
+        // SO_ROOM_SCREEN — initScreens(b, h). Affects the main vscreen
+        // dimensions. Out of scope for MI1 (uses default initScreens(16,
+        // 144)) — consume operands and continue.
         (void)vm_get_var_or_word(vm, 0x80);
         (void)vm_get_var_or_word(vm, 0x40);
         break;
@@ -1068,12 +1127,18 @@ static void op_roomOps(VM *vm) {
         vm->opcode = vm_fetch_byte(vm);
         (void)vm_get_var_or_byte(vm, 0x40);
         break;
-    case 8:
-        // room_intensity : r, g, b
-        (void)vm_get_var_or_byte(vm, 0x80);
-        (void)vm_get_var_or_byte(vm, 0x40);
-        (void)vm_get_var_or_byte(vm, 0x20);
+    case 8: {
+        // SO_ROOM_INTENSITY — darkenPalette(a, a, a, b, c). scummvm
+        // script_v5.cpp:2487 calls darkenPalette with the same scale for
+        // all three RGB channels. Used by MI1 for room-darkening
+        // transitions (e.g. lights going out). Different from case 11
+        // which has independent r/g/b scales.
+        int a = vm_get_var_or_byte(vm, 0x80);
+        int s = vm_get_var_or_byte(vm, 0x40);
+        int e = vm_get_var_or_byte(vm, 0x20);
+        engine_darken_palette(a, a, a, s, e);
         break;
+    }
     case 9:
         // savegame : flag, slot
         (void)vm_get_var_or_byte(vm, 0x80);

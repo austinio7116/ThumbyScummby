@@ -825,6 +825,14 @@ void engine_start_scene(VM *vm, int room) {
     int cur = engine_current_room_id();
     int32_t no_args[VM_MAX_VARARG] = {0};
 
+    // 0) scummvm room.cpp:42-301 also: stopTalk(), hide every actor, and
+    //    clear pending blast objects/text. Without this, actors from the
+    //    old room (lookout man, fire) stay flagged visible and continue
+    //    rendering on top of the new room until the entry script
+    //    re-asserts who's actually present.
+    string_stop_talk();
+    actor_hide_all();
+
     // 1) Exit-script chain: VAR_EXIT_SCRIPT (global, Script 7 in MI1) +
     //    old room's EXCD + VAR_EXIT_SCRIPT2.
     {

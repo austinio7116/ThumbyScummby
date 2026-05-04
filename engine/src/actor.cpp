@@ -251,16 +251,45 @@ Actor *actor_get(int n) {
     return &g_actors[n];
 }
 
+// Mirrors scummvm `_egoPositioned` (one global flag per engine).
+static bool g_ego_positioned = false;
+bool actor_ego_positioned_get() { return g_ego_positioned; }
+void actor_ego_positioned_set(bool v) { g_ego_positioned = v; }
+
 void actor_put_at(int n, int x, int y) {
     Actor *a = actor_get(n); if (!a) return;
     a->x = (int16_t)x; a->y = (int16_t)y;
     a->moving = 0;
     a->flags |= ACTOR_FLAG_VISIBLE;
+    // Mirror scummvm Actor::putActor: when the placed actor is the ego,
+    // set _egoPositioned so o5_loadRoomWithEgo's post-ENCD fallback
+    // knows the entry script handled positioning.
+    if ((int)g_vm.globals[VAR_EGO] == n) {
+        g_ego_positioned = true;
+    }
 }
 
 void actor_put_in_room(int n, int room) {
     Actor *a = actor_get(n); if (!a) return;
     a->room = (uint8_t)room;
+}
+
+// Mirror of scummvm Actor::hideActor (actor.cpp:1002): clears the visible
+// flag, stops walking. Called for every actor at room change so the new
+// room starts with a clean actor slate; entry scripts (ENCD / Script 5)
+// then put back the actors that belong here.
+void actor_hide(int n) {
+    Actor *a = actor_get(n); if (!a) return;
+    a->flags &= (uint8_t)~ACTOR_FLAG_VISIBLE;
+    a->moving = 0;
+}
+
+void actor_hide_all() {
+    for (int i = 0; i < MAX_ACTORS; i++) {
+        Actor &a = g_actors[i];
+        a.flags &= (uint8_t)~ACTOR_FLAG_VISIBLE;
+        a.moving = 0;
+    }
 }
 
 void actor_set_costume(int n, int cost) {
