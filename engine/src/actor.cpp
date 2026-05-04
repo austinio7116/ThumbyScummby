@@ -138,15 +138,11 @@ void actor_class_changed(int n, int cls, bool set) {
     Actor *a = actor_get(n);
     if (!a) return;
     switch (cls) {
-    case 20:    // kObjectClassNeverClip
-        if (set) { a->flags |= ACTOR_FLAG_NEVER_ZCLIP; a->force_clip = 0; }
-        else     { a->flags &= ~ACTOR_FLAG_NEVER_ZCLIP; }
-        break;
-    case 21:    // kObjectClassAlwaysClip
+    case 21:    // kObjectClassAlwaysClip — scummvm Actor::classChanged
         if (set) { a->flags |= ACTOR_FLAG_FORCE_ZCLIP; a->force_clip = 1; }
         else     { a->flags &= ~ACTOR_FLAG_FORCE_ZCLIP; a->force_clip = 0; }
         break;
-    case 22:    // kObjectClassIgnoreBoxes
+    case 22:    // kObjectClassIgnoreBoxes — scummvm Actor::classChanged
         if (set) a->flags |=  ACTOR_FLAG_IGNORE_BOX;
         else     a->flags &= ~ACTOR_FLAG_IGNORE_BOX;
         break;
@@ -704,11 +700,23 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
         CostumeData cd{};
         if (!costume_parse(cspan, &cd)) continue;
 
+        // Mirrors scummvm Actor::drawActorCostume v3-v6 branch
+        // (actor.cpp:2585-2594):
+        //   if (_forceClip) zbuf = _forceClip;
+        //   else if (isInClass(kObjectClassNeverClip)) zbuf = 0;
+        //   else { zbuf = getMaskFromBox(walkbox); ... }
+        // Note that NeverClip is a CLASS BIT checked at render — not
+        // a flag mutated by classChanged. We previously set
+        // ACTOR_FLAG_NEVER_ZCLIP from classChanged(20) which had two
+        // problems: (a) it persisted across class clears, and (b) it
+        // set the wrong semantics for actors that scummvm leaves at
+        // zbuf=walkbox-mask (clouds in MI1 v4 floppy intro).
+        int actor_id = (int)(&a - &g_actors[0]);
         int zbuf;
-        if (a.flags & ACTOR_FLAG_NEVER_ZCLIP) {
-            zbuf = 0;
-        } else if (a.force_clip) {
+        if (a.force_clip) {
             zbuf = a.force_clip;
+        } else if (engine_get_class(actor_id, 20)) {  // kObjectClassNeverClip
+            zbuf = 0;
         } else if (wbg && wbg->valid && a.walkbox != INVALID_BOX) {
             zbuf = walkbox_mask_for_box(wbg, a.walkbox) & 0x03;
         } else {

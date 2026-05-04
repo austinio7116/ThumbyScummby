@@ -1296,8 +1296,8 @@ static void op_actorOps(VM *vm) {
                 a->talk_stop_frame = 5;
             }
             break;
-        case 18:   // never_zclip
-            if (a) a->flags |= ACTOR_FLAG_NEVER_ZCLIP;
+        case 18:   // SO_NEVER_ZCLIP — script_v5.cpp:614 sets _forceClip = 0
+            if (a) { a->force_clip = 0; a->flags &= ~ACTOR_FLAG_FORCE_ZCLIP; }
             break;
         case 20:   // ignore_boxes
             if (a) a->flags |= ACTOR_FLAG_IGNORE_BOX;
