@@ -150,10 +150,13 @@ void           engine_rebuild_zmasks();
 // up. -1 sentinel for `color` matches ScummVM's "background colour".
 void     engine_draw_box(int x1, int y1, int x2, int y2, int color);
 
-// String resource pool — mirrors rtString in ScummVM. Slots 0..127,
-// each up to 256 bytes. Used by op_stringOps (1=load, 2=copy, 3=set
-// char, 4=get char, 5=create-empty) — see script_v5.cpp:3041-3122.
-constexpr int STRING_SLOT_COUNT = 128;
+// String resource pool — mirrors rtString in ScummVM. ScummVM allocates
+// these on demand; we keep a fixed pool for simplicity. v4 only ever
+// uses a handful of slots concurrently, so 32 is plenty for MI1.
+// (Was 128 — shrunk for device fit, saves 24KB BSS. If a game ever
+// blows past 32 we'll bump it; switch to dynamic if it becomes a
+// problem.) script_v5.cpp:3041-3122 is the opcode reference.
+constexpr int STRING_SLOT_COUNT = 32;
 constexpr int STRING_SLOT_SIZE  = 256;
 void          engine_string_load(int slot, const uint8_t *src);
 void          engine_string_create_empty(int slot, int size);

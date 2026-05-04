@@ -54,7 +54,11 @@ struct Span {
 // Constants
 constexpr int VIRTUAL_SCREEN_W = 320;       // visible viewport (matches ScummVM _screenWidth for v4)
 constexpr int VIRTUAL_SCREEN_H = 200;       // viewport height
-constexpr int ROOM_BUFFER_W    = 1024;      // room-wide backbuffer; max v4 room is 800
+// Room-wide backbuffer: max v4 room width is 800; 832 = 26 strips, the
+// next 32-aligned bump above max. Was 1024 (slop); shrunk for device fit
+// (saves 38KB BSS). Phase 2 will drop this entirely in favour of per-
+// strip decode-on-demand into vscreen_main, matching scummvm's model.
+constexpr int ROOM_BUFFER_W    = 832;
 constexpr int NUM_STRIPS       = VIRTUAL_SCREEN_W / 8;   // 40 strips visible at once
 constexpr int DISPLAY_W        = 128;
 constexpr int DISPLAY_H        = 128;
