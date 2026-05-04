@@ -123,6 +123,32 @@ bool room_load(int room_id, const MasterIndex &master, Room *out) {
         // strips directly without an inner SMAP wrapper. We'll handle
         // both layouts in the SMAP decoder.
         out->bm_smap_payload = c.payload;
+
+        // Walk the chained z-plane offset list. Mirrors ScummVM
+        // gfx.cpp:1041-1055 (GF_SMALL_HEADER):
+        //   off = LE32 at BM[0]
+        //   while (off && count < 4): plane = base + off; off = LE16 at plane.
+        out->num_zplanes = 0;
+        const uint8_t *bm_base = c.payload.data;
+        size_t bm_size         = c.payload.size;
+        if (bm_size >= 4) {
+            uint32_t off = read_le32(bm_base);
+            const uint8_t *plane = bm_base;
+            while (off && out->num_zplanes < MAX_ZPLANES) {
+                plane += off;
+                if (plane < bm_base ||
+                    (size_t)(plane - bm_base) + 2 > bm_size) break;
+                size_t plane_off = (size_t)(plane - bm_base);
+                size_t plane_avail = bm_size - plane_off;
+                uint16_t next_off = read_le16(plane);
+                size_t plane_len = next_off ? next_off : plane_avail;
+                if (plane_len > plane_avail) plane_len = plane_avail;
+                out->zplane_payload[out->num_zplanes] =
+                    Span{plane, plane_len};
+                out->num_zplanes++;
+                off = next_off;
+            }
+        }
     }
 
     // Walkbox data: 'BX' = BOXD (vertices). The matrix ('BM' inside SCRP)

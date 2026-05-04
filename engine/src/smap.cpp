@@ -200,4 +200,73 @@ bool smap_decode_bm(Span bm_payload, int width, int height,
     return true;
 }
 
+// Mirrors ScummVM Gdi::decompressMaskImg (gfx.cpp:3115) — RLE column.
+// Source byte b: high bit set => run-of-c (b & 0x7F times), else literal
+// (b copies, each a fresh byte). dst advances by mask_pitch per row.
+static void decompress_mask_column(const uint8_t *src, const uint8_t *src_end,
+                                   uint8_t *dst, int mask_pitch, int height,
+                                   bool or_mode) {
+    while (height > 0 && src < src_end) {
+        uint8_t b = *src++;
+        if (b & 0x80) {
+            int n = b & 0x7F;
+            if (src >= src_end) return;
+            uint8_t c = *src++;
+            while (n-- > 0 && height > 0) {
+                if (or_mode) *dst |= c;
+                else         *dst  = c;
+                dst += mask_pitch;
+                height--;
+            }
+        } else {
+            int n = b;
+            while (n-- > 0 && height > 0) {
+                if (src >= src_end) return;
+                uint8_t v = *src++;
+                if (or_mode) *dst |= v;
+                else         *dst  = v;
+                dst += mask_pitch;
+                height--;
+            }
+        }
+    }
+}
+
+void smap_decode_zplane(Span zp_payload, int width, int height,
+                        uint8_t *mask_buf, int mask_pitch,
+                        int dst_strip_off, bool or_mode) {
+    if (zp_payload.empty() || !mask_buf) return;
+    if (width <= 0 || height <= 0) return;
+    if (width % 8 != 0) return;
+    int num_strips = width / 8;
+
+    const uint8_t *base     = zp_payload.data;
+    const uint8_t *base_end = base + zp_payload.size;
+    // The ZP per-strip offset table starts at +2 (after the next-plane
+    // LE16). gfx.cpp:2611-2612 GF_SMALL_HEADER:
+    //   offs = LE16 at zplane[i] + stripnr*2 + 2.
+    // Need 2 (next-plane) + 2 * num_strips bytes header minimum.
+    if (zp_payload.size < (size_t)2 + (size_t)num_strips * 2) return;
+
+    for (int s = 0; s < num_strips; s++) {
+        int dst_strip = dst_strip_off + s;
+        if (dst_strip < 0 || dst_strip >= mask_pitch) continue;
+        uint16_t off = read_le16(base + 2 + s * 2);
+        uint8_t *col = mask_buf + dst_strip;
+        if (off == 0) {
+            // gfx.cpp:2629-2632: zero the column on overwrite, leave
+            // alone on OR (per !dbAllowMaskOr branch).
+            if (!or_mode) {
+                for (int y = 0; y < height; y++) {
+                    col[y * mask_pitch] = 0;
+                }
+            }
+            continue;
+        }
+        if ((size_t)off >= zp_payload.size) continue;
+        decompress_mask_column(base + off, base_end, col, mask_pitch,
+                               height, or_mode);
+    }
+}
+
 }  // namespace tsb

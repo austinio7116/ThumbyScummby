@@ -24,6 +24,7 @@
 #include "object.h"
 #include "platform.h"
 #include "vm.h"
+#include "engine.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -48,7 +49,14 @@ void actor_init_one(int n, int mode) {
         a.flags  = 0;
         a.moving = 0;
         a.frame  = 0;
-        a.walkbox = INVALID_BOX;
+        // ScummVM Actor::initActor (audio/adlib.cpp wait — actor.cpp:173)
+        // sets _walkbox = 0 (NOT kInvalidBox=0xFF). This affects z-mask
+        // selection: getMaskFromBox(0) returns box 0's mask byte, which
+        // for v4 MI1 floppy intro typically routes clouds onto z-plane
+        // 1 (behind cliff peak). We previously initialised to 0xFF
+        // which made getMaskFromBox(255) return 0 → no clip → clouds
+        // rendered on top of the cliff.
+        a.walkbox = 0;
         a.cur_box = INVALID_BOX;
         a.dest_box = INVALID_BOX;
         a.anim_progress = 0;
@@ -622,11 +630,22 @@ void actor_tick_all(const WalkboxGraph *wbg) {
             a.walkbox = walkbox_at(wbg, a.x, a.y);
         }
         setup_actor_scale(&a, wbg);
+        bool was_moving = (a.moving != 0);
         tick_walk(&a, wbg);
         tick_anim(&a);
-        // Re-evaluate walkbox after the step.
-        if (wbg && wbg->valid)
-            a.walkbox = walkbox_at(wbg, a.x, a.y);
+        // Re-evaluate walkbox ONLY if the actor was walking. ScummVM
+        // updates _walkbox in walkActor when a step crosses a box
+        // boundary (actor.cpp:945+). For idle actors (e.g. floating
+        // cloud sprites) _walkbox stays at its previous value — the
+        // initActor default of 0 (actor.cpp:173) — which is what
+        // getMaskFromBox(0) requires to route them onto z-plane 1.
+        // Previously we re-evaluated unconditionally, so any actor
+        // standing outside a walkbox got walkbox = INVALID_BOX (255)
+        // → zbuf = 0 → no z-clip → clouds rendered in front of cliff.
+        if (was_moving && wbg && wbg->valid) {
+            uint8_t wb = walkbox_at(wbg, a.x, a.y);
+            if (wb != INVALID_BOX) a.walkbox = wb;
+        }
     }
 }
 
@@ -664,12 +683,19 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
         sorted[nvis++] = &a;
     }
     if (nvis == 0) return;
-    (void)x_off;
 
     qsort(sorted, nvis, sizeof(sorted[0]), cmp_actor_y);
 
-    int num_strips = pitch / 8;
-    (void)wbg;   // mask buffer not yet wired (z-planes not extracted)
+    // Z-mask plumbing — mirrors ScummEngine::Actor::drawActorCostume
+    // (actor.cpp:2577-2594). Each actor gets a `_zbuf` plane index; the
+    // costume renderer then clips its pixels against that mask. _zbuf
+    // selection priority:
+    //   1. _forceClip   (set by op_actorOps SO_FORCE_CLIP / class flags)
+    //   2. NEVER_ZCLIP  → no mask
+    //   3. walkbox.mask & 0x03 (v4 GF_SMALL_HEADER, actor.cpp:2592)
+    // Result is clamped to numZBuffer-1 (== engine_zmask_count()).
+    int num_zplanes  = engine_zmask_count();
+    int mask_pitch   = engine_zmask_pitch();
 
     for (int i = 0; i < nvis; i++) {
         const Actor &a = *sorted[i];
@@ -677,6 +703,19 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
         if (cspan.empty()) continue;
         CostumeData cd{};
         if (!costume_parse(cspan, &cd)) continue;
+
+        int zbuf;
+        if (a.flags & ACTOR_FLAG_NEVER_ZCLIP) {
+            zbuf = 0;
+        } else if (a.force_clip) {
+            zbuf = a.force_clip;
+        } else if (wbg && wbg->valid && a.walkbox != INVALID_BOX) {
+            zbuf = walkbox_mask_for_box(wbg, a.walkbox) & 0x03;
+        } else {
+            zbuf = 0;
+        }
+        if (zbuf > num_zplanes) zbuf = num_zplanes;
+        const uint8_t *mask = (zbuf > 0) ? engine_zmask(zbuf) : nullptr;
 
         // _drawActorToRight — mirrors ClassicCostumeRenderer::setFacing
         // (costume.cpp:831-833): newDirToOldDir(_facing) != 0 ||
@@ -725,7 +764,7 @@ void actor_render_all(uint8_t *vscreen_main, int pitch,
                                 a.scalex, a.scaley,
                                 flip,
                                 a.palette,
-                                /*mask_buf=*/nullptr, num_strips,
+                                mask, mask_pitch, /*mask_x_off=*/x_off,
                                 vscreen_main, pitch,
                                 /*transparent_color=*/0,
                                 &xmove, &ymove);

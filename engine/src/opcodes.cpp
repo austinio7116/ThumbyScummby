@@ -1607,6 +1607,10 @@ void op_drawObject(VM *vm) {
                            ROOM_BUFFER_W,
                            engine_room_width(),
                            engine_room_height());
+        // The newly-painted object may carry its own z-plane(s) (e.g. a
+        // closed door drawn in front of actors). Refresh the room masks
+        // so subsequent costume draws clip against the updated state.
+        engine_rebuild_zmasks();
     }
 }
 

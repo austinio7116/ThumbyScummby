@@ -66,5 +66,14 @@ constexpr int NUM_LOCALS       = 26;
 constexpr int MAX_OBJECTS      = 200;
 constexpr int MAX_VERBS        = 32;
 constexpr int MAX_BOXES        = 64;
+// SCUMM v4 small_header rooms encode at most four ZP planes. ScummVM
+// asserts numZBuffer <= 8 (gfx.cpp:1067) but the v4 walker caps the
+// chain at 4 (gfx.cpp:1051). Plane index 0 is "no clip" — actor's
+// _zbuf 1..N_ZPLANES selects masks[0..N_ZPLANES-1].
+constexpr int MAX_ZPLANES      = 4;
+// Z-mask buffer is room-wide so a single decode at room load suffices.
+// 1bpp packed: ROOM_BUFFER_W / 8 = 128 bytes per row, 200 rows.
+constexpr int MASK_BUF_PITCH   = ROOM_BUFFER_W / 8;
+constexpr int MASK_BUF_SIZE    = MASK_BUF_PITCH * VIRTUAL_SCREEN_H;
 
 }  // namespace tsb

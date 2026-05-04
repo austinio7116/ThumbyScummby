@@ -128,6 +128,21 @@ uint8_t *engine_room_buffer();
 int      engine_room_width();
 int      engine_room_height();
 
+// Z-plane mask access. plane_idx 1..N selects ZP block N (matches
+// ScummVM convention where _zbuf = 0 means "no clip"). Returns nullptr
+// when the room has no z-planes or plane_idx is out of range. The mask
+// is room-wide; row stride is engine_zmask_pitch() bytes.
+const uint8_t *engine_zmask(int plane_idx);
+int            engine_zmask_count();
+int            engine_zmask_pitch();
+
+// Rebuild z-mask buffers from the current room's z-plane chain plus the
+// OBIM z-planes of every visible object. Called automatically by
+// engine_change_room and op_drawObject — exposed here so the VM can
+// trigger a refresh after any other state mutation that affects the
+// composite (e.g. `setState` opcode toggling a foreground object).
+void           engine_rebuild_zmasks();
+
 // Direct pixel-aligned filled box on the main viewport surface.
 // Mirrors ScummEngine::drawBox (gfx.cpp). Coordinates are room-space
 // (bg buffer) — caller already has a wide-room buffer. We render into

@@ -223,6 +223,12 @@ bool walkbox_load(Span boxd_payload, Span /*boxm_payload*/, WalkboxGraph *out) {
     return true;
 }
 
+uint8_t walkbox_mask_for_box(const WalkboxGraph *g, int box_id) {
+    if (!g || !g->valid) return 0;
+    if (box_id < 0 || box_id >= g->num_boxes) return 0;
+    return g->boxes[box_id].mask;
+}
+
 uint8_t walkbox_at(const WalkboxGraph *g, int x, int y) {
     if (!g || !g->valid) return INVALID_BOX;
     // Iterate in reverse (high-numbered boxes win — matches v5 logic).

@@ -68,6 +68,12 @@ bool walkbox_load(Span boxd_payload, Span boxm_payload, WalkboxGraph *out);
 // Searched in reverse order (highest-indexed match wins, matches v5 logic).
 uint8_t walkbox_at(const WalkboxGraph *g, int x, int y);
 
+// Return the per-box `mask` byte (the on-disk BX field at offset 16).
+// For v4 actor rendering this byte selects the z-plane to clip against
+// (low 2 bits) — mirrors ScummEngine::getMaskFromBox / actor.cpp:2590.
+// Returns 0 if the box id is out of range or graph is invalid.
+uint8_t walkbox_mask_for_box(const WalkboxGraph *g, int box_id);
+
 // Look up the next box on the shortest path from `from` to `to`. Returns
 // INVALID_BOX if no path. Returns `to` if `from == to`.
 uint8_t walkbox_next(const WalkboxGraph *g, uint8_t from, uint8_t to);

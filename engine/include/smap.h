@@ -34,4 +34,26 @@ namespace tsb {
 bool smap_decode_bm(Span bm_payload, int width, int height,
                     uint8_t *out_buf, int out_pitch);
 
+// Decode one z-plane (ZP block) into a 1bpp mask buffer. `zp_payload` is
+// the entire ZP block: first LE16 = next-plane offset (ignored here),
+// then LE16 strip-offset table, then per-strip RLE data
+// (gfx.cpp::decompressMaskImg). Strips are 8 px wide; one mask byte per
+// row holds 8 horizontal pixels MSB-first.
+//
+//   width        — pixel width to decode (object width or room width)
+//   height       — rows to decode (room/object height; <= MASK rows)
+//   mask_buf     — destination mask plane, size `mask_pitch * height`
+//   mask_pitch   — row stride of mask_buf in bytes (== row strip count)
+//   dst_strip_off— starting strip column to write at (object's x_strip;
+//                  0 for room-wide BM-level z-planes)
+//   or_mode      — true = OR onto existing bits, false = overwrite.
+//                  ScummVM defaults to overwrite (decompressMaskImg);
+//                  pass true when applying secondary masks.
+//
+// Strips whose offset entry is 0 are written as all-zero (per ScummVM
+// gfx.cpp:2629-2632) when overwriting, or skipped entirely when OR-ing.
+void smap_decode_zplane(Span zp_payload, int width, int height,
+                        uint8_t *mask_buf, int mask_pitch,
+                        int dst_strip_off, bool or_mode);
+
 }  // namespace tsb

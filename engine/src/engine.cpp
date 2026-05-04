@@ -15,6 +15,7 @@
 #include "object.h"
 #include "actor.h"
 #include "walkbox.h"
+#include "smap.h"
 #include "opl2.h"
 #include "adlib.h"
 #include "imuse.h"
@@ -69,6 +70,14 @@ struct EngineState {
     // (passes the underlying main pixel). Cleared on stopTalk so the
     // displayed text doesn't bleed across talks. Audit H88.
     uint8_t  vscreen_text[VIRTUAL_SCREEN_W * VIRTUAL_SCREEN_H];
+
+    // Z-plane masks for actor clipping. One plane per ZP block in the
+    // room's BM chunk, optionally OR'd with object OBIM z-planes. Plane
+    // 0 in our array is the FIRST mask (== ScummVM's z-plane index 1);
+    // an actor's `_zbuf` value 1..num_zplanes selects masks[zbuf-1].
+    // Built by rebuild_zmasks() at room load and after any op_drawObject.
+    uint8_t  z_masks[MAX_ZPLANES][MASK_BUF_SIZE];
+    int      num_zplanes;
 
     Camera   camera;
 
@@ -599,6 +608,115 @@ Span engine_local_script(int script_id, uint32_t *out_offset) {
     return g.room.lscr_payload[idx];
 }
 
+// ---------------------------------------------------------------------------
+// Z-plane mask construction. Rebuilds g.z_masks[] from the current room's
+// BM-level ZP chain, OR'd with each visible object's OBIM-level ZP chain
+// at the object's strip position. Mirrors ScummVM Gdi::decodeMask
+// (gfx.cpp:2565+) called per-strip during drawBitmap.
+//
+// We rebuild the whole room's masks at once because our compositing model
+// re-paints the entire vscreen_room on room load / drawObject — there's
+// no dirty-rect tracking to amortise the work.
+//
+// Object-level z-planes overwrite (not OR onto) the room's mask at the
+// object's strip range. Mirrors ScummVM's `decompressMaskImg` (overwrite)
+// fallback — `decompressMaskImgOr` is only used with the dbAllowMaskOr
+// flag, which v4 OBIM doesn't set.
+// ---------------------------------------------------------------------------
+static void decode_zplane_chain(Span bm_payload,
+                                int width, int height,
+                                int dst_strip_off,
+                                bool overwrite,
+                                int max_planes) {
+    if (bm_payload.size < 4) return;
+    const uint8_t *base = bm_payload.data;
+    size_t base_size    = bm_payload.size;
+
+    uint32_t off = read_le32(base);
+    const uint8_t *plane = base;
+    int idx = 0;
+    while (off && idx < max_planes && idx < g.num_zplanes) {
+        plane += off;
+        if (plane < base ||
+            (size_t)(plane - base) + 2 > base_size) break;
+        size_t plane_off  = (size_t)(plane - base);
+        size_t plane_avail = base_size - plane_off;
+        uint16_t next_off = read_le16(plane);
+        size_t plane_len = next_off ? next_off : plane_avail;
+        if (plane_len > plane_avail) plane_len = plane_avail;
+
+        smap_decode_zplane(Span{plane, plane_len},
+                           width, height,
+                           g.z_masks[idx], MASK_BUF_PITCH,
+                           dst_strip_off,
+                           /*or_mode=*/!overwrite);
+        idx++;
+        off = next_off;
+    }
+    // Any planes beyond what this chain provides — and we're in overwrite
+    // mode (room-level decode) — get zeroed for the strips we cover.
+    if (overwrite) {
+        int strips = width / 8;
+        for (; idx < max_planes && idx < g.num_zplanes; idx++) {
+            for (int s = 0; s < strips; s++) {
+                int dst_strip = dst_strip_off + s;
+                if (dst_strip < 0 || dst_strip >= MASK_BUF_PITCH) continue;
+                uint8_t *col = g.z_masks[idx] + dst_strip;
+                for (int y = 0; y < height; y++) col[y * MASK_BUF_PITCH] = 0;
+            }
+        }
+    }
+}
+
+static void rebuild_zmasks() {
+    // Pull the room's plane count and clear all the buffers we'll touch.
+    g.num_zplanes = g.room.num_zplanes;
+    if (g.num_zplanes < 0) g.num_zplanes = 0;
+    if (g.num_zplanes > MAX_ZPLANES) g.num_zplanes = MAX_ZPLANES;
+    for (int p = 0; p < MAX_ZPLANES; p++) memset(g.z_masks[p], 0, MASK_BUF_SIZE);
+    if (g.num_zplanes == 0 || g.room.bm_smap_payload.empty()) return;
+
+    int rh = g.room.height;
+    if (rh > VIRTUAL_SCREEN_H) rh = VIRTUAL_SCREEN_H;
+
+    // Room-level z-planes: overwrite every plane across the full room width.
+    decode_zplane_chain(g.room.bm_smap_payload,
+                        g.room.width, rh,
+                        /*dst_strip_off=*/0,
+                        /*overwrite=*/true,
+                        MAX_ZPLANES);
+
+    // Visible objects' z-planes: overwrite each plane at the object's
+    // strip range. Walk in the same reverse order as object_render_all so
+    // higher-priority objects (later in OC sibling order) win at draws.
+    for (int i = g_object_table.num_objects; i >= 1; i--) {
+        const ObjectData &o = g_object_table.objects[i];
+        if (o.obj_id == 0 || !(o.state & 0x0F)) continue;
+        if (o.obim_payload.size < 4) continue;
+        if (o.w_strip == 0 || o.h == 0) continue;
+
+        int oh = o.h * 8;
+        int ow = o.w_strip * 8;
+        if (oh > rh) oh = rh;
+        // object_render_all subs payload by 2 (skip obj_id) before passing
+        // to smap_decode_bm; the BM-style chained-offset header is at +2
+        // within the OBIM payload as well.
+        Span obim_bm = o.obim_payload.sub(2);
+        decode_zplane_chain(obim_bm, ow, oh,
+                            /*dst_strip_off=*/o.x_strip,
+                            /*overwrite=*/true,
+                            MAX_ZPLANES);
+    }
+}
+
+const uint8_t *engine_zmask(int plane_idx) {
+    if (plane_idx <= 0 || plane_idx > g.num_zplanes) return nullptr;
+    return g.z_masks[plane_idx - 1];
+}
+int engine_zmask_count()  { return g.num_zplanes; }
+int engine_zmask_pitch()  { return MASK_BUF_PITCH; }
+void engine_rebuild_zmasks() { rebuild_zmasks(); }
+
 bool engine_change_room(int new_room) {
     if (new_room == 0) {
         // Room 0 is SCUMM's "no room" placeholder — boot scripts often
@@ -640,6 +758,7 @@ bool engine_change_room(int new_room) {
     refresh_object_states(&g_object_table);
     object_render_all(&g_object_table, g.vscreen_room, ROOM_BUFFER_W,
                       g.room.width, g.room.height);
+    rebuild_zmasks();
     if (!g.room.boxd_payload.empty()) {
         walkbox_load(g.room.boxd_payload, Span{nullptr, 0}, &g.walkboxes);
     } else {
@@ -908,6 +1027,7 @@ bool engine_init() {
             }
             object_render_all(&g_object_table, g.vscreen_room, ROOM_BUFFER_W,
                               g.room.width, g.room.height);
+            rebuild_zmasks();
         }
     }
 #endif

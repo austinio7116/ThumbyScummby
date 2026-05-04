@@ -186,7 +186,7 @@ static void byle_rle_decode(
     int shr, int mask_bits,
     const uint8_t *actor_palette,       // 32-byte; 0xFF = "use cost palette"
     const uint8_t *cost_palette,        // costume's intrinsic palette
-    const uint8_t *mask_buf, int num_strips,
+    const uint8_t *mask_buf, int mask_pitch, int mask_x_off,
     uint8_t *vscreen, int vscreen_pitch,
     int clip_w, int clip_h,
     uint8_t transparent_color)
@@ -233,9 +233,13 @@ static void byle_rle_decode(
                     y >= 0 && y < clip_h) {
                     bool masked = false;
                     if (mask_buf) {
-                        int bx = x >> 3;
-                        int bb = 0x80 >> (x & 7);
-                        masked = (mask_buf[y * num_strips + bx] & bb) != 0;
+                        // Mask is room-wide; viewport-relative draw x is
+                        // shifted into room-x for the lookup.
+                        int mx = x + mask_x_off;
+                        int bx = mx >> 3;
+                        int bb = 0x80 >> (mx & 7);
+                        if (bx >= 0 && bx < mask_pitch && y >= 0)
+                            masked = (mask_buf[y * mask_pitch + bx] & bb) != 0;
                     }
                     if (!masked) {
                         // Mirrors ScummVM ClassicCostumeRenderer::setPalette
@@ -286,7 +290,8 @@ static void byle_rle_decode(
 void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
                          int dx, int dy, int scale_x, int scale_y, bool flip_x,
                          const uint8_t *actor_palette,
-                         const uint8_t *mask_buf, int num_strips,
+                         const uint8_t *mask_buf, int mask_pitch,
+                         int mask_x_off,
                          uint8_t *vscreen, int vscreen_pitch,
                          uint8_t transparent_color,
                          int *xmove_io, int *ymove_io)
@@ -362,7 +367,7 @@ void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
                     x_step,
                     shr, mask_bits,
                     actor_palette, cost->palette,
-                    mask_buf, num_strips,
+                    mask_buf, mask_pitch, mask_x_off,
                     vscreen, vscreen_pitch,
                     VIRTUAL_SCREEN_W, VIRTUAL_SCREEN_H,
                     transparent_color);

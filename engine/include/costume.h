@@ -88,8 +88,14 @@ int  costume_new_dir_to_old(int dir);
 //  actor_palette — maps 0..(num_colors-1) onto screen palette indices.
 //                  Pass nullptr to use the costume's own palette table.
 //  mask_buf      — 1bpp z-plane, 8 px per byte, packed in vertical strips
-//                  of (width/8) bytes per row. Pass nullptr to skip masking.
-//  num_strips    — strips per row of mask_buf (= virtual screen width / 8).
+//                  of `mask_pitch` bytes per row. Pass nullptr to skip masking.
+//                  The mask is room-wide: lookup x = dst_x + mask_x_off.
+//  mask_pitch    — row stride of mask_buf in strips (== ROOM_BUFFER_W / 8
+//                  for the engine's room-wide masks).
+//  mask_x_off    — added to destination x before mask lookup. For viewport-
+//                  relative actor draws this should be the camera's room-x
+//                  offset (`screenStartStrip * 8`); for room-wide compositing
+//                  pass 0.
 //  vscreen       — destination 8bpp buffer.
 //  vscreen_pitch — bytes per row of vscreen (typically 320).
 //  transparent_color — palette index treated as transparent (no write).
@@ -98,7 +104,8 @@ int  costume_new_dir_to_old(int dir);
 void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
                          int dx, int dy, int scale_x, int scale_y, bool flip_x,
                          const uint8_t *actor_palette,
-                         const uint8_t *mask_buf, int num_strips,
+                         const uint8_t *mask_buf, int mask_pitch,
+                         int mask_x_off,
                          uint8_t *vscreen, int vscreen_pitch,
                          uint8_t transparent_color,
                          int *xmove_io = nullptr, int *ymove_io = nullptr);

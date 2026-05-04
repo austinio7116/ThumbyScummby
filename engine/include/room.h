@@ -43,6 +43,15 @@ struct Room {
     Span     boxd_payload;     // BOXD (BX) — walkbox table
     Span     boxm_payload;     // BOXM ('BM' as a sibling, not the bitmap)
 
+    // Z-plane spans extracted from the BM chunk's chained-offset list.
+    // First plane base = bm_smap_payload + LE32 at offset 0; each plane's
+    // first 2 bytes are an LE16 next-plane offset relative to its own base
+    // (or 0 if last). Mirrors ScummVM gfx.cpp:1041-1055 GF_SMALL_HEADER.
+    // num_zplanes counts only real ZP blocks; mask-plane index 1..N
+    // selects zplane_payload[0..N-1].
+    Span     zplane_payload[MAX_ZPLANES];
+    int      num_zplanes;
+
     // ENCD / EXCD — room-entry / room-exit local scripts (run by ScummVM's
     // runEntryScript / runExitScript when the room changes). The payloads
     // are bytecode chunks with NO 6-byte small-chunk header; we feed them
