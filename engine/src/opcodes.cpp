@@ -621,86 +621,23 @@ static void op_resourceRoutines(VM *vm) {
 // (room.cpp:42): runExitScript, kill per-room scripts, load room data,
 // runEntryScript. ScummVM's runExitScript runs the OLD room's EXCD; we
 // snapshot it before the room change overwrites it.
+// engine_start_scene moved to engine.cpp so engine_camera_set_follows can
+// call it too (scummvm setCameraFollows at camera.cpp:69-74 calls startScene
+// when the actor isn't in the current room).
+extern void engine_start_scene(VM *vm, int room);
+
 static void op_loadRoom(VM *vm) {
     int room = vm_get_var_or_byte(vm, 0x80);
 
-    // Same-room shortcut for SMALL_HEADER games (MI1 VGA Floppy is v4).
-    // Note: ScummVM compares against `_currentRoom` (the engine's tracked
-    // current room), NOT VAR(VAR_ROOM) — those can diverge briefly.
+    // Same-room shortcut: scummvm startScene (room.cpp:78) early-returns
+    // when target == _currentRoom.
     int cur = engine_current_room_id();
     if (room == cur) {
         platform::log("[op] loadRoom(%d) — same room, skip startScene\n", room);
         return;
     }
     platform::log("[op] loadRoom(%d) — sync (cur=%d)\n", room, cur);
-
-    int32_t no_args[VM_MAX_VARARG] = {0};
-
-    // 1) ScummVM startScene (room.cpp:78) calls runExitScript() whenever
-    //    the room actually changes. runExitScript is a chain:
-    //      a. VAR_EXIT_SCRIPT (global script, Script 7 in MI1)
-    //      b. EXCD body of the OLD room (if present)
-    //      c. VAR_EXIT_SCRIPT2 (global script, normally 0)
-    //    The global exit script fires regardless of old-room presence —
-    //    if VAR(VAR_EXIT_SCRIPT) is non-zero, we run it. The EXCD body
-    //    only runs if the old room had one.
-    {
-        int exit_id = (int)vm_read_var(vm, VAR_EXIT_SCRIPT);
-        if (exit_id) {
-            vm_start_script(vm, exit_id, no_args, VM_MAX_VARARG, false, false);
-        }
-        if (cur != 0) {
-            Span     old_excd     = engine_room_excd_payload();
-            uint32_t old_excd_off = engine_room_excd_offset();
-            if (!old_excd.empty()) {
-                vm_start_room_script(vm, old_excd, 10001 /*kScriptNumEXCD*/,
-                                     old_excd_off + 1 /*+1 post-fetch*/,
-                                     WHERE_ROOM);
-            }
-        }
-        int exit2 = (int)vm_read_var(vm, VAR_EXIT_SCRIPT2);
-        if (exit2) {
-            vm_start_script(vm, exit2, no_args, VM_MAX_VARARG, false, false);
-        }
-    }
-
-    // 2) Kill scripts that lived in the old room.
-    for (int i = 0; i < VM_MAX_SLOTS; i++) {
-        Slot &ss = vm->slots[i];
-        if (ss.status == SS_DEAD) continue;
-        if (i == vm->cur_slot) continue;
-        if (ss.where == WHERE_LOCAL || ss.where == WHERE_ROOM ||
-            ss.where == WHERE_FLOBJ) {
-            ss.status = SS_DEAD;
-            ss.script_num = 0;
-        }
-    }
-
-    // 3) Perform the actual room change synchronously.
-    vm->pending_room_id = room;
-    engine_change_room(room);
-
-    // 4) ScummVM startScene early-returns when the new _currentRoom == 0
-    //    (room.cpp:179-182), skipping runEntryScript.
-    if (room == 0) return;
-
-    // 5a) VAR_ENTRY_SCRIPT (Script 5 in MI1).
-    int entry_id = (int)vm_read_var(vm, VAR_ENTRY_SCRIPT);
-    if (entry_id) {
-        vm_start_script(vm, entry_id, no_args, VM_MAX_VARARG, false, false);
-    }
-    // 5b) New room's ENCD.
-    Span     new_encd     = engine_room_encd_payload();
-    uint32_t new_encd_off = engine_room_encd_offset();
-    if (!new_encd.empty()) {
-        vm_start_room_script(vm, new_encd, 10002 /*kScriptNumENCD*/,
-                             new_encd_off + 1, WHERE_ROOM);
-    }
-    // 5c) VAR_ENTRY_SCRIPT2 (Script 6 in MI1).
-    int entry2 = (int)vm_read_var(vm, VAR_ENTRY_SCRIPT2);
-    if (entry2) {
-        vm_start_script(vm, entry2, no_args, VM_MAX_VARARG, false, false);
-    }
+    engine_start_scene(vm, room);
 }
 
 // 0x24 / 0x64 / 0xA4 / 0xE4 — loadRoomWithEgo. Mirrors o5_loadRoomWithEgo
@@ -717,8 +654,18 @@ static void op_loadRoomWithEgo(VM *vm) {
     Actor *a = actor_get(ego);
     if (a) a->room = (uint8_t)room;
 
-    // Switch the room synchronously so EXCD/ENCD run nested.
-    engine_change_room(room);
+    // Mirror scummvm o5_loadRoomWithEgo (script_v5.cpp:1874-1876):
+    //   VAR(VAR_WALKTO_OBJ) = obj;
+    //   startScene(a->_room, a, obj);
+    //   VAR(VAR_WALKTO_OBJ) = 0;
+    // startScene runs the exit/entry script chain — without it, ENCD
+    // (and the script that triggers per-room setup like the lookout
+    // cutscene) never fires.
+    int32_t saved_walkto = (int32_t)vm_read_var(vm, VAR_WALKTO_OBJ);
+    vm_write_var(vm, VAR_WALKTO_OBJ, obj);
+    engine_start_scene(vm, room);
+    vm_write_var(vm, VAR_WALKTO_OBJ, 0);
+    (void)saved_walkto;
 
     // Get the object's walk-pos in the new room. If found, snap the
     // ego there (the ScummVM script_v5 idiom is putActor(obj_pos);

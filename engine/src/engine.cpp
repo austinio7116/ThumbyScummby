@@ -817,6 +817,72 @@ int engine_zmask_count()  { return g.num_zplanes; }
 int engine_zmask_pitch()  { return MASK_BUF_PITCH; }
 void engine_rebuild_zmasks() { invalidate_zmask_cache(); }
 
+// Mirror of scummvm startScene (room.cpp:78). Run exit-script chain on the
+// OLD room, kill old-room scripts, swap to the new room, then run the
+// entry-script chain. Called from op_loadRoom, op_loadRoomWithEgo, and
+// engine_camera_set_follows (any path that takes us to a different room).
+void engine_start_scene(VM *vm, int room) {
+    int cur = engine_current_room_id();
+    int32_t no_args[VM_MAX_VARARG] = {0};
+
+    // 1) Exit-script chain: VAR_EXIT_SCRIPT (global, Script 7 in MI1) +
+    //    old room's EXCD + VAR_EXIT_SCRIPT2.
+    {
+        int exit_id = (int)vm_read_var(vm, VAR_EXIT_SCRIPT);
+        if (exit_id) {
+            vm_start_script(vm, exit_id, no_args, VM_MAX_VARARG, false, false);
+        }
+        if (cur != 0) {
+            Span     old_excd     = engine_room_excd_payload();
+            uint32_t old_excd_off = engine_room_excd_offset();
+            if (!old_excd.empty()) {
+                vm_start_room_script(vm, old_excd, 10001 /*kScriptNumEXCD*/,
+                                     old_excd_off + 1, WHERE_ROOM);
+            }
+        }
+        int exit2 = (int)vm_read_var(vm, VAR_EXIT_SCRIPT2);
+        if (exit2) {
+            vm_start_script(vm, exit2, no_args, VM_MAX_VARARG, false, false);
+        }
+    }
+
+    // 2) Kill scripts that lived in the old room.
+    for (int i = 0; i < VM_MAX_SLOTS; i++) {
+        Slot &ss = vm->slots[i];
+        if (ss.status == SS_DEAD) continue;
+        if (i == vm->cur_slot) continue;
+        if (ss.where == WHERE_LOCAL || ss.where == WHERE_ROOM ||
+            ss.where == WHERE_FLOBJ) {
+            ss.status = SS_DEAD;
+            ss.script_num = 0;
+        }
+    }
+
+    // 3) Perform the room change synchronously.
+    vm->pending_room_id = room;
+    engine_change_room(room);
+
+    // 4) ScummVM startScene early-returns on room 0 (room.cpp:179-182).
+    if (room == 0) return;
+
+    // 5) Entry-script chain: VAR_ENTRY_SCRIPT (Script 5) + new ENCD +
+    //    VAR_ENTRY_SCRIPT2 (Script 6).
+    int entry_id = (int)vm_read_var(vm, VAR_ENTRY_SCRIPT);
+    if (entry_id) {
+        vm_start_script(vm, entry_id, no_args, VM_MAX_VARARG, false, false);
+    }
+    Span     new_encd     = engine_room_encd_payload();
+    uint32_t new_encd_off = engine_room_encd_offset();
+    if (!new_encd.empty()) {
+        vm_start_room_script(vm, new_encd, 10002 /*kScriptNumENCD*/,
+                             new_encd_off + 1, WHERE_ROOM);
+    }
+    int entry2 = (int)vm_read_var(vm, VAR_ENTRY_SCRIPT2);
+    if (entry2) {
+        vm_start_script(vm, entry2, no_args, VM_MAX_VARARG, false, false);
+    }
+}
+
 bool engine_change_room(int new_room) {
     if (new_room == 0) {
         // Room 0 is SCUMM's "no room" placeholder — boot scripts often
@@ -940,7 +1006,17 @@ void engine_camera_set_follows(int actor_num, bool force) {
     if (!a) return;
 
     if (a->room != g.current_room_id) {
-        engine_change_room(a->room);
+        // Mirror scummvm setCameraFollows (camera.cpp:69-74): when the
+        // followed actor lives in a different room, run the FULL scene
+        // start (including ENCD), not just engine_change_room. Without
+        // this, room transitions triggered by actorFollowCamera (op
+        // 0xD2) skip ENCD — which is what kicks off the lookout
+        // cutscene's setup script (script 45) and the music for room
+        // 38. The boot flow is: putActorInRoom(ego, 38) sets actor
+        // room; startScript starts a wait script; actorFollowCamera
+        // then triggers this code path which is the only place the
+        // room-38 ENCD has a chance to run.
+        engine_start_scene(&g_vm, a->room);
         g.camera.mode = kFollowActorCameraMode;
         g.camera.cur_x = a->x;
         engine_camera_set_at(g.camera.cur_x);
@@ -1299,7 +1375,11 @@ bool engine_tick() {
                 break;
             }
             case platform::ScaleMode::Fill:
-                gx = dx * VIRTUAL_SCREEN_W / DISPLAY_W;
+                // Vertical-fit-with-horizontal-pan: vertical scale
+                // factor = DISPLAY_H/VIRTUAL_SCREEN_H is applied
+                // isotropically in X too, so 1 dst px = 200/128 src px.
+                // crop_x is the source-x of the leftmost visible column.
+                gx = g.crop_x + dx * VIRTUAL_SCREEN_H / DISPLAY_H;
                 gy = dy * VIRTUAL_SCREEN_H / DISPLAY_H;
                 break;
             case platform::ScaleMode::Crop:
@@ -1322,32 +1402,58 @@ bool engine_tick() {
     if (in.a_pressed) g.left_clicked  = true;
     if (in.b_pressed) g.right_clicked = true;
 
-    // MENU = ESC (cutscene exit). Mirrors scummvm input.cpp:1421-1426
-    // — pressing the cutscene-exit key calls abortCutscene and writes
-    // VAR(VAR_CUTSCENEEXIT_KEY) into _mouseAndKeyboardStat (which then
-    // reaches VAR_KEYPRESS via input.cpp:929-934). On host the SDL
-    // layer also raises this on the real ESC key.
-    if (in.menu_pressed) g.escape_pressed = true;
-
-    // LB+RB together cycles scale mode (debug-only — moved off MENU
-    // because MENU is now the cutscene-exit key, matching the
-    // dedicated-button-per-action pattern from other Thumby slots).
-    static bool prev_lb_rb = false;
-    bool both_shoulders = in.button_lb && in.button_rb;
-    if (both_shoulders && !prev_lb_rb) {
+    // MENU tap cycles scale mode (FIT / FILL / CROP). Re-center the pan
+    // offset to the new mode's mid-range so a flip doesn't leave the
+    // window stuck off-screen.
+    if (in.menu_pressed) {
         g.scale_mode = (platform::ScaleMode)(((int)g.scale_mode + 1) % 3);
         const char *names[] = {"FIT", "FILL", "CROP"};
         platform::log("scale mode: %s\n", names[(int)g.scale_mode]);
+        if (g.scale_mode == platform::ScaleMode::Crop) {
+            g.crop_x = (VIRTUAL_SCREEN_W - DISPLAY_W) / 2;        // 96
+            g.crop_y = (VIRTUAL_SCREEN_H - DISPLAY_H) / 2;        // 36
+        } else if (g.scale_mode == platform::ScaleMode::Fill) {
+            g.crop_x = (VIRTUAL_SCREEN_W -
+                        (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H)) / 2;  // 60
+            g.crop_y = 0;
+        }
     }
-    prev_lb_rb = both_shoulders;
 
-    // CROP pan with LB+dpad (placeholder)
-    if (in.button_lb && g.scale_mode == platform::ScaleMode::Crop) {
+    // Cutscene-exit (KEYCODE_ESCAPE per scummvm input.cpp:1421-1426).
+    // Two device-friendly gestures: host ESC key (in.escape_pressed) or
+    // LB+RB chord (any platform). Edge-triggered so a held chord doesn't
+    // re-fire each frame.
+    static bool prev_lb_rb = false;
+    bool chord_esc = in.button_lb && in.button_rb;
+    if (chord_esc && !prev_lb_rb) g.escape_pressed = true;
+    if (in.escape_pressed)        g.escape_pressed = true;
+    prev_lb_rb = chord_esc;
+
+    // LB+dpad horizontal pan in CROP and FILL modes. Both modes show a
+    // 128-pixel-wide window of a wider source image — CROP is 1:1 so the
+    // window is 128 of the 320-pixel-wide virt screen (offset 0..192);
+    // FILL scales vertically to 128 high which makes the source render
+    // as ~205 pixels wide, with a horizontal pan range of 0..120 source
+    // pixels. (RB-only or no-modifier reserved for future verb modifier.)
+    if (in.button_lb && g.scale_mode != platform::ScaleMode::Fit && !chord_esc) {
         const int step = 4;
-        if (in.dpad_left && g.crop_x > 0) g.crop_x -= step;
-        if (in.dpad_right && g.crop_x < VIRTUAL_SCREEN_W - DISPLAY_W) g.crop_x += step;
-        if (in.dpad_up && g.crop_y > 0) g.crop_y -= step;
-        if (in.dpad_down && g.crop_y < VIRTUAL_SCREEN_H - DISPLAY_H) g.crop_y += step;
+        // FILL pan range = 320 - (DISPLAY_W * VIRT_H / DISPLAY_H)
+        //                = 320 - 200 = 120 source-x pixels.
+        // CROP pan range = 320 - 128 = 192 source-x pixels.
+        const int pan_max =
+            (g.scale_mode == platform::ScaleMode::Crop)
+                ? VIRTUAL_SCREEN_W - DISPLAY_W
+                : VIRTUAL_SCREEN_W -
+                      (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H);
+        if (in.dpad_left  && g.crop_x > 0)         g.crop_x -= step;
+        if (in.dpad_right && g.crop_x < pan_max)   g.crop_x += step;
+        if (g.crop_x < 0) g.crop_x = 0;
+        if (g.crop_x > pan_max) g.crop_x = pan_max;
+        // CROP only: vertical pan too (FILL is already vertically full).
+        if (g.scale_mode == platform::ScaleMode::Crop) {
+            if (in.dpad_up   && g.crop_y > 0)                       g.crop_y -= step;
+            if (in.dpad_down && g.crop_y < VIRTUAL_SCREEN_H - DISPLAY_H) g.crop_y += step;
+        }
     }
 
     // Mirror ScummVM scummLoop (scumm.cpp:3081): refresh VAR_MUSIC_TIMER

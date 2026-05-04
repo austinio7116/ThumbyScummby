@@ -75,8 +75,12 @@ int object_load_from_room(Span room_chunk_payload, ObjectTable *t) {
     SmallChunk c{};
     while (small_next(room_chunk_payload, &cur, &c)) {
         if (c.tag == small_tag('O','I')) {
-            // OBIM payload starts with: uint16 obj_id, uint16 num_imgs, uint8 [...]
-            if (c.payload.size < 4) continue;
+            // OBIM payload starts with uint16 obj_id. Image data (num_imgs +
+            // strips) follows when the object has a visible image; some
+            // objects (e.g. invisible click-triggers) have a stub OBIM with
+            // only the obj_id and no image bytes — accept those too so the
+            // OC matching loop below pairs them with their OBCD.
+            if (c.payload.size < 2) continue;
             int oid = read_le16(c.payload.data);
             if (obim_count < MAX_OBJECTS) {
                 obim_id[obim_count]  = oid;

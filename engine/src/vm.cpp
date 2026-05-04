@@ -105,6 +105,21 @@ uint16_t vm_fetch_uword(VM *vm) {
 // The 0x2000 bit is NEVER seen here — it's consumed by getResultPos for
 // indirect array writes, which strip it before calling read/writeVar.
 int32_t vm_read_var(VM *vm, uint16_t var) {
+    // Mirrors ScummVM script.cpp:573-580. If bit 0x2000 is set (v5 and
+    // earlier only), read another word from the script: it's either a
+    // direct word offset (lower 12 bits used as offset) or another var
+    // ref (also with possible 0x2000 indirection). Add to var, clear the
+    // 0x2000 bit, and proceed with normal lookup. This is the
+    // "indexed/array var" form. Used in expressions like `var[i]`.
+    if (var & 0x2000) {
+        uint16_t a = vm_fetch_uword(vm);
+        if (a & 0x2000) {
+            var = (uint16_t)(var + vm_read_var(vm, a & ~0x2000));
+        } else {
+            var = (uint16_t)(var + (a & 0xFFF));
+        }
+        var &= ~0x2000;
+    }
     if ((var & 0xF000) == 0) {
         if (var >= VM_NUM_GLOBALS) {
             platform::log("vm: read out-of-range global %u\n", var);

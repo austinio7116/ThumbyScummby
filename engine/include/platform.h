@@ -81,6 +81,10 @@ struct Input {
     // Edge events (true for one frame on press)
     bool a_pressed, b_pressed, lb_pressed, rb_pressed, menu_pressed;
     bool a_released, b_released, lb_released, rb_released, menu_released;
+    // Host-only: real ESC key. On device this is always false; device
+    // surfaces cutscene-exit through the LB+RB chord that the engine
+    // detects directly.
+    bool escape_pressed;
 
     // Mouse state — host SDL fills these from real mouse input. Device
     // leaves mouse_present=false; engine drives the cursor from

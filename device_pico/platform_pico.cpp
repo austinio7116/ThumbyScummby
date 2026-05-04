@@ -175,14 +175,29 @@ void present(const uint8_t *virt, const uint8_t *text,
         const int letterbox_top = (DISPLAY_H - dst_h) / 2;
         if (letterbox_top > 0) memset(fb, 0, sizeof(g_fb));
 
-        // Per-dx source X pair (sx, sx2 = sx+1 clamped). Mirrors
-        // md_core_rebuild_sx_lut at md_core.c:514-519.
+        // Per-dx source X pair (sx, sx2 = sx+1 clamped). FIT maps the
+        // 320 width onto 128 dst pixels (anisotropic). FILL keeps the
+        // vertical scale ratio in X (isotropic, 200→128) and pans
+        // horizontally via crop_x in source-x pixels (range 0..120).
         uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
-        for (int dx = 0; dx < DISPLAY_W; dx++) {
-            int sx  = (dx * VIRTUAL_SCREEN_W) / DISPLAY_W;
-            int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
-            sxa[dx] = (uint16_t)sx;
-            sxb[dx] = (uint16_t)sx2;
+        if (mode == ScaleMode::Fill) {
+            int pan_max = VIRTUAL_SCREEN_W -
+                          (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H);
+            if (crop_x < 0)        crop_x = 0;
+            if (crop_x > pan_max)  crop_x = pan_max;
+            for (int dx = 0; dx < DISPLAY_W; dx++) {
+                int sx  = crop_x + (dx * VIRTUAL_SCREEN_H) / DISPLAY_H;
+                int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
+                sxa[dx] = (uint16_t)sx;
+                sxb[dx] = (uint16_t)sx2;
+            }
+        } else {
+            for (int dx = 0; dx < DISPLAY_W; dx++) {
+                int sx  = (dx * VIRTUAL_SCREEN_W) / DISPLAY_W;
+                int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
+                sxa[dx] = (uint16_t)sx;
+                sxb[dx] = (uint16_t)sx2;
+            }
         }
 
         for (int dy = 0; dy < dst_h; dy++) {

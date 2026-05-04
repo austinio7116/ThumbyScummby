@@ -268,14 +268,31 @@ void present(const uint8_t *virt, const uint8_t *text,
         const int letterbox_top = (DISPLAY_H - dst_h) / 2;
         if (letterbox_top > 0) memset(fb, 0, sizeof(g.framebuffer));
 
-        // Pre-build per-dx source X pair (sx, sx2 = sx+1 clamped).
-        // Mirrors md_core_rebuild_sx_lut at md_core.c:514-519.
+        // Pre-build per-dx source X pair (sx, sx2 = sx+1 clamped). For FIT
+        // we map the full 320 width onto 128 dst pixels (anisotropic). For
+        // FILL we use the same vertical scale ratio in X (isotropic, fits
+        // the 200-pixel-tall image to the 128-tall display) with a
+        // horizontal pan = crop_x source-x pixels (LB+dpad to pan, range
+        // 0..120).
         uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
-        for (int dx = 0; dx < DISPLAY_W; dx++) {
-            int sx  = (dx * VIRTUAL_SCREEN_W) / DISPLAY_W;
-            int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
-            sxa[dx] = (uint16_t)sx;
-            sxb[dx] = (uint16_t)sx2;
+        if (mode == ScaleMode::Fill) {
+            int pan_max = VIRTUAL_SCREEN_W -
+                          (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H);
+            if (crop_x < 0)        crop_x = 0;
+            if (crop_x > pan_max)  crop_x = pan_max;
+            for (int dx = 0; dx < DISPLAY_W; dx++) {
+                int sx  = crop_x + (dx * VIRTUAL_SCREEN_H) / DISPLAY_H;
+                int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
+                sxa[dx] = (uint16_t)sx;
+                sxb[dx] = (uint16_t)sx2;
+            }
+        } else {
+            for (int dx = 0; dx < DISPLAY_W; dx++) {
+                int sx  = (dx * VIRTUAL_SCREEN_W) / DISPLAY_W;
+                int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
+                sxa[dx] = (uint16_t)sx;
+                sxb[dx] = (uint16_t)sx2;
+            }
         }
 
         for (int dy = 0; dy < dst_h; dy++) {
@@ -345,11 +362,10 @@ bool poll_input(Input *out) {
     bool b    = keys[SDL_SCANCODE_COMMA]  || keys[SDL_SCANCODE_K];
     bool lb   = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_Q];
     bool rb   = keys[SDL_SCANCODE_SPACE]  || keys[SDL_SCANCODE_E];
-    // ESCAPE / RETURN / M all map to MENU button — engine treats MENU as
-    // the cutscene-exit (KEYCODE_ESCAPE) input, mirroring scummvm
-    // input.cpp:1421-1426.
-    bool menu = keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_RETURN] ||
-                keys[SDL_SCANCODE_M];
+    // RETURN / M map to MENU (cycle scale mode). ESC is its own input,
+    // delivered through Input.escape_pressed (cutscene-exit on host).
+    bool menu = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_M];
+    bool esc  = keys[SDL_SCANCODE_ESCAPE];
 
     out->button_a = a;       out->button_b = b;
     out->button_lb = lb;     out->button_rb = rb;
@@ -360,6 +376,9 @@ bool poll_input(Input *out) {
     out->lb_pressed  = lb   && !g.prev_lb;
     out->rb_pressed  = rb   && !g.prev_rb;
     out->menu_pressed= menu && !g.prev_menu;
+    static bool prev_esc = false;
+    out->escape_pressed = esc && !prev_esc;
+    prev_esc = esc;
 
     out->a_released   = !a    && g.prev_a;
     out->b_released   = !b    && g.prev_b;
