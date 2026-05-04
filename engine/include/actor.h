@@ -100,6 +100,7 @@ void   actor_put_at(int actor_num, int x, int y);
 void   actor_put_in_room(int actor_num, int room);
 void   actor_hide(int actor_num);
 void   actor_hide_all();
+void   actor_show_in_current_room(int current_room);
 
 // Mirrors scummvm `_egoPositioned`. Set true by actor_put_at when the
 // actor being placed IS the ego (VAR_EGO). loadRoomWithEgo clears it

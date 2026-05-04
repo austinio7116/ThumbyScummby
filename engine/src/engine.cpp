@@ -873,6 +873,15 @@ void engine_start_scene(VM *vm, int room) {
     // 4) ScummVM startScene early-returns on room 0 (room.cpp:179-182).
     if (room == 0) return;
 
+    // 4b) showActors — mirrors scummvm room.cpp:247. AFTER the room load
+    //     but BEFORE the entry script. Every actor whose `_room` matches
+    //     the new current room becomes visible again. This pairs with the
+    //     hide-all in step 0 — net effect is "hide everyone who's no
+    //     longer relevant; un-hide whoever was here before". Without
+    //     this re-show step, ENCD scripts that don't explicitly putActor
+    //     on present-NPCs leave them invisible.
+    actor_show_in_current_room(room);
+
     // 5) Entry-script chain: VAR_ENTRY_SCRIPT (Script 5) + new ENCD +
     //    VAR_ENTRY_SCRIPT2 (Script 6).
     int entry_id = (int)vm_read_var(vm, VAR_ENTRY_SCRIPT);
