@@ -122,14 +122,23 @@ target_link_libraries(thumbyscummby PRIVATE
     hardware_timer
 )
 
-# We don't need float/double formatting in printf — saves ~10 KB.
-pico_set_float_implementation(thumbyscummby none)
-pico_set_double_implementation(thumbyscummby none)
+# Use the SDK-provided float/double implementations. dbopl's
+# InitTables calls pow/sin/log10 at startup; with `none` the SDK
+# installs wrapper stubs that call panic() — and the device silently
+# hangs. ThumbyDOOM gets away with `none` only because emu8950 ships
+# precomputed tables and doesn't call libm at init.
+pico_set_float_implementation(thumbyscummby pico)
+pico_set_double_implementation(thumbyscummby pico)
 
-# stdio over UART for log()/panic(). USB stdio is heavy and not
-# needed for a standalone game build.
+# stdio: BOTH off. The Thumby Color's default UART TX is GP0 — which
+# is the LEFT button pin (set as GPIO_IN by buttons_init). Enabling
+# UART stdio means vprintf fills the TX FIFO, then blocks forever
+# because the FIFO can't drain through a pin we've reconfigured as
+# input. ThumbyDOOM disables both for the same reason. log() / panic()
+# become no-ops; if we want device logs in future, route them to an
+# on-screen DOS-style boot panel like DOOM does (boot_stdio_driver).
 pico_enable_stdio_usb(thumbyscummby 0)
-pico_enable_stdio_uart(thumbyscummby 1)
+pico_enable_stdio_uart(thumbyscummby 0)
 
 if (THUMBYONE_SLOT_MODE)
     pico_set_uf2_family(thumbyscummby "absolute")

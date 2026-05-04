@@ -13,7 +13,6 @@
 
 extern "C" {
 #include "pico/stdlib.h"
-#include "pico/multicore.h"
 #include "hardware/timer.h"
 #include "hardware/clocks.h"
 }
@@ -88,31 +87,23 @@ static inline uint16_t pal_to_565(const uint8_t *pal, uint8_t idx) {
 }
 
 // ---------------------------------------------------------------------------
-// Audio: core1 runs a mixer loop that pulls samples from the engine's
-// platform-supplied callback and pushes them into the PWM ring.
+// Audio: single-core. The PWM IRQ on core 0 drains the ring per-sample
+// at 22050 Hz (audio_irq in audio_pwm.c). The engine's per-frame
+// audio_pump() refills the ring with samples synthesised by the mixer
+// callback. Core 1 is left unused — multicore had been hanging
+// engine_init via multicore_launch_core1's FIFO handshake.
 // ---------------------------------------------------------------------------
 
 static tsb::platform::AudioCallback g_audio_cb = nullptr;
 static void                        *g_audio_user = nullptr;
 static int                          g_audio_rate = 22050;
 
-// Core1 mix buffer. 256 samples @ 22050 Hz = ~11.6 ms per buffer; PWM ring
-// is 4096 samples = ~186 ms of slack, so this is generous.
-constexpr int kMixChunkSamples = 256;
-
-static void __not_in_flash_func(core1_audio_loop)(void) {
-    multicore_lockout_victim_init();   // allow core0 to lock us out
-
-    int16_t buf[kMixChunkSamples];
-    while (1) {
-        if (g_audio_cb && audio_pwm_room() >= kMixChunkSamples) {
-            g_audio_cb(g_audio_user, buf, kMixChunkSamples);
-            audio_pwm_push(buf, kMixChunkSamples);
-        } else {
-            tight_loop_contents();
-        }
-    }
-}
+// Mix buffer reused across audio_pump() calls. Sized for a frame's
+// worth of audio at 22050 Hz: ~735 samples per 30 fps frame, but we
+// top up greedily so 1024 gives 1.5 frames of slack within one pump
+// invocation. Static-storage to avoid the on-stack allocation.
+constexpr int kMixChunkSamples = 1024;
+static int16_t s_mix_buf[kMixChunkSamples];
 
 // ---------------------------------------------------------------------------
 // Input edge detection (mirrors the host_sdl path)
@@ -293,15 +284,34 @@ int audio_init(int requested_rate, AudioCallback cb, void *user) {
     g_audio_cb   = cb;
     g_audio_user = user;
     g_audio_rate = 22050;  // PWM timer is hardcoded to 22050 Hz
-    multicore_launch_core1(core1_audio_loop);
+    // Defer the IRQ enable to here — at this point the mixer callback
+    // is wired up and dbopl/imuse are ready. Until now the IRQ was
+    // *registered* but disabled so it can't interrupt earlier engine
+    // init. After this call, the IRQ starts draining the ring at 22050
+    // Hz; engine_tick → audio_pump() refills it once per frame.
+    audio_pwm_irq_enable();
     return g_audio_rate;
+}
+
+// Refill the PWM ring with up to one frame's worth of new samples.
+// Called from engine_tick once per frame on core 0. Mixer callback runs
+// here too, so iMUSE state mutation by the engine and reads by the
+// callback never overlap — they're both sequential on core 0.
+void audio_pump() {
+    using namespace tsb::platform_pico;
+    if (!g_audio_cb) return;
+    int room = audio_pwm_room();
+    while (room >= 64) {                       // top up in 64-sample chunks
+        int n = room < kMixChunkSamples ? room : kMixChunkSamples;
+        g_audio_cb(g_audio_user, s_mix_buf, n);
+        audio_pwm_push(s_mix_buf, n);
+        room -= n;
+    }
 }
 
 void audio_shutdown() {
     using namespace tsb::platform_pico;
     g_audio_cb = nullptr;
-    // Core1 keeps spinning but produces silence (memset of buf, but we
-    // skip when g_audio_cb is null).
 }
 
 uint32_t millis() {
@@ -318,6 +328,21 @@ void log(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vprintf(fmt, ap);
     va_end(ap);
+}
+
+// Boot diagnostic splash — paints a 128×128 solid frame so a hang
+// inside engine_init can be localised by the colour on screen.
+void debug_splash(uint16_t rgb565) {
+    using namespace tsb::platform_pico;
+    // Reuse g_fb (the present-time framebuffer) so we don't burn an
+    // extra 32KB BSS for diagnostics.
+    for (int i = 0; i < DISPLAY_W * DISPLAY_H; i++) g_fb[i] = rgb565;
+    lcd_present(g_fb);
+    lcd_wait_idle();
+    // Short hold — only need long enough that human eye registers the
+    // colour change. The LAST splash before a hang stays on screen
+    // forever, so 80ms is fine for sequencing.
+    sleep_ms(80);
 }
 
 [[noreturn]] void panic(const char *fmt, ...) {

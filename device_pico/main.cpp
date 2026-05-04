@@ -27,9 +27,8 @@ int main() {
     tsb::platform_pico::init_all();
 
     if (!tsb::platform_pico::blob_ok()) {
-        // Without a valid data blob there's nothing to run. Sit and blink
-        // a fault pattern via the audio enable LED-equivalent so the
-        // dev knows pack_device.py wasn't run.
+        // Without a valid data blob there's nothing to run. Sit and spin
+        // so the dev knows pack_device.py wasn't run.
         while (1) {
             tsb::platform::sleep_ms(500);
         }

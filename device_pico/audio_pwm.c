@@ -60,11 +60,16 @@ void audio_pwm_init(void) {
     pwm_init(pwm_slice, &audio_cfg, true);
     pwm_set_gpio_level(AUDIO_PWM_PIN, PWM_WRAP / 2);
 
+    /* Register the IRQ handler now but DO NOT enable it yet — that's
+     * deferred to audio_pwm_irq_enable() so the engine's lengthy init
+     * isn't continuously interrupted at 22050 Hz. The engine
+     * (platform::audio_init) calls the enable hook once it's ready
+     * to take samples. */
     pwm_clear_irq(TIMER_SLICE);
     pwm_set_irq_enabled(TIMER_SLICE, true);
     irq_set_exclusive_handler(PWM_IRQ_WRAP, audio_irq);
     irq_set_priority(PWM_IRQ_WRAP, PICO_LOWEST_IRQ_PRIORITY);
-    irq_set_enabled(PWM_IRQ_WRAP, true);
+    /* irq_set_enabled deferred — see audio_pwm_irq_enable */
 
     pwm_config timer_cfg = pwm_get_default_config();
     pwm_config_set_clkdiv_int(&timer_cfg, 1);
@@ -73,6 +78,10 @@ void audio_pwm_init(void) {
     pwm_init(TIMER_SLICE, &timer_cfg, true);
 
     gpio_put(AUDIO_ENABLE_PIN, 1);
+}
+
+void audio_pwm_irq_enable(void) {
+    irq_set_enabled(PWM_IRQ_WRAP, true);
 }
 
 void audio_pwm_push(const int16_t *samples, int n_samples) {

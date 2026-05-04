@@ -1072,6 +1072,8 @@ bool engine_init() {
     {
         constexpr int kRequestedRate = 22050;
         opl2_init(kRequestedRate);
+        // (opl2_init's last splash is YELLOW; if we get past, that
+        //  YELLOW will be overwritten by adlib_init's work.)
         adlib_init();
         imuse_init();
         int actual_rate = platform::audio_init(kRequestedRate, audio_mix_callback, nullptr);
@@ -1079,7 +1081,6 @@ bool engine_init() {
             platform::log("audio: platform::audio_init failed; running silent\n");
         } else {
             audio_mix_init(actual_rate);
-            // Re-init OPL2 if rate differs so phase math matches.
             if (actual_rate != kRequestedRate) {
                 opl2_init(actual_rate);
                 adlib_init();
@@ -1129,65 +1130,6 @@ bool engine_init() {
         }
     } else {
         platform::log("boot: skipped (TSB_ROOM force mode)\n");
-    }
-
-    // Test path: probe sound IDs 1..199 to find the first one that's a
-    // looping music track and start it - that lets us hear the title
-    // theme even if the boot script hasn't fired o5_startMusic yet. An
-    // actual o5_startMusic call will replace this.
-    //
-    // Heuristic: an AD-format sound is "music" if its kind byte is 0x80.
-    // We prefer looping (play_once=0) over one-shots, but a one-shot
-    // music track (MI1 sound 1 = LucasArts fanfare) is acceptable as a
-    // fallback.
-    {
-        constexpr uint32_t kAdMinPayload = 2 + 0x11 + 8 * 16;
-        int best_id = 0;        // looping music wins outright
-        int fallback_id = 0;    // play-once music
-        for (int s = 1; s <= 199; s++) {
-            Span snd = resource_get_sound(s);
-            if (snd.empty()) continue;
-            const uint8_t *p = snd.data;
-            uint32_t end = (uint32_t)snd.size;
-            uint32_t ad_payload = 0, ad_size = 0;
-            // Skip past optional SO wrapper, then walk WA/AD siblings.
-            uint32_t off = 0;
-            if (end >= 6 && p[4]=='S' && p[5]=='O') off = 6;
-            while (off + 6 <= end) {
-                uint32_t sz = (uint32_t)p[off]
-                            | ((uint32_t)p[off+1] << 8)
-                            | ((uint32_t)p[off+2] << 16)
-                            | ((uint32_t)p[off+3] << 24);
-                if (sz < 6 || sz > end - off) break;
-                if (p[off+4]=='A' && p[off+5]=='D') {
-                    ad_payload = off + 6;
-                    ad_size    = sz - 6;
-                    break;
-                }
-                if (p[off+4]=='S' && p[off+5]=='O') { off += 6; continue; }
-                off += sz;
-            }
-            if (ad_payload == 0 || ad_size < kAdMinPayload) continue;
-            uint8_t kind      = p[ad_payload + 2];
-            uint8_t play_once = p[ad_payload + 4];
-            if (kind != 0x80) continue;     // SFX
-            if (play_once == 0) {
-                if (best_id == 0) best_id = s;
-                break;                      // looping music: stop scanning
-            }
-            if (fallback_id == 0) fallback_id = s;
-        }
-        int chosen = best_id ? best_id : fallback_id;
-        if (chosen) {
-            Span snd = resource_get_sound(chosen);
-            if (imuse_start_sound(chosen, snd)) {
-                platform::log("audio test: started sound %d (size=%zu, %s)\n",
-                              chosen, snd.size,
-                              best_id ? "looping music" : "play-once music");
-            }
-        } else {
-            platform::log("audio test: no music sounds found in 1..199\n");
-        }
     }
 
     g.initialized = true;
@@ -1404,6 +1346,12 @@ bool engine_tick() {
     // downsample with ink-priority sampling. We pass it as a parallel
     // buffer; vscreen_main remains text-free here.
     g.frame++;
+    // Refill audio ring once per frame on platforms (device) where the
+    // mixer runs on the engine thread. SDL host is callback-driven and
+    // ignores this. Must come BEFORE present() so any ring underrun
+    // from this frame's compute is filled before the next frame's
+    // sample-rate IRQs drain it again.
+    platform::audio_pump();
     platform::present(g.vscreen_main, g.vscreen_text, g.palette,
                       g.scale_mode, g.crop_x, g.crop_y);
 

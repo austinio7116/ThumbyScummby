@@ -97,6 +97,13 @@ using AudioCallback = void (*)(void *user, int16_t *samples, int n_samples);
 int  audio_init(int requested_rate, AudioCallback cb, void *user);
 void audio_shutdown();
 
+// Single-core device path: refill audio ring with up to one frame's
+// worth of new samples. The PWM IRQ drains the ring per-sample on the
+// same core. engine_tick calls this once per frame.
+// Host SDL is callback-driven by SDL's own audio thread — this is a
+// no-op there.
+void audio_pump();
+
 // ---------------------------------------------------------------------------
 // Time
 // ---------------------------------------------------------------------------
@@ -114,5 +121,11 @@ void log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 // problems (missing resource, unimplemented opcode in critical path).
 [[noreturn]] void panic(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
+
+// Boot diagnostic: paint a solid colour splash so we can locate where
+// engine_init hangs without a debugger. Device implementation pushes a
+// 128×128 RGB565 frame and waits for the LCD DMA to drain. Host
+// implementation is a no-op.
+void debug_splash(uint16_t rgb565);
 
 }  // namespace tsb::platform

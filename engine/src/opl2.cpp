@@ -54,9 +54,13 @@ void opl2_init(int sample_rate) {
         ::OPL::DOSBox::DBOPL::InitTables();
         g_tables_inited = true;
     }
-    // Reset chip state by assigning a fresh default-constructed
-    // instance over g_chip. Setup() then primes the rate-dependent
-    // tables.
+    // Reset chip state. `g_chip = DbChip();` materialises a ~4.4KB
+    // Chip temporary on the stack — the default Pico SDK 2KB stack
+    // accommodates the overflow into adjacent scratch_x harmlessly
+    // (nothing else uses it on the single-core build). Required so a
+    // re-init re-zeros chip state; on device the second opl2_init
+    // call (when actual_rate != requested) is dead code anyway since
+    // PWM is hardcoded to 22050.
     g_chip = DbChip();
     if (sample_rate <= 0) sample_rate = 22050;
     g_chip.Setup((DbBit32u)sample_rate);
@@ -74,10 +78,14 @@ uint8_t opl2_read_reg(uint8_t reg) {
 }
 
 // dbopl produces 32-bit signed mono samples in a transient buffer.
-// Saturate to int16. dbopl's full-mix peak is around ±2^14 so we
-// pass through unscaled — a previous shim divided by 4 to leave
-// "headroom for the mix bus" but produced a dull, very quiet
-// output instead of full-range AdLib audio.
+// Saturate to int16. dbopl's full-mix peak is around ±2^14 so doubling
+// before saturation lifts a normally-mixed track to full int16 range
+// (loud peaks will clip to ±32767 — that's intentional, sounds louder
+// at the cost of slight distortion on already-loud content; better
+// trade-off on the Thumby's tiny PWM speaker than the previous
+// half-loud passthrough).
+constexpr int kOutputGain = 2;
+
 static inline int16_t clip_to_int16(int32_t s) {
     if (s > 32767) return 32767;
     if (s < -32768) return -32768;
@@ -92,7 +100,7 @@ static void render_into(int16_t *out, int n_samples, bool add) {
         int n = n_samples < kChunk ? n_samples : kChunk;
         g_chip.GenerateBlock2((DbBitu)n, buf);
         for (int i = 0; i < n; i++) {
-            int16_t v = clip_to_int16(buf[i]);
+            int16_t v = clip_to_int16((int32_t)buf[i] * kOutputGain);
             out[i] = add ? clip_to_int16((int32_t)out[i] + v) : v;
         }
         out += n;

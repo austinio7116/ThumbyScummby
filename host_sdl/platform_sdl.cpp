@@ -437,4 +437,16 @@ void log(const char *fmt, ...) {
     abort();
 }
 
+// Boot diagnostic splash — device prints a coloured frame to localise
+// a hang inside engine_init. Host log mirror; full splash on host
+// would need a window+pump cycle that's not worth it for the device-
+// only debug aid.
+void debug_splash(uint16_t rgb565) {
+    fprintf(stderr, "[debug_splash] color=0x%04X\n", rgb565);
+}
+
+// SDL audio is driven by SDL's own thread via the registered callback;
+// no per-frame refill needed.
+void audio_pump() {}
+
 }  // namespace tsb::platform
