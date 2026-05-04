@@ -96,6 +96,11 @@ struct Actor {
 
 void actor_init_all();
 Actor *actor_get(int actor_num);  // bounds-checked; returns nullptr on bad id
+// Direct port of scummvm Actor::putActor(int x, int y, int newRoom)
+// (actor.cpp:1730-1782). actor_put_at and actor_put_in_room are the
+// 2-arg and 1-arg-room shorthands that funnel here, matching the
+// scummvm header overloads (actor.h:213-225).
+void   actor_put_actor(int actor_num, int x, int y, int new_room);
 void   actor_put_at(int actor_num, int x, int y);
 void   actor_put_in_room(int actor_num, int room);
 void   actor_hide(int actor_num);

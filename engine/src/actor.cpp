@@ -256,22 +256,57 @@ static bool g_ego_positioned = false;
 bool actor_ego_positioned_get() { return g_ego_positioned; }
 void actor_ego_positioned_set(bool v) { g_ego_positioned = v; }
 
-void actor_put_at(int n, int x, int y) {
+// Direct port of scummvm Actor::putActor(int dstX, int dstY, int newRoom)
+// (actor.cpp:1730-1782). All other putActor variants funnel here, which
+// is why scummvm gets the visibility / room transitions right and we
+// were getting them wrong by hand-rolling smaller wrappers.
+void actor_put_actor(int n, int x, int y, int new_room) {
     Actor *a = actor_get(n); if (!a) return;
-    a->x = (int16_t)x; a->y = (int16_t)y;
-    a->moving = 0;
-    a->flags |= ACTOR_FLAG_VISIBLE;
-    // Mirror scummvm Actor::putActor: when the placed actor is the ego,
-    // set _egoPositioned so o5_loadRoomWithEgo's post-ENCD fallback
-    // knows the entry script handled positioning.
+
+    // (Talking-actor stopTalk skipped — out of scope for us.)
+
+    a->x = (int16_t)x;
+    a->y = (int16_t)y;
+    a->room = (uint8_t)new_room;
+
     if ((int)g_vm.globals[VAR_EGO] == n) {
         g_ego_positioned = true;
     }
+
+    int current_room = engine_current_room_id();
+    bool in_current = ((int)a->room == current_room);
+    bool was_visible = (a->flags & ACTOR_FLAG_VISIBLE) != 0;
+
+    if (was_visible) {
+        if (in_current) {
+            a->moving = 0;          // stopActorMoving
+            // (startAnimActor(_standFrame) + adjustActorPos: TODO; the
+            //  visible flag is already set, our render uses position
+            //  directly so adjustActorPos is a no-op for now.)
+        } else {
+            a->flags &= (uint8_t)~ACTOR_FLAG_VISIBLE;  // hideActor
+            a->moving = 0;
+        }
+    } else {
+        if (in_current) {
+            // showActor — match Actor::showActor: set visible, no
+            // costume gate (NPCs whose costume is set later still need
+            // the flag NOW so subsequent actorOps find them).
+            a->flags |= ACTOR_FLAG_VISIBLE;
+        }
+    }
 }
 
+// 2-arg form: scummvm `void putActor(int x, int y) { putActor(x, y, _room); }`
+void actor_put_at(int n, int x, int y) {
+    Actor *a = actor_get(n); if (!a) return;
+    actor_put_actor(n, x, y, a->room);
+}
+
+// 1-arg-room form: scummvm `void putActor(int room) { putActor(_pos.x, _pos.y, room); }`
 void actor_put_in_room(int n, int room) {
     Actor *a = actor_get(n); if (!a) return;
-    a->room = (uint8_t)room;
+    actor_put_actor(n, a->x, a->y, room);
 }
 
 // Mirror of scummvm Actor::hideActor (actor.cpp:1002): clears the visible

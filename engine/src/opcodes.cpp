@@ -685,8 +685,12 @@ static void op_loadRoomWithEgo(VM *vm) {
 
     int ego = (int)vm_read_var(vm, VAR_EGO);
     Actor *a = actor_get(ego);
-    if (a) a->room = (uint8_t)room;
     int old_dir = a ? (int)a->facing : 0;
+    // scummvm: a->putActor(room) — 1-arg-room form, sets room field
+    // through the master putActor so visibility flips with room.
+    actor_put_in_room(ego, room);
+    // Then the entry script may call putActor(x, y, room) which sets
+    // _egoPositioned via actor_put_actor's ego check.
     actor_ego_positioned_set(false);
 
     // VAR_WALKTO_OBJ guards ENCD's "did the user click an object" check.
@@ -1468,14 +1472,13 @@ static void op_printEgo(VM *vm) {
 // Engine subsystem stubs (actor / object / sound / camera / draw)
 // ===========================================================================
 
+// Mirror of scummvm o5_putActor (script_v5.cpp form): puts the actor at
+// (x, y) keeping its current room. Funnels through the 3-arg
+// Actor::putActor so visibility transitions are handled correctly.
 static void op_putActor(VM *vm) {
     int act = vm_get_var_or_byte(vm, 0x80);
     int x   = vm_get_var_or_word(vm, 0x40);
     int y   = vm_get_var_or_word(vm, 0x20);
-    if (act >= 7 && act <= 9) {
-        platform::log("putActor: a%d (cost=%u) -> (%d,%d)\n",
-                      act, actor_get(act) ? actor_get(act)->costume : 0, x, y);
-    }
     actor_put_at(act, x, y);
 }
 
