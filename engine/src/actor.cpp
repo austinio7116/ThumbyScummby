@@ -294,15 +294,17 @@ void actor_hide_all() {
 
 // Mirror of scummvm showActors (actor.cpp:2243-2250) + Actor::showActor
 // (actor.cpp:2198+). For every actor whose `_room == _currentRoom`, set
-// the visible flag. scummvm calls this in startScene AFTER the room
-// change but BEFORE runEntryScript (room.cpp:247), so the entry script
-// sees actors flagged visible (their bodies stay where they were left
-// from the previous time we were in that room — typical "approach NPC,
-// leave room, come back, NPC still there" behaviour).
+// the visible flag. scummvm Actor::showActor only gates on
+// `_currentRoom == 0` early-return and "already visible" — NOT on the
+// costume field. Some actors (like NPCs whose costume gets set by an
+// LSCR after the room transition) need to be flagged visible BEFORE
+// their costume is set, otherwise the LSCR's actorOps can't find them
+// running.
 void actor_show_in_current_room(int current_room) {
+    if (current_room == 0) return;
     for (int i = 0; i < MAX_ACTORS; i++) {
         Actor &a = g_actors[i];
-        if ((int)a.room == current_room && a.costume != 0) {
+        if ((int)a.room == current_room) {
             a.flags |= ACTOR_FLAG_VISIBLE;
         }
     }
