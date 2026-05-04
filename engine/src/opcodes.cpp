@@ -433,8 +433,13 @@ static void op_cutscene(VM *vm) {
     (void)n;
 
     if (vm->cutscene.depth < VM_CUTSCENE_DEPTH) {
-        vm->cutscene.script_num[vm->cutscene.depth] = (uint16_t)vm->slots[vm->cur_slot].script_num;
+        // Mirrors scummvm beginCutscene (script.cpp:1632-1634): data gets
+        // args[0]; cutSceneScript and cutScenePtr are cleared. The script
+        // that owns the override is recorded LATER in beginOverride (see
+        // op_beginOverride below); without an override, abort is a no-op
+        // because ptr stays 0.
         vm->cutscene.data[vm->cutscene.depth]       = (uint16_t)args[0];
+        vm->cutscene.script_num[vm->cutscene.depth] = 0;
         vm->cutscene.ptr[vm->cutscene.depth]        = 0;
         vm->cutscene.depth++;
     }
@@ -480,9 +485,17 @@ static void op_beginOverride(VM *vm) {
     uint8_t b = vm_fetch_byte(vm);
     if (b != 0) {
         vm->cutscene.override_active = true;
-        // Save current script PC into the cutscene stack ptr slot.
+        // Save current script PC + which script issued the override into the
+        // cutscene stack slot. Mirrors scummvm beginOverride (script.cpp:
+        // 1707-1708) which sets cutSceneScript[idx] = _currentScript HERE
+        // (NOT in beginCutscene). The override-issuing script and the
+        // cutscene-issuing script differ when VAR_CUTSCENE_START_SCRIPT
+        // wraps beginOverride — abortCutscene must patch the override
+        // issuer, not the cutscene caller.
         if (vm->cutscene.depth > 0) {
-            vm->cutscene.ptr[vm->cutscene.depth - 1] = vm->cur_pc;
+            vm->cutscene.ptr[vm->cutscene.depth - 1]        = vm->cur_pc;
+            vm->cutscene.script_num[vm->cutscene.depth - 1] =
+                (uint16_t)vm->slots[vm->cur_slot].script_num;
         }
         // Consume the "skip" opcode: 1 byte + 2-byte word.
         vm_fetch_byte(vm);

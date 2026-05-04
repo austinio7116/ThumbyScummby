@@ -114,6 +114,23 @@ struct EngineState {
     platform::ScaleMode scale_mode;
     int      crop_x, crop_y;
 
+    // SCUMM mouse-cursor state. Lives in game-space (0..319, 0..199),
+    // matching ScummEngine::_mouse (input.cpp:412-421). On host the
+    // platform layer fills these from real mouse input each frame
+    // (mapped from display->game via the active scale_mode); on device
+    // Phase 3 will integrate dpad movement into them.
+    int      cursor_x, cursor_y;
+    // One-frame click edges (mirror _leftBtnPressed & msClicked from
+    // scumm.h:151-154). Set when a click started this frame; consumed
+    // and cleared by engine_update_scumm_vars after writing VAR_KEYPRESS,
+    // matching scummvm clearClickedStatus (input.cpp:377-384).
+    bool     left_clicked, right_clicked;
+    // Cutscene-exit-key edge (input.cpp:1421-1426). Mirrors KEYCODE_ESCAPE
+    // delivery: writes ASCII_ESCAPE to VAR_KEYPRESS and triggers
+    // abortCutscene. On host this is the actual ESC key; on device it's
+    // the MENU button.
+    bool     escape_pressed;
+
     // Frame counter
     uint32_t frame;
 
@@ -567,6 +584,56 @@ void engine_update_scumm_vars(int delta_ticks) {
     g_vm.globals[VAR_TMR_1]       += delta_ticks;
     g_vm.globals[VAR_TMR_2]       += delta_ticks;
     g_vm.globals[VAR_TMR_3]       += delta_ticks;
+
+    // Mouse position. Mirrors scumm.cpp:3265-3268. The main VirtScreen
+    // for MI1 v4 is initScreens(16, 144) — topline=16, height=128 (see
+    // scumm.cpp:1965). _virtualMouse is the room-coord position scripts
+    // hit-test against (with -1 sentinel when cursor is outside the main
+    // play area); _mouse is screen-coord.
+    constexpr int MAIN_VS_TOPLINE = 16;
+    constexpr int MAIN_VS_HEIGHT  = 128;
+    int virt_mx = g.cursor_x + g.camera.screenStartStrip * 8;
+    int virt_my = g.cursor_y - MAIN_VS_TOPLINE;
+    if (virt_my < 0 || virt_my >= MAIN_VS_HEIGHT) virt_my = -1;
+    g_vm.globals[VAR_VIRT_MOUSE_X] = virt_mx;
+    g_vm.globals[VAR_VIRT_MOUSE_Y] = virt_my;
+    g_vm.globals[VAR_MOUSE_X]      = g.cursor_x;
+    g_vm.globals[VAR_MOUSE_Y]      = g.cursor_y;
+
+    // Click / cutscene-exit delivery. Mirrors input.cpp:437-456 + 929-934.
+    // v4 has no VAR_LEFTBTN_HOLD/VAR_RIGHTBTN_HOLD (those start at v6,
+    // vars.cpp:193-194); clicks travel exclusively through VAR_KEYPRESS
+    // as MBS_LEFT_CLICK / MBS_RIGHT_CLICK (scumm.h:156-159). The
+    // dedicated MENU button (host: ESC key) maps to ASCII_ESCAPE per
+    // input.cpp:1421-1426.
+    constexpr int MBS_LEFT_CLICK  = 0x8000;
+    constexpr int MBS_RIGHT_CLICK = 0x4000;
+    constexpr int ASCII_ESCAPE    = 27;
+    int kbd_stat = 0;
+    if (g.escape_pressed) {
+        // Dedicated ESC button (host SDL ESC key / device MENU button).
+        kbd_stat = ASCII_ESCAPE;
+    } else if (g.left_clicked) {
+        kbd_stat = MBS_LEFT_CLICK;
+    } else if (g.right_clicked) {
+        kbd_stat = MBS_RIGHT_CLICK;
+    }
+    if (kbd_stat) {
+        g_vm.globals[VAR_KEYPRESS] = kbd_stat;
+    }
+    // Cutscene-exit handling. Mirrors scummvm input.cpp:1421-1426: ESC
+    // calls abortCutscene then writes VAR_CUTSCENEEXIT_KEY into
+    // _mouseAndKeyboardStat. We've already written VAR_KEYPRESS above
+    // (which is downstream of _mouseAndKeyboardStat in scummvm); here
+    // we trigger the actual abortCutscene side effect.
+    if (kbd_stat == ASCII_ESCAPE) {
+        vm_abort_cutscene(&g_vm);
+    }
+    // Match clearClickedStatus (input.cpp:377-384): one-frame edges are
+    // consumed exactly once. New presses set the flag again next frame.
+    g.left_clicked   = false;
+    g.right_clicked  = false;
+    g.escape_pressed = false;
 }
 
 // Expose master index to resource.cpp
@@ -991,6 +1058,8 @@ bool engine_init() {
 
     g.scale_mode = platform::ScaleMode::Fit;
     g.crop_x = 96;  // initial center for CROP
+    g.cursor_x = VIRTUAL_SCREEN_W / 2;     // 160
+    g.cursor_y = VIRTUAL_SCREEN_H / 2;     // 100
     g.crop_y = 36;
     g.frame = 0;
     g.quitting = false;
@@ -1208,12 +1277,69 @@ bool engine_tick() {
     platform::Input in{};
     if (!platform::poll_input(&in)) return false;
 
-    // MENU tap cycles scale mode (placeholder - press detection to refine)
-    if (in.menu_pressed) {
+    // ----- Cursor + click edge capture -----
+    // Host SDL fills in.mouse_present + display-space mouse_x/y. Map to
+    // SCUMM game-space (0..319 / 0..199) using the active scale_mode —
+    // inverse of platform::present(). Device leaves mouse_present=false;
+    // Phase 3 will drive cursor_x/y from dpad state instead.
+    if (in.mouse_present) {
+        const int dx = in.mouse_x;
+        const int dy = in.mouse_y;
+        int gx = g.cursor_x, gy = g.cursor_y;
+        switch (g.scale_mode) {
+            case platform::ScaleMode::Fit: {
+                // 320x200 -> 128x80 letterboxed (24px black bars top/bottom).
+                gx = dx * VIRTUAL_SCREEN_W / DISPLAY_W;          // 0..127 -> 0..319
+                const int dst_h = 80;
+                const int top = (DISPLAY_H - dst_h) / 2;         // 24
+                int sy = dy - top;
+                if (sy < 0) sy = 0;
+                if (sy >= dst_h) sy = dst_h - 1;
+                gy = sy * VIRTUAL_SCREEN_H / dst_h;              // 0..79 -> 0..199
+                break;
+            }
+            case platform::ScaleMode::Fill:
+                gx = dx * VIRTUAL_SCREEN_W / DISPLAY_W;
+                gy = dy * VIRTUAL_SCREEN_H / DISPLAY_H;
+                break;
+            case platform::ScaleMode::Crop:
+                gx = g.crop_x + dx;
+                gy = g.crop_y + dy;
+                break;
+        }
+        if (gx < 0) gx = 0;
+        if (gx > VIRTUAL_SCREEN_W - 1) gx = VIRTUAL_SCREEN_W - 1;
+        if (gy < 0) gy = 0;
+        if (gy > VIRTUAL_SCREEN_H - 1) gy = VIRTUAL_SCREEN_H - 1;
+        g.cursor_x = gx;
+        g.cursor_y = gy;
+        if (in.mouse_left_pressed)  g.left_clicked  = true;
+        if (in.mouse_right_pressed) g.right_clicked = true;
+    }
+    // Whether mouse was present or not, A/B as virtual click sources are
+    // free wins for keyboard testing on host (and the only path on device
+    // until Phase 3 wires dpad-cursor + A/B click).
+    if (in.a_pressed) g.left_clicked  = true;
+    if (in.b_pressed) g.right_clicked = true;
+
+    // MENU = ESC (cutscene exit). Mirrors scummvm input.cpp:1421-1426
+    // — pressing the cutscene-exit key calls abortCutscene and writes
+    // VAR(VAR_CUTSCENEEXIT_KEY) into _mouseAndKeyboardStat (which then
+    // reaches VAR_KEYPRESS via input.cpp:929-934). On host the SDL
+    // layer also raises this on the real ESC key.
+    if (in.menu_pressed) g.escape_pressed = true;
+
+    // LB+RB together cycles scale mode (debug-only — moved off MENU
+    // because MENU is now the cutscene-exit key, matching the
+    // dedicated-button-per-action pattern from other Thumby slots).
+    static bool prev_lb_rb = false;
+    bool both_shoulders = in.button_lb && in.button_rb;
+    if (both_shoulders && !prev_lb_rb) {
         g.scale_mode = (platform::ScaleMode)(((int)g.scale_mode + 1) % 3);
         const char *names[] = {"FIT", "FILL", "CROP"};
         platform::log("scale mode: %s\n", names[(int)g.scale_mode]);
     }
+    prev_lb_rb = both_shoulders;
 
     // CROP pan with LB+dpad (placeholder)
     if (in.button_lb && g.scale_mode == platform::ScaleMode::Crop) {

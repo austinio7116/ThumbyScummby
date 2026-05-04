@@ -368,9 +368,6 @@ int vm_start_script(VM *vm, int script_num,
         // it during the nested run). Otherwise sets _currentScript = 0xFF
         // (we use cur_slot = -1 sentinel) to exit the outer dispatch loop.
         Slot &outer = vm->slots[outer_slot];
-        platform::log("vm: nested return inner=%d outer_slot=%d outer.script=%d expected=%d status=%d freeze=%d\n",
-                      script_num, outer_slot, outer.script_num, outer_script_num,
-                      (int)outer.status, (int)outer.freeze_count);
         if (outer.script_num == outer_script_num &&
             outer.status != SS_DEAD &&
             outer.freeze_count == 0) {
@@ -380,8 +377,18 @@ int vm_start_script(VM *vm, int script_num,
         } else {
             // Outer was killed or frozen during nested run — yield without
             // resuming. The outer dispatch loop sees cur_slot != outer_slot
-            // and exits.
+            // and exits. CRITICAL: restore cur_pc/cur_script_data to the
+            // outer's SAVED pc so the outer's terminating
+            //     s.pc = vm->cur_pc;
+            // (run_dispatch line 541) doesn't overwrite the outer slot's
+            // pc with a stale offset still pointing into the nested
+            // script's bytecode. scummvm avoids this because executeScript
+            // re-derives _scriptPointer per-opcode from _currentScript,
+            // so a dangling pointer in scummvm is harmless. We use
+            // cur_pc as a frame-local variable, so we MUST restore it.
             vm->cur_slot = -1;
+            vm->cur_pc = outer.pc;
+            vm->cur_script_data = outer.script_data;
         }
 
         // Mark nested slot as didexec so vm_run_frame doesn't re-run it
@@ -449,7 +456,12 @@ int vm_start_room_script(VM *vm, Span code, int pseudo_num,
             vm->cur_script_data = outer.script_data;
             vm->cur_pc = outer.pc;
         } else {
+            // Same fix as vm_start_script — restore cur_pc/data on the
+            // not-resuming path so run_dispatch's terminating save
+            // doesn't write a stale nested pc onto the outer slot.
             vm->cur_slot = -1;
+            vm->cur_pc = outer.pc;
+            vm->cur_script_data = outer.script_data;
         }
         vm->slots[slot].didexec = 1;
     }
@@ -469,6 +481,38 @@ void vm_stop_script(VM *vm, int script_num) {
 void vm_stop_current_script(VM *vm) {
     vm->slots[vm->cur_slot].status = SS_DEAD;
     vm->slots[vm->cur_slot].script_num = 0;
+}
+
+// Mirrors ScummEngine::abortCutscene (script.cpp:1681). The cutscene-issuing
+// script registered a "skip-here" PC via op_beginOverride; jumping that
+// script to the recorded PC unwinds the cutscene cleanly (the destination is
+// usually right after the cutscene's outer block). VAR_OVERRIDE=1 lets
+// scripts polling it know that a skip was requested.
+// Mirror of scummvm script.cpp:1681. Resume the cutscene-issuing script at
+// its registered skip target, clear the override pointer, and set
+// VAR_OVERRIDE=1.
+bool vm_abort_cutscene(VM *vm) {
+    int idx = vm->cutscene.depth - 1;
+    if (idx < 0) return false;
+    uint32_t skip_pc = vm->cutscene.ptr[idx];
+    if (skip_pc == 0) return false;
+    uint16_t target_script = vm->cutscene.script_num[idx];
+    int target_slot = -1;
+    for (int i = 0; i < VM_MAX_SLOTS; i++) {
+        if (vm->slots[i].status != SS_DEAD &&
+            vm->slots[i].script_num == target_script) {
+            target_slot = i;
+            break;
+        }
+    }
+    if (target_slot < 0) return false;
+    Slot &t = vm->slots[target_slot];
+    t.pc           = skip_pc;
+    t.status       = SS_RUNNING;
+    t.freeze_count = 0;
+    vm->cutscene.ptr[idx] = 0;
+    vm->globals[VAR_OVERRIDE] = 1;
+    return true;
 }
 
 // ---------------------------------------------------------------------------

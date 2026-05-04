@@ -195,6 +195,14 @@ void vm_stop_current_script(VM *vm);
 // Run all running scripts for one game frame.
 void vm_run_frame(VM *vm);
 
+// Abort the currently active cutscene, if any has registered an override
+// jump target via op_beginOverride. Mirrors ScummEngine::abortCutscene
+// (script.cpp:1681): patches the script that issued op_cutscene to resume
+// at its registered skip-PC, sets VAR_OVERRIDE=1, clears the override
+// pointer so the same cutscene can't be aborted twice. Returns true if a
+// cutscene was actually skipped.
+bool vm_abort_cutscene(VM *vm);
+
 // ---------------------------------------------------------------------------
 // Opcode helpers (used inside opcode handlers)
 // ---------------------------------------------------------------------------

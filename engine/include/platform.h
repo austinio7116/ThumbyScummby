@@ -81,6 +81,19 @@ struct Input {
     // Edge events (true for one frame on press)
     bool a_pressed, b_pressed, lb_pressed, rb_pressed, menu_pressed;
     bool a_released, b_released, lb_released, rb_released, menu_released;
+
+    // Mouse state — host SDL fills these from real mouse input. Device
+    // leaves mouse_present=false; engine drives the cursor from
+    // dpad+A/B in that case (see engine_tick).
+    //   mouse_x/y     — physical screen coords, 0..319 / 0..199
+    //   mouse_left/right — held this frame
+    //   mouse_*_pressed/_released — one-frame edges (matches scummvm's
+    //   _leftBtnPressed & msClicked semantics; see input.cpp:439-456)
+    bool mouse_present;
+    int  mouse_x, mouse_y;
+    bool mouse_left, mouse_right;
+    bool mouse_left_pressed,  mouse_right_pressed;
+    bool mouse_left_released, mouse_right_released;
 };
 
 // Pump platform events; fill Input. Returns false on quit request.

@@ -48,6 +48,7 @@ struct State {
 
     // Input edge detection
     bool prev_a, prev_b, prev_lb, prev_rb, prev_menu;
+    bool prev_ml, prev_mr;          // mouse left/right edge tracking
 
     // Quit flag
     bool quit = false;
@@ -177,7 +178,6 @@ bool main_loop_iter() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_QUIT) g.quit = true;
-        else if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) g.quit = true;
     }
     // Frame pacing lives inside engine_tick() now — see scumm.cpp:2702-2857
     // (waitForTimer + go-loop port). The host's only job here is event
@@ -250,22 +250,11 @@ static inline uint16_t blend4_565(uint16_t a, uint16_t b,
     return (uint16_t)((avg | (avg >> 16)) & 0xFFFFu);
 }
 
-// Pick the most-visible text sample from up-to-4 candidates. Priority:
-// foreground (non-FD, non-zero) > shadow (zero) > transparent (FD).
-// 0xFD is scummvm's CHARSET_MASK_TRANSPARENCY sentinel (gfx.h:289).
-static inline uint8_t text_pick4(uint8_t a, uint8_t b,
-                                 uint8_t c, uint8_t d) {
-    uint8_t fg = 0xFD;
-    bool has_shadow = false;
-    auto consider = [&](uint8_t v) {
-        if (v == 0xFD) return;
-        if (v != 0) { if (fg == 0xFD) fg = v; }
-        else has_shadow = true;
-    };
-    consider(a); consider(b); consider(c); consider(d);
-    if (fg != 0xFD) return fg;
-    if (has_shadow) return 0;
-    return 0xFD;
+// Resolve a single source pixel: text overlay if present (anything other
+// than 0xFD = scummvm CHARSET_MASK_TRANSPARENCY, gfx.h:289), otherwise
+// fall through to the main scene index.
+static inline uint8_t resolve_src(uint8_t t, uint8_t v) {
+    return (t != 0xFD) ? t : v;
 }
 
 void present(const uint8_t *virt, const uint8_t *text,
@@ -299,20 +288,21 @@ void present(const uint8_t *virt, const uint8_t *text,
             uint16_t *drow = fb + (dy + letterbox_top) * DISPLAY_W;
             for (int dx = 0; dx < DISPLAY_W; dx++) {
                 int sx = sxa[dx], sx2 = sxb[dx];
-                uint8_t tpick = 0xFD;
-                if (trow1) {
-                    tpick = text_pick4(trow1[sx], trow1[sx2],
-                                       trow2[sx], trow2[sx2]);
-                }
-                if (tpick != 0xFD) {
-                    drow[dx] = pal_to_565(palette, tpick);
-                } else {
-                    uint16_t pa = pal_to_565(palette, vrow1[sx]);
-                    uint16_t pb = pal_to_565(palette, vrow1[sx2]);
-                    uint16_t pc = pal_to_565(palette, vrow2[sx]);
-                    uint16_t pd = pal_to_565(palette, vrow2[sx2]);
-                    drow[dx] = blend4_565(pa, pb, pc, pd);
-                }
+                // Compose text-over-virt per source pixel BEFORE the 2x2
+                // box blend. This anti-aliases glyph edges against the
+                // background rather than treating text as a hard
+                // ink-priority overlay; sub-pixel-positioned glyphs
+                // become more readable at the cost of softening 1-pixel
+                // strokes (acceptable trade for the 320->128 downsample).
+                uint8_t s_a = trow1 ? resolve_src(trow1[sx],  vrow1[sx])  : vrow1[sx];
+                uint8_t s_b = trow1 ? resolve_src(trow1[sx2], vrow1[sx2]) : vrow1[sx2];
+                uint8_t s_c = trow2 ? resolve_src(trow2[sx],  vrow2[sx])  : vrow2[sx];
+                uint8_t s_d = trow2 ? resolve_src(trow2[sx2], vrow2[sx2]) : vrow2[sx2];
+                uint16_t pa = pal_to_565(palette, s_a);
+                uint16_t pb = pal_to_565(palette, s_b);
+                uint16_t pc = pal_to_565(palette, s_c);
+                uint16_t pd = pal_to_565(palette, s_d);
+                drow[dx] = blend4_565(pa, pb, pc, pd);
             }
         }
     } else { // Crop — 1:1 native window, pannable
@@ -355,7 +345,11 @@ bool poll_input(Input *out) {
     bool b    = keys[SDL_SCANCODE_COMMA]  || keys[SDL_SCANCODE_K];
     bool lb   = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_Q];
     bool rb   = keys[SDL_SCANCODE_SPACE]  || keys[SDL_SCANCODE_E];
-    bool menu = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_M];
+    // ESCAPE / RETURN / M all map to MENU button — engine treats MENU as
+    // the cutscene-exit (KEYCODE_ESCAPE) input, mirroring scummvm
+    // input.cpp:1421-1426.
+    bool menu = keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_RETURN] ||
+                keys[SDL_SCANCODE_M];
 
     out->button_a = a;       out->button_b = b;
     out->button_lb = lb;     out->button_rb = rb;
@@ -376,6 +370,34 @@ bool poll_input(Input *out) {
     g.prev_a = a; g.prev_b = b;
     g.prev_lb = lb; g.prev_rb = rb;
     g.prev_menu = menu;
+
+    // Mouse — reports in DISPLAY-space (0..127). The engine maps to
+    // SCUMM 320x200 game coords using its known scale_mode (since the
+    // platform doesn't know FIT vs FILL vs CROP). SDL_RenderWindowToLogical
+    // accounts for SDL_RenderSetLogicalSize, so logical coords match
+    // what the renderer treats as the 128x128 framebuffer.
+    int wx, wy;
+    Uint32 btnmask = SDL_GetMouseState(&wx, &wy);
+    float lx, ly;
+    SDL_RenderWindowToLogical(g.ren, wx, wy, &lx, &ly);
+    int mx = (int)lx, my = (int)ly;
+    if (mx < 0) mx = 0;
+    if (mx > DISPLAY_W - 1) mx = DISPLAY_W - 1;
+    if (my < 0) my = 0;
+    if (my > DISPLAY_H - 1) my = DISPLAY_H - 1;
+    bool ml = (btnmask & SDL_BUTTON_LMASK) != 0;
+    bool mr = (btnmask & SDL_BUTTON_RMASK) != 0;
+    out->mouse_present = true;
+    out->mouse_x = mx;
+    out->mouse_y = my;
+    out->mouse_left  = ml;
+    out->mouse_right = mr;
+    out->mouse_left_pressed   =  ml && !g.prev_ml;
+    out->mouse_right_pressed  =  mr && !g.prev_mr;
+    out->mouse_left_released  = !ml &&  g.prev_ml;
+    out->mouse_right_released = !mr &&  g.prev_mr;
+    g.prev_ml = ml;
+    g.prev_mr = mr;
     return true;
 }
 

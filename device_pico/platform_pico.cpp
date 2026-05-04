@@ -154,20 +154,11 @@ static inline uint16_t blend4_565(uint16_t a, uint16_t b,
     return (uint16_t)((avg | (avg >> 16)) & 0xFFFFu);
 }
 
-// Pick most-visible text sample from up-to-4 candidates.
-// Priority: foreground (non-FD non-zero) > shadow (zero) > transparent (FD).
-// 0xFD is scummvm's CHARSET_MASK_TRANSPARENCY (gfx.h:289).
-static inline uint8_t text_pick4(uint8_t a, uint8_t b,
-                                 uint8_t c, uint8_t d) {
-    uint8_t fg = 0xFD;
-    bool has_shadow = false;
-    if (a != 0xFD) { if (a) { if (fg == 0xFD) fg = a; } else has_shadow = true; }
-    if (b != 0xFD) { if (b) { if (fg == 0xFD) fg = b; } else has_shadow = true; }
-    if (c != 0xFD) { if (c) { if (fg == 0xFD) fg = c; } else has_shadow = true; }
-    if (d != 0xFD) { if (d) { if (fg == 0xFD) fg = d; } else has_shadow = true; }
-    if (fg != 0xFD) return fg;
-    if (has_shadow) return 0;
-    return 0xFD;
+// Resolve a single source pixel: text overlay if present (anything other
+// than 0xFD = scummvm CHARSET_MASK_TRANSPARENCY, gfx.h:289), otherwise
+// fall through to the main scene index.
+static inline uint8_t resolve_src(uint8_t t, uint8_t v) {
+    return (t != 0xFD) ? t : v;
 }
 
 void present(const uint8_t *virt, const uint8_t *text,
@@ -204,20 +195,19 @@ void present(const uint8_t *virt, const uint8_t *text,
             uint16_t *drow = fb + (dy + letterbox_top) * DISPLAY_W;
             for (int dx = 0; dx < DISPLAY_W; dx++) {
                 int sx = sxa[dx], sx2 = sxb[dx];
-                uint8_t tpick = 0xFD;
-                if (trow1) {
-                    tpick = text_pick4(trow1[sx], trow1[sx2],
-                                       trow2[sx], trow2[sx2]);
-                }
-                if (tpick != 0xFD) {
-                    drow[dx] = pal_to_565(palette, tpick);
-                } else {
-                    uint16_t pa = pal_to_565(palette, vrow1[sx]);
-                    uint16_t pb = pal_to_565(palette, vrow1[sx2]);
-                    uint16_t pc = pal_to_565(palette, vrow2[sx]);
-                    uint16_t pd = pal_to_565(palette, vrow2[sx2]);
-                    drow[dx] = blend4_565(pa, pb, pc, pd);
-                }
+                // Text composited per source pixel BEFORE the 2x2 box
+                // blend, so glyph edges anti-alias against the
+                // background. Trade-off: 1-pixel strokes soften, but
+                // overall readability improves at 320->128 downsample.
+                uint8_t s_a = trow1 ? resolve_src(trow1[sx],  vrow1[sx])  : vrow1[sx];
+                uint8_t s_b = trow1 ? resolve_src(trow1[sx2], vrow1[sx2]) : vrow1[sx2];
+                uint8_t s_c = trow2 ? resolve_src(trow2[sx],  vrow2[sx])  : vrow2[sx];
+                uint8_t s_d = trow2 ? resolve_src(trow2[sx2], vrow2[sx2]) : vrow2[sx2];
+                uint16_t pa = pal_to_565(palette, s_a);
+                uint16_t pb = pal_to_565(palette, s_b);
+                uint16_t pc = pal_to_565(palette, s_c);
+                uint16_t pd = pal_to_565(palette, s_d);
+                drow[dx] = blend4_565(pa, pb, pc, pd);
             }
         }
     } else { // Crop — 1:1 native, pannable
