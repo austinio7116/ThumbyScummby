@@ -26,6 +26,11 @@ add_library(thumbyscummby_engine STATIC
     src/imuse.cpp
     src/audio_mix.cpp
     src/engine.cpp
+    # --- Transcribed from scummvm-upstream ---
+    # Each entry below is a near-verbatim copy of the canonical ScummVM
+    # source file with only the boundary edits described in scummvm_compat.h
+    # (header swap, version-specific #if 0 blocks, namespace alias).
+    src/util.cpp
 )
 
 target_include_directories(thumbyscummby_engine PUBLIC include)
@@ -33,6 +38,10 @@ target_include_directories(thumbyscummby_engine PUBLIC include)
 target_compile_features(thumbyscummby_engine PUBLIC cxx_std_17)
 target_compile_options(thumbyscummby_engine PRIVATE
     -Wall -Wextra -Wno-unused-parameter
+    # Transcribed scummvm-upstream files use `#pragma mark` (Xcode IDE
+    # folding markers) — gcc/clang emit -Wunknown-pragmas. Silence so
+    # transcribed-as-is files don't generate noise.
+    -Wno-unknown-pragmas
     -fno-exceptions -fno-rtti
     -ffunction-sections -fdata-sections
 )
