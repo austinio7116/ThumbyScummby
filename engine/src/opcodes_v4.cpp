@@ -53,7 +53,7 @@ static void op_v4_pickupObjectOld(VM *vm) {
     engine_put_object_state(obj, 1);
     ObjectTable *t = get_object_table();
     if (t) {
-        ObjectData *o = object_get_by_id(t, obj);
+        LegacyObjectData *o = object_get_by_id(t, obj);
         if (o) o->state = 1;
     }
     int inv_script = (int)vm_read_var(vm, VAR_INVENTORY_SCRIPT);

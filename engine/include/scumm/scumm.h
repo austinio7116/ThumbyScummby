@@ -89,6 +89,7 @@ class Actor;
 class BaseCostumeLoader;
 class BaseCostumeRenderer;
 class BaseScummFile;
+class ScummFile;          // ThumbyScummby: missing in upstream scumm.h
 class CharsetRenderer;
 class IMuse;
 class IMuseDigital;

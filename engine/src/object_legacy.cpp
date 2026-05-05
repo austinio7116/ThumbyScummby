@@ -39,7 +39,7 @@ void object_init(ObjectTable *t) {
 // v4; height and actordir are packed into a single byte. The previous
 // parser was off-by-one starting from p+5 onward, which is why h came out
 // as zero for every object and walk_y/actordir read garbage.
-static void parse_obcd_v4(Span obcd_payload, ObjectData *o) {
+static void parse_obcd_v4(Span obcd_payload, LegacyObjectData *o) {
     if (obcd_payload.size < 12) return;
     const uint8_t *p = obcd_payload.data;
     o->obj_id      = read_le16(p + 0);
@@ -61,7 +61,7 @@ int object_load_from_room(Span room_chunk_payload, ObjectTable *t) {
 
     // Walk all sub-chunks; collect OI (OBIM) and OC (OBCD) by obj_id.
     // For v4 small_header layout, each OI is followed (eventually) by its
-    // OC; collect both into ObjectData entries keyed by obj_id.
+    // OC; collect both into LegacyObjectData entries keyed by obj_id.
     //
     // Slot allocation mirrors ScummVM: slot 0 is reserved (empty), local
     // objects live in slots 1..N. The on-disk OBCD `parent` byte encodes
@@ -89,7 +89,7 @@ int object_load_from_room(Span room_chunk_payload, ObjectTable *t) {
             }
         } else if (c.tag == small_tag('O','C')) {
             if (next_slot >= MAX_OBJECTS) break;
-            ObjectData *o = &t->objects[next_slot++];
+            LegacyObjectData *o = &t->objects[next_slot++];
             memset(o, 0, sizeof(*o));
             o->obcd_payload = c.payload;
             parse_obcd_v4(c.payload, o);
@@ -113,7 +113,7 @@ int object_load_from_room(Span room_chunk_payload, ObjectTable *t) {
     return t->num_objects;
 }
 
-ObjectData *object_get_by_id(ObjectTable *t, int obj_id) {
+LegacyObjectData *object_get_by_id(ObjectTable *t, int obj_id) {
     for (int i = 1; i <= t->num_objects; i++) {
         if (t->objects[i].obj_id == obj_id) return &t->objects[i];
     }
@@ -161,14 +161,14 @@ static void draw_one_object(const ObjectTable *t, int slot,
                             uint8_t *vscreen_back, int pitch,
                             int buf_w, int buf_h) {
     constexpr int mask = 0x0F;
-    const ObjectData *od = &t->objects[slot];
+    const LegacyObjectData *od = &t->objects[slot];
     if (slot < 1 || od->obj_id < 1 || !od->state) return;
 
     // Ancestor-chain visibility check.
     while (true) {
         uint8_t a = od->parentstate;
         if (od->parent == 0) break;            // top — proceed to draw
-        const ObjectData *p = &t->objects[od->parent];
+        const LegacyObjectData *p = &t->objects[od->parent];
         if ((p->state & mask) != a) return;    // ancestor mismatch — hide
         od = p;
     }
@@ -204,7 +204,7 @@ void object_render_all(const ObjectTable *t,
     if (buf_w <= 0) buf_w = pitch;
     if (buf_h <= 0) buf_h = VIRTUAL_SCREEN_H;
     for (int i = t->num_objects; i >= 1; i--) {
-        const ObjectData *o = &t->objects[i];
+        const LegacyObjectData *o = &t->objects[i];
         if (o->obj_id > 0 && (o->state & mask)) {
             draw_one_object(t, i, vscreen_back, pitch, buf_w, buf_h);
         }
@@ -218,7 +218,7 @@ void object_draw_single(const ObjectTable *t, int obj_id,
     if (buf_w <= 0) buf_w = pitch;
     if (buf_h <= 0) buf_h = VIRTUAL_SCREEN_H;
     for (int i = t->num_objects; i >= 1; i--) {
-        const ObjectData *o = &t->objects[i];
+        const LegacyObjectData *o = &t->objects[i];
         if (o->obj_id == obj_id) {
             draw_one_object(t, i, vscreen_back, pitch, buf_w, buf_h);
             return;
@@ -228,7 +228,7 @@ void object_draw_single(const ObjectTable *t, int obj_id,
 
 int object_find_at(const ObjectTable *t, int x, int y) {
     for (int i = t->num_objects; i >= 1; i--) {
-        const ObjectData *o = &t->objects[i];
+        const LegacyObjectData *o = &t->objects[i];
         if (o->state == 0) continue;
         int x0 = o->x_strip * 8, y0 = o->y * 8;
         int x1 = x0 + o->w_strip * 8, y1 = y0 + o->h * 8;

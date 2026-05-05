@@ -216,7 +216,7 @@ int      engine_run_object_script(int obj_id, int verb,
 // (script.cpp:1137 doSentence push, :1166 checkAndRunSentenceScript pop).
 // Used by op_doSentence to queue verb-object-object actions, and by the
 // engine main loop to dispatch them through VAR_SENTENCE_SCRIPT.
-constexpr int NUM_SENTENCE = 6;
+// NUM_SENTENCE comes from scumm/scumm.h (enum value).  Don't redeclare.
 struct SentenceEntry {
     uint8_t  verb;
     uint16_t object_a;

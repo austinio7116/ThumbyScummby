@@ -22,9 +22,6 @@
 #ifndef SCUMM_OBJECT_H
 #define SCUMM_OBJECT_H
 
-// ThumbyScummby: includes for transcribed object.h.
-#include "scummvm_compat.h"
-
 namespace Scumm {
 
 static inline int OBJECT_V0(int id, byte type) {
@@ -81,10 +78,7 @@ struct ObjectData {
 	byte flags;
 };
 
-// ThumbyScummby: pack-start.h replaced by PACKED_STRUCT below.
-#ifndef PACKED_STRUCT
-#define PACKED_STRUCT __attribute__((packed))
-#endif
+#include "common/pack-start.h"	// START STRUCT PACKING
 
 struct RoomHeader {
 	union {
@@ -190,7 +184,7 @@ struct ImageHeader { /* file format */
 	};
 } PACKED_STRUCT;
 
-// ThumbyScummby: pack-end.h elided.
+#include "common/pack-end.h"	// END STRUCT PACKING
 
 struct FindObjectInRoom {
 	const CodeHeader *cdhd;

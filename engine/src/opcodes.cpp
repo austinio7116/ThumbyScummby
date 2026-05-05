@@ -1589,7 +1589,7 @@ void op_drawObject(VM *vm) {
 
     ObjectTable *t = get_object_table();
     if (!t) return;
-    ObjectData *od = object_get_by_id(t, obj);
+    LegacyObjectData *od = object_get_by_id(t, obj);
     if (!od) {
         // Object not loaded in current room — still update global state
         // so a later room load reflects it.
@@ -1597,7 +1597,7 @@ void op_drawObject(VM *vm) {
         return;
     }
     if (xpos != 0xFF) {
-        // ScummVM: walk_x += (xpos*8 - x_pos); x_pos = xpos*8. Our ObjectData
+        // ScummVM: walk_x += (xpos*8 - x_pos); x_pos = xpos*8. Our LegacyObjectData
         // stores x in 8-pixel strips, so the equivalent walk-coord shift is:
         int new_x_pix = xpos * 8;
         int new_y_pix = ypos * 8;
@@ -1611,7 +1611,7 @@ void op_drawObject(VM *vm) {
     // width + height) — script_v5.cpp:1122-1126.
     int x = od->x_strip, y = od->y, w = od->w_strip, h = od->h;
     for (int i = t->num_objects; i >= 1; i--) {
-        ObjectData *o = &t->objects[i];
+        LegacyObjectData *o = &t->objects[i];
         if (o == od) continue;
         if (o->obj_id == 0) continue;
         if (o->x_strip == x && o->y == y && o->w_strip == w && o->h == h) {
@@ -1673,7 +1673,7 @@ static void op_setState(VM *vm) {
     // up without needing a room reload.
     ObjectTable *t = get_object_table();
     if (t) {
-        ObjectData *o = object_get_by_id(t, obj);
+        LegacyObjectData *o = object_get_by_id(t, obj);
         if (o) o->state = (uint8_t)state;
     }
 }
@@ -1705,7 +1705,7 @@ static void op_pickupObject(VM *vm) {
     {
         ObjectTable *t = get_object_table();
         if (t) {
-            ObjectData *o = object_get_by_id(t, obj);
+            LegacyObjectData *o = object_get_by_id(t, obj);
             if (o) o->state = 1;
         }
     }

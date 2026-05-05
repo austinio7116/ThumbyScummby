@@ -180,8 +180,8 @@ constexpr int INVENTORY_MAX = 80;
 static uint16_t g_inventory[INVENTORY_MAX + 1];   // indexed 1..INVENTORY_MAX
 
 // String resource pool (rtString in ScummVM). Used by op_stringOps.
-struct StringSlot { uint8_t data[STRING_SLOT_SIZE]; int size; bool present; };
-static StringSlot g_strings[STRING_SLOT_COUNT];
+struct LegacyStringSlot { uint8_t data[STRING_SLOT_SIZE]; int size; bool present; };
+static LegacyStringSlot g_strings[STRING_SLOT_COUNT];
 
 void engine_string_load(int slot, const uint8_t *src) {
     if (slot < 0 || slot >= STRING_SLOT_COUNT) return;

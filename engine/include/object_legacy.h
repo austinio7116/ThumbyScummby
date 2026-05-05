@@ -18,7 +18,7 @@
 
 namespace tsb {
 
-struct ObjectData {
+struct LegacyObjectData {
     uint16_t obj_id;          // global object number (== ScummVM od.obj_nr)
     uint8_t  x_strip;         // x position in 8-pixel units (multiply by 8)
     uint8_t  y;
@@ -40,7 +40,7 @@ struct ObjectData {
 // means "no parent"). Local objects live in slots 1..num_objects.
 struct ObjectTable {
     int          num_objects;     // count of populated slots (1..num_objects)
-    ObjectData   objects[MAX_OBJECTS];
+    LegacyObjectData   objects[MAX_OBJECTS];
 };
 
 void object_init(ObjectTable *t);
@@ -64,7 +64,7 @@ void object_render_all(const ObjectTable *t,
                        int buf_w = 0, int buf_h = 0);
 
 // Look up object by ID. Returns nullptr if not in table.
-ObjectData *object_get_by_id(ObjectTable *t, int obj_id);
+LegacyObjectData *object_get_by_id(ObjectTable *t, int obj_id);
 
 // Draw a single object (by obj_id) into the room composite. Mirrors
 // ScummVM `processDrawQue`/`drawObject` (object.cpp:1178-1185, 647)
