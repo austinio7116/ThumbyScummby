@@ -47,6 +47,7 @@ add_library(thumbyscummby_engine STATIC
     src/util.cpp
     src/boxes.cpp
     src/usage_bits.cpp
+    src/camera.cpp
     # base-costume.cpp + costume.cpp transcribed but not built yet — their
     # bodies depend on gfx.cpp's full VirtScreen / Graphics::Surface
     # implementation (step 12).  Headers are active so transcribed actor.h

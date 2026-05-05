@@ -65,9 +65,8 @@ struct Camera {
     int      screenStartStrip;
     int      screenEndStrip;
 };
-constexpr uint8_t kNormalCameraMode      = 1;
-constexpr uint8_t kFollowActorCameraMode = 2;
-constexpr uint8_t kPanningCameraMode     = 3;
+// kNormalCameraMode / kFollowActorCameraMode / kPanningCameraMode now live
+// in scummvm_compat.h (transcribed from scumm/gfx.h:128-133).
 
 struct EngineState {
     uint8_t  vscreen_room[ROOM_BUFFER_W * VIRTUAL_SCREEN_H];

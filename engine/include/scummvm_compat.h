@@ -449,6 +449,36 @@ enum VirtScreenNumber {
     kUnkVirtScreen  = 3,
 };
 
+// scummvm-upstream/scumm/gfx.h:128-133 — camera modes.  Verbatim.
+enum {
+    kNormalCameraMode = 1,
+    kFollowActorCameraMode = 2,
+    kPanningCameraMode = 3
+};
+
+// scummvm-upstream/scumm/gfx.h:135-156 — CameraData.  Verbatim.
+struct CameraData {
+    Common::Point _cur;
+    Common::Point _dest;
+    Common::Point _accel;
+    Common::Point _last;
+    int _leftTrigger, _rightTrigger;
+    byte _follows, _mode;
+    bool _movingToActor;
+
+    void reset() {
+        _cur.x = _cur.y = 0;
+        _dest.x = _dest.y = 0;
+        _accel.x = _accel.y = 0;
+        _last.x = _last.y = 0;
+        _leftTrigger = 0;
+        _rightTrigger = 0;
+        _follows = 0;
+        _mode = 0;
+        _movingToActor = 0;
+    }
+};
+
 }  // close `namespace tsb` for Graphics namespace at global scope
 
 // scummvm-upstream/graphics/surface.h: Graphics::Surface.  Minimal stub
@@ -546,6 +576,14 @@ public:
     uint8_t *createResource(int type, int idx, size_t size);
 };
 extern Resources g_resources;
+
+// scummvm-upstream/scumm/gfx.h:290 — Gdi class.  Minimal stub: only the
+// fields camera.cpp + actor.cpp transcribed code references.  Full class
+// lands when gfx.cpp is enabled.
+class Gdi {
+public:
+    int32_t _numStrips = 40;     // 320/8 for v4 DOS games
+};
 
 class ScummEngine {
 public:
@@ -687,6 +725,21 @@ public:
     byte VAR_ALWAYS_REDRAW_ACTORS = 0xFF;       // v8/HE only — stays 0xFF for v4
     byte VAR_CUSTOMSCALETABLE = 0xFF;           // AKOS scale (v6+) — 0xFF for v4
 
+    // Camera VARs.  v4 sets the X-axis ones; the Y-axis/threshold/accel ones
+    // remain 0xFF (only used by v7/v8 / FT).
+    byte VAR_CAMERA_MIN_Y = 0xFF;
+    byte VAR_CAMERA_MAX_Y = 0xFF;
+    byte VAR_CAMERA_POS_Y = 0xFF;
+    byte VAR_CAMERA_DEST_X = 0xFF;
+    byte VAR_CAMERA_DEST_Y = 0xFF;
+    byte VAR_CAMERA_SPEED_X = 0xFF;
+    byte VAR_CAMERA_SPEED_Y = 0xFF;
+    byte VAR_CAMERA_ACCEL_X = 0xFF;
+    byte VAR_CAMERA_ACCEL_Y = 0xFF;
+    byte VAR_CAMERA_THRESHOLD_X = 0xFF;
+    byte VAR_CAMERA_THRESHOLD_Y = 0xFF;
+    byte VAR_CAMERA_FOLLOWED_ACTOR = 0xFF;
+
     // ---- Actor pool (scummvm-upstream/scumm/scumm.h:815-816).  We use a
     // fixed-size pool of 16 actors instead of scummvm's heap-allocated
     // `Actor **` to keep the embedded RAM budget tight. ----
@@ -719,9 +772,29 @@ public:
     int  _currentScript = 0xFF;
     byte _fastMode = 0;
     int  _screenStartStrip = 0;
+    int  _screenEndStrip = 0;
+    int  _screenTop = 0;
     bool _fullRedraw = false;
-    void *_gdi = nullptr;       // CharsetRendererCommon / Gdi — stub ptr
-    void *_virtscr = nullptr;   // VirtScreen array — stub ptr
+    bool _snapScroll = false;
+    bool _cameraIsFrozen = false;
+
+    // Screen / room dimensions.  v4 DOS games are always 320x200.
+    int _screenWidth  = 320;
+    int _screenHeight = 200;
+    int _roomWidth    = 0;
+    int _roomHeight   = 0;
+
+    // Gdi instance (only _numStrips currently used by camera.cpp).
+    Gdi  _gdiStorage;
+    Gdi *_gdi = &_gdiStorage;
+
+    // Camera state — see scummvm-upstream/scumm/scumm.h:1343.
+    CameraData camera;
+
+    // Four virtscreens (kMain, kText, kVerb, kBanner).  Real allocation is
+    // wired when gfx.cpp lands; transcribed code only reads/writes
+    // _virtscr[kMainVirtScreen].xstart for now.
+    VirtScreen _virtscr[4];
 
     // Shadow palette — already maintained by our existing engine.cpp via
     // a separate global; keep a parallel pointer here for transcribed code.
@@ -770,10 +843,27 @@ public:
     void stopTalk();
     int  getTalkingActor();
     void setTalkingActor(int i);
+
+    // Inventory / scene change hooks called from camera.cpp.
+    // Real bodies arrive when verbs.cpp / room.cpp are enabled.  For now
+    // forwarders in scummvm_compat.cpp wrap the existing engine hooks.
+    void runInventoryScript(int i);
+    void runInventoryScriptEx(int i);
+    void startScene(int room, Actor *a, int objectNr);
     void ensureResourceLoaded(int type, int idx);
     int  remapPaletteColor(int r, int g, int b, int threshold);
     const uint8_t *findResourceData(uint32 tag, const uint8_t *ptr);
     int  getResourceDataSize(const uint8_t *ptr) const;
+
+    // Camera methods — transcribed bodies live in camera.cpp.
+    void cameraMoved();
+    void setCameraAtEx(int at);
+    virtual void setCameraAt(int pos_x, int pos_y);
+    virtual void setCameraFollows(Actor *a, bool setCamera = false);
+    virtual void moveCamera();
+    virtual void panCameraTo(int x, int y);
+    void clampCameraPos(Common::Point *pt);
+    void actorFollowCamera(int act);
 
     // Methods DEFINED IN actor.cpp itself (just need declarations here).
     // Verbatim from scummvm-upstream/scumm/scumm.h.
@@ -804,10 +894,13 @@ extern ScummEngine *g_scumm;
 
 // scummvm-upstream/scumm/charset.h: CharsetRenderer.  Transcribed
 // actor.cpp touches `_charset->_str.left/right/top/bottom`. The full
-// class lands when charset.cpp is transcribed.
+// class lands when charset.cpp is transcribed.  camera.cpp also touches
+// `_hasMask` (true when subtitle text is currently on the screen and we
+// should hide it on camera scroll for v>3).
 class CharsetRenderer {
 public:
     Common::Rect _str;
+    bool _hasMask = false;
 };
 
 // scummvm-upstream/scumm/sound.h: Sound. Transcribed actor.cpp touches

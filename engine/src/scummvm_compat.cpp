@@ -307,6 +307,26 @@ void ScummEngine::stopTalk() {
     if (VAR_TALK_ACTOR != 0xFF) _scummVars[VAR_TALK_ACTOR] = 0;
 }
 
+// Inventory / scene change hooks for transcribed camera.cpp.  v4 doesn't
+// run an inventory refresh on scroll; setCameraFollows in upstream calls
+// runInventoryScriptEx(0) to refresh the in-game inventory panel after
+// switching follow target.  Real body lands when verbs.cpp / scumm.cpp
+// are enabled.
+void ScummEngine::runInventoryScript(int /*i*/) {
+    // No-op until verbs.cpp lands.  Inventory panel still rendered by
+    // legacy verbs path.
+}
+
+void ScummEngine::runInventoryScriptEx(int /*i*/) {
+    // No-op for v4 — only v7+ uses the "Ex" variant.
+}
+
+void ScummEngine::startScene(int /*room*/, Actor * /*a*/, int /*objectNr*/) {
+    // No-op stub.  Transcribed camera.cpp v7 path is gated out, so this
+    // is only here to satisfy linkage if the v7 path ever opens up.
+    // Legacy room change continues to flow through engine_room_load.
+}
+
 int ScummEngine::getTalkingActor() {
     if (VAR_TALK_ACTOR == 0xFF) return -1;
     return (int)_scummVars[VAR_TALK_ACTOR];
