@@ -36,7 +36,8 @@ namespace tsb {
 // Forward declarations from scummvm_compat.cpp.
 extern void scummvm_compat_init();
 extern void scummvm_compat_room_change(int new_room, int room_resource,
-                                       Span boxd_payload, Span boxm_payload);
+                                       Span boxd_payload, Span boxm_payload,
+                                       Span scal_payload);
 
 // Static state (no heap allocation). Sized for the device target budget.
 //
@@ -1009,9 +1010,12 @@ bool engine_change_room(int new_room) {
     }
 
     // Sync transcribed scummvm state.  Copies BOXD into g_scumm's writable
-    // buffer so transcribed boxes.cpp can mutate flags / scales.
+    // buffer so transcribed boxes.cpp can mutate flags / scales.  Also
+    // populates _scaleSlots from the SCAL chunk so transcribed getScale
+    // works once boxes.cpp goes live.
     scummvm_compat_room_change(new_room, new_room,
-                               g.room.boxd_payload, g.room.boxm_payload);
+                               g.room.boxd_payload, g.room.boxm_payload,
+                               g.room.scal_payload);
 
     // Reset scale slots, then parse the SCAL ('SA') chunk into them.
     // Mirrors ScummEngine::setupRoomSubBlocks (room.cpp:603-628). v4 layout:
