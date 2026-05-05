@@ -164,6 +164,10 @@ struct DetectorResult {
 #include "scumm/he/intern_he.h"   // HE subclasses (real headers, bodies never link)
 #include "scumm/bomp.h"           // BompDrawData / drawBomp (referenced by v6+ paths)
 #include "scumm/file.h"           // BaseScummFile / ScummFile (charset.cpp opens fonts)
+// scumm/sound.h is NOT included — it pulls audio/mididrv (with MDT_*),
+// scumm/soundcd.h methods, AudioCDManager — all things vars.cpp/scumm.cpp
+// would also need.  We provide a Sound STUB class below.  Phase 7
+// audio_shim.cpp subclasses it with bodies that forward to imuse_*.
 #include "scumm/verbs.h"          // VerbSlot (string.cpp / verbs.cpp)
 #include "graphics/font.h"        // Graphics::Font (charset.cpp Mac font path)
 // scumm/sound.h pulls in audio/mididrv.h + scumm/{soundcd,soundse}.h —
@@ -201,8 +205,15 @@ class IMuseDigital { public: virtual ~IMuseDigital() {} };
 // audio/musicplugin.h MusicEngine — disabled.
 class MusicEngine { public: virtual ~MusicEngine() {} };
 
-// FM-Towns specific — disabled.
-class Player_Towns { public: virtual ~Player_Towns() {} };
+// FM-Towns specific — disabled.  Methods stubbed for parse-only.
+class Player_Towns {
+public:
+    virtual ~Player_Towns() {}
+    virtual void setVolumeCD(int, int) {}
+    virtual void setSoundVolume(int, int, int) {}
+    virtual void setSoundNote(int, int) {}
+    virtual int  getCurrentCdaVolume() { return 0; }
+};
 
 // Mac GUI — disabled.  Methods called from transcribed code are stubbed.
 class MacGui {
@@ -213,6 +224,7 @@ public:
     virtual void printCharToTextArea(int, int, int, int) {}
     virtual void setupCursor(int /*&width*/, int /*&height*/, int /*&hotspotX*/, int /*&hotspotY*/, int /*&animate*/) {}
     virtual void initTextAreaForActor(int, int) {}
+    virtual bool isVerbGuiActive() const { return false; }
 };
 
 // SoundHE — minimal subclass with playVoice for HE talkie path.
@@ -228,9 +240,10 @@ public:
     int runModal() { return 0; }
 };
 
-// Sound — bodies in audio_shim.cpp forward to imuse_*.  Methods listed
-// here are the ones transcribed code currently calls.
-class Sound {
+// Sound — minimal stub.  audio_shim.cpp (Phase 7) provides a real subclass
+// with bodies that forward to imuse_*.  Methods listed here are the ones
+// transcribed code actively calls.
+class Sound : public Common::Serializable {
 public:
     Sound(ScummEngine *vm) : _vm(vm) {}
     virtual ~Sound() {}
@@ -240,7 +253,8 @@ public:
                             int heFreq = 0, int hePan = 0, int heVol = 0) {}
     virtual void stopSound(int sound) {}
     virtual void stopAllSounds() {}
-    virtual bool isSoundRunning(int sound) const { return false; }
+    virtual int  isSoundRunning(int sound) const { return 0; }
+    virtual bool isSoundInUse(int) const { return false; }
     virtual bool isSoundInQueue(int sound) const { return false; }
     virtual int  getSoundElapsedTime(int sound) const { return 0; }
     virtual int  isSoundRunningEgo(int sound, int actor) const { return 0; }
@@ -250,42 +264,42 @@ public:
     virtual void pauseSounds(bool pause) {}
     virtual void setupSound() {}
     virtual void modifySound(int sound, int offset, int data, int type) {}
-    virtual void addSoundToQueue(int sound, int heOffset = 0,
-                                 int heChannel = 0, int heFlags = 0,
+    virtual void modifySound(int sound, int offset, int frequencyShift, int pan, int volume, int flags) {}
+    virtual void addSoundToQueue(int sound, int heOffset = 0, int heChannel = 0, int heFlags = 0,
                                  int heFreq = 0, int hePan = 0, int heVol = 0) {}
-    virtual void addSoundToQueue2(int sound, int heOffset = 0,
-                                  int heChannel = 0, int heFlags = 0) {}
     virtual bool shouldInjectMISEAudio() const { return false; }
     virtual void startRemasteredSpeech(const char *, byte) {}
-    virtual void playVoice(uint, uint, uint, uint, uint) {}
-    virtual bool isSoundInUse(int) const { return false; }
-    virtual void pollCD() {}
+    virtual int  pollCD() { return 0; }
+    virtual void setupMISEAudioParams(int, int) {}
+    virtual int  getCurrentCDSound() const { return 0; }
+    virtual void stopCD() {}
+    virtual void playCDTrack(int, int, int, int) {}
+    virtual void updateCD() {}
+    virtual void stopCDTimer() {}
 
-    // Members referenced by transcribed string.cpp / sound.cpp.
+    void saveLoadWithSerializer(Common::Serializer &) override {}
+
     int _digiSndMode = 0;
-    int _talkChannelHandle = 0;     // really Audio::SoundHandle in scummvm
+    int _talkChannelHandle = 0;
+    int _musicType = 0;        // MidiDriverFlags
 
 protected:
     ScummEngine *_vm;
 };
 
-// Sound::DIGI_SND_MODE_* enum values.  scummvm-upstream/scumm/sound.h.
 enum {
     DIGI_SND_MODE_EMPTY  = 0,
     DIGI_SND_MODE_TALKIE = 1,
     DIGI_SND_MODE_SFX    = 2,
 };
-
-// HE-specific sound slot constants — string.cpp references HSND_TALKIE_SLOT
-// which is HE100-only.  Stub at 0; runtime never executes that path.
 enum {
     HSND_TALKIE_SLOT = 1,
 };
 
-// SoundHE — HE Sound subclass.  We never instantiate it; stub for parse.
 class SoundHE : public Sound {
 public:
     SoundHE(ScummEngine *vm) : Sound(vm) {}
+    void playVoice(uint32, uint32) {}
 };
 
 }  // namespace Scumm (tsb after rewrite)
