@@ -23,8 +23,9 @@
 #ifndef SCUMM_ACTOR_H
 #define SCUMM_ACTOR_H
 
-// ThumbyScummby: replaces common/scummsys.h, common/serializer.h, scumm/scumm.h.
-#include "scummvm_compat.h"
+#include "common/scummsys.h"
+#include "common/serializer.h"
+#include "scumm/scumm.h"
 
 namespace Scumm {
 
@@ -100,11 +101,7 @@ class Actor : public Common::Serializable {
 public:
 	static byte kInvalidBox;
 
-// ThumbyScummby transitional: scummvm marks _vm/_pos as protected.  Our
-// legacy opcodes.cpp / engine.cpp reach them directly until step 5
-// (script_v5.cpp transcription) replaces those callers.  Restore
-// `protected:` after step 5.
-public:    // was protected:
+protected:
 	ScummEngine *_vm;
 
 	/** The position of the actor inside the virtual screen. */
@@ -156,8 +153,7 @@ public:
 	uint32 _hePaletteNum = 0;
 	uint32 _heShadow = 0;
 
-// ThumbyScummby transitional: was `protected:` upstream.  See note at top.
-public:    // was protected:
+protected:
 	struct ActorWalkData {
 		Common::Point dest;           // Final destination point
 		byte destbox = 0;             // Final destination box

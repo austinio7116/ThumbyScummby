@@ -26,6 +26,7 @@
 // actor.h is needed for Actor::kInvalidBox / kOldInvalidBox / kNewInvalidBox.
 #include "scummvm_compat.h"
 #include "scumm/actor.h"
+#include "scumm/resource.h"
 
 namespace Scumm {
 

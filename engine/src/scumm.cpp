@@ -19,6 +19,14 @@
  *
  */
 
+// ThumbyScummby — pull scummvm_compat.h first (includes scumm.h which
+// provides ResType enum) then scumm/resource.h.  Without this order
+// scumm/resource.h pre-empts scumm.h's ResType declaration via the
+// header-guard cycle.
+#include "scummvm_compat.h"
+#include "scumm/actor.h"
+#include "scumm/resource.h"
+
 #include "common/config-manager.h"
 #include "common/compression/clickteam.h"
 #include "common/debug-channels.h"
@@ -72,7 +80,6 @@
 #include "scumm/players/player_v3a.h"
 #include "scumm/players/player_v4a.h"
 #include "scumm/players/player_he.h"
-#include "scumm/resource.h"
 #include "scumm/he/resource_he.h"
 #include "scumm/he/basketball/basketball.h"
 #include "scumm/he/moonbase/moonbase.h"

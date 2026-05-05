@@ -77,6 +77,11 @@ add_library(thumbyscummby_engine STATIC
     src/vars.cpp           # setupScummVars / resetScummVars
     src/input.cpp          # event handling
     src/cursor.cpp         # mouse cursor
+    src/file.cpp           # ScummFile / ScummDiskImage / ScummSteamFile
+    src/file_engine.cpp    # ScummEngine::openFile chunk readers
+    src/charset-fontdata.cpp  # Built-in font data
+    src/bomp.cpp           # decompressBomp / drawBomp
+    src/resource.cpp       # ScummEngine::readIndex etc + ResourceManager
     # OLD lines below
     # src/charset.cpp.old    # needs Graphics::Font + MacGui::getFontByScummId
     # src/string.cpp         # depends on charset
@@ -112,6 +117,13 @@ target_compile_options(thumbyscummby_engine PRIVATE
     -Wno-reorder
     -fno-exceptions -fno-rtti
     -ffunction-sections -fdata-sections
+    # Force scummvm_compat.h into every TU before any other include.
+    # This puts our `#define Scumm tsb` namespace rewrite + Engine /
+    # OSystem / DetectorResult stubs in scope before any scummvm header
+    # gets parsed.  Without this, transcribed cpps that include scumm/*.h
+    # directly trip on missing types because scummvm_compat.h hasn't been
+    # processed yet.
+    -include scummvm_compat.h
 )
 
 # scummvm-upstream/common/forbidden.h blocks libc symbols.  Our boundary

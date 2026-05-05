@@ -22,8 +22,10 @@
 #ifndef SCUMM_GFX_H
 #define SCUMM_GFX_H
 
-// ThumbyScummby: replaces scummvm-private headers.
-#include "scummvm_compat.h"
+#include "common/system.h"
+#include "common/list.h"
+
+#include "graphics/surface.h"
 
 namespace Scumm {
 

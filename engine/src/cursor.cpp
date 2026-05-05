@@ -22,6 +22,8 @@
 // ThumbyScummby — pull in scummvm_compat.h FIRST so the `#define Scumm tsb`
 // namespace rewrite applies to all subsequent includes.
 #include "scummvm_compat.h"
+#include "scumm/actor.h"
+#include "scumm/resource.h"
 
 #include "common/config-manager.h"
 #include "common/system.h"

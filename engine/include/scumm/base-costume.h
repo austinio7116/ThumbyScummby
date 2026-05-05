@@ -22,16 +22,12 @@
 #ifndef SCUMM_BASE_COSTUME_H
 #define SCUMM_BASE_COSTUME_H
 
-// ThumbyScummby: replaces common/scummsys.h, scumm/actor.h.
-#include "scummvm_compat.h"
-#include "scumm/actor.h"
+#include "common/scummsys.h"
+#include "scumm/actor.h"		// for CostumeData
 
 namespace Scumm {
 
-// ThumbyScummby: PACKED_STRUCT replaces common/pack-start.h.
-#ifndef PACKED_STRUCT
-#define PACKED_STRUCT __attribute__((packed))
-#endif
+#include "common/pack-start.h"	// START STRUCT PACKING
 
 struct CostumeInfo {
 	uint16 width, height;
@@ -39,7 +35,7 @@ struct CostumeInfo {
 	int16 moveX, moveY;
 } PACKED_STRUCT;
 
-// ThumbyScummby: pack-end.h pragma elided — PACKED_STRUCT applies per-struct.
+#include "common/pack-end.h"	// END STRUCT PACKING
 
 
 extern const byte smallCostumeScaleTable[256];

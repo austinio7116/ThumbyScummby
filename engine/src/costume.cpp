@@ -24,6 +24,7 @@
 // scumm/sound.h, scumm/util.h.
 #include "scummvm_compat.h"
 #include "scumm/actor.h"
+#include "scumm/resource.h"
 #include "scumm/costume.h"
 
 namespace Scumm {

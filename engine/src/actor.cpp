@@ -24,6 +24,7 @@
 // part of our scope; method bodies that touch them are wrapped in #if 0.
 #include "scummvm_compat.h"
 #include "scumm/actor.h"
+#include "scumm/resource.h"
 #include "scumm/base-costume.h"     // BaseCostumeLoader / Renderer (transcribed)
 #include "scumm/costume.h"          // ClassicCostumeLoader / Renderer (transcribed)
 

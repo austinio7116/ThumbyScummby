@@ -22,8 +22,12 @@
 #ifndef SCUMM_CHARSET_H
 #define SCUMM_CHARSET_H
 
-// ThumbyScummby: replaces scummvm-private headers.
-#include "scummvm_compat.h"
+#include "common/scummsys.h"
+#include "common/rect.h"
+#include "graphics/sjis.h"
+#include "scumm/charset_v7.h"
+#include "scumm/scumm.h"
+#include "scumm/gfx.h"
 
 namespace Graphics {
 class Font;

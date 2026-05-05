@@ -19,6 +19,14 @@
  *
  */
 
+// ThumbyScummby — pull scummvm_compat.h first (includes scumm.h which
+// provides ResType enum) then scumm/resource.h.  Without this order
+// scumm/resource.h pre-empts scumm.h's ResType declaration via the
+// header-guard cycle.
+#include "scummvm_compat.h"
+#include "scumm/actor.h"
+#include "scumm/resource.h"
+
 #include "common/config-manager.h"
 #include "common/events.h"
 #include "common/system.h"
@@ -37,7 +45,6 @@
 #include "scumm/he/logic_he.h"
 #endif
 #include "scumm/macgui/macgui.h"
-#include "scumm/resource.h"
 #include "scumm/scumm_v0.h"
 #include "scumm/scumm_v6.h"
 #include "scumm/scumm_v8.h"

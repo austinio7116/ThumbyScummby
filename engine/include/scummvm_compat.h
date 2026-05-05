@@ -133,7 +133,10 @@ class TimerManager;
 #include "scumm/util.h"
 #include "scumm/object.h"
 #include "scumm/usage_bits.h"
-#include "scumm/resource.h"
+// scumm/resource.h has a circular dep: it needs scumm.h's ResType enum.
+// Pulling it in here pre-empts scumm.h's enum.  Files that need
+// ResourceManager pull scumm/resource.h directly.
+//#include "scumm/resource.h"
 #include "scumm/actor.h"
 #include "scumm/charset.h"
 
