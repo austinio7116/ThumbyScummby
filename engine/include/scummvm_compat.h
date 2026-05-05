@@ -161,6 +161,10 @@ struct DetectorResult {
 #include "scumm/scumm_v6.h"   // stub
 #include "scumm/scumm_v7.h"   // stub
 #include "scumm/scumm_v8.h"   // stub
+#include "scumm/he/intern_he.h"   // HE subclasses (real headers, bodies never link)
+#include "scumm/bomp.h"           // BompDrawData / drawBomp (referenced by v6+ paths)
+#include "scumm/file.h"           // BaseScummFile / ScummFile (charset.cpp opens fonts)
+#include "graphics/font.h"        // Graphics::Font (charset.cpp Mac font path)
 // scumm/sound.h pulls in audio/mididrv.h + scumm/{soundcd,soundse}.h —
 // we replace it with our own minimal Sound class via audio_shim.cpp.
 // Forward decl below is sufficient for ScummEngine's _sound member.
@@ -204,7 +208,7 @@ class MacGui {
 public:
     virtual ~MacGui() {}
     virtual void setPaletteDirty() {}
-    virtual void *getFontByScummId(int) { return nullptr; }
+    virtual const Graphics::Font *getFontByScummId(int) { return nullptr; }
     virtual void printCharToTextArea(int, int, int, int) {}
     virtual void setupCursor(int /*&width*/, int /*&height*/, int /*&hotspotX*/, int /*&hotspotY*/, int /*&animate*/) {}
 };

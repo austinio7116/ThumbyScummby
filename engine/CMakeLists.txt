@@ -63,13 +63,27 @@ add_library(thumbyscummby_engine STATIC
     # MacGui::getFontByScummId / ScummFile / VirtualMachineState members
     # that aren't yet stubbed).  Activated one-by-one as stubs land.
     # src/vars.cpp           # pulls scumm/{music,scumm_v0,scumm_v8}.h, he/* — many subclasses
-    # src/charset.cpp        # needs Graphics::Font + MacGui::getFontByScummId
+    src/charset.cpp        # text rendering
+    # The following pull in heavier deps (SoundHE/DIGI_SND_*/InfoDialog/
+    # VerbSlot full def / SaveStateList / Common::EventManager methods).
+    # Activated as stubs land.
+    # src/string.cpp         # SoundHE, DIGI_SND_MODE_*, InfoDialog
+    # src/verbs.cpp          # VerbSlot
+    # src/script.cpp         # ScummEngine vm/_localScriptOffsets
+    # src/script_v4.cpp      # depends on script.cpp
+    # src/script_v5.cpp      # ~80 v5 opcodes
+    # src/scumm.cpp          # init/go body, ResourceManager
+    # src/vars.cpp           # setupScummVars (pulls scumm/he/* heavy)
+    # src/input.cpp          # Common::Keymap / Keymapper
+    # src/cursor.cpp         # ScummEngine_v70he cursor methods + ConfigManager link
+    # OLD lines below
+    # src/charset.cpp.old    # needs Graphics::Font + MacGui::getFontByScummId
     # src/string.cpp         # depends on charset
-    # src/object.cpp         # needs full ObjectData ctor + many ScummEngine methods
-    # src/room.cpp           # needs initBGBuffers + setupRoomSubBlocks
+    src/object.cpp         # ObjectData / drawObject
+    src/room.cpp           # initBGBuffers + setupRoomSubBlocks
     src/palette.cpp        # ColorCycle / palManip storage on ScummEngine
     src/gfx.cpp            # Gdi / virtscr / drawStripToScreen
-    # src/sound.cpp          # replaced by audio_shim.cpp
+    # src/sound.cpp          # bypassed — audio_shim.cpp (Phase 7) replaces it
     # src/verbs.cpp          # depends on charset + script_v5
     # src/vars.cpp           # full setupScummVars body
     # src/input.cpp          # depends on Common::EventManager wiring
@@ -104,4 +118,5 @@ target_compile_options(thumbyscummby_engine PRIVATE
 target_compile_definitions(thumbyscummby_engine PUBLIC
     FORBIDDEN_SYMBOL_ALLOW_ALL=1
     HAVE_CONFIG_H=1
+    ENABLE_SCUMM=1            # turns on scumm/file.h's ScummFile class
 )
