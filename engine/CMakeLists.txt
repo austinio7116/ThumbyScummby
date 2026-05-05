@@ -45,6 +45,15 @@ add_library(thumbyscummby_engine STATIC
     # implementation (step 12).  Headers are active so transcribed actor.h
     # method signatures resolve; legacy actor_render_all keeps drawing
     # for now.
+    #
+    # script.cpp + script_v5.cpp + script_v4.cpp transcribed but not built
+    # yet — their ~80 v5 opcodes call into charset (step 6), sound
+    # (deferred), gfx (step 12), and the object-name table (step 8)
+    # which aren't transcribed.  Headers (scumm_v5.h, scumm_v4.h)
+    # provide the ScummEngine_v5 / ScummEngine_v4 class declarations
+    # which transcribed code can reference.  Legacy vm.cpp +
+    # opcodes.cpp + opcodes_v4.cpp keep driving runtime opcode dispatch
+    # until the cascade above is closed.
 )
 
 target_include_directories(thumbyscummby_engine PUBLIC include)
