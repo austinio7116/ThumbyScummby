@@ -71,6 +71,7 @@
 #include "graphics/surface.h"
 #include "graphics/pixelformat.h"
 #include "graphics/palette.h"
+#include "graphics/paletteman.h"
 
 // Stub class definitions live AFTER `#define Scumm tsb` (section 5+6
 // below), so they land in the `tsb` namespace and match scumm.h's
@@ -148,6 +149,18 @@ struct DetectorResult {
 #include "scumm/resource.h"
 #include "scumm/actor.h"
 #include "scumm/charset.h"
+
+// Forward declarations for ScummEngine_v0..v8 — transcribed cpp files
+// have method bodies for all version subclasses, but we only ship
+// ScummEngine_v4 / ScummEngine_v5 (transcribed at scumm/scumm_v4.h /
+// scumm_v5.h).  Stub the others as empty subclasses so member-method
+// definitions like `void ScummEngine_v6::palManipulate()` parse.
+#include "scumm/scumm_v0.h"   // stub
+#include "scumm/scumm_v4.h"   // real
+#include "scumm/scumm_v5.h"   // real
+#include "scumm/scumm_v6.h"   // stub
+#include "scumm/scumm_v7.h"   // stub
+#include "scumm/scumm_v8.h"   // stub
 // scumm/sound.h pulls in audio/mididrv.h + scumm/{soundcd,soundse}.h —
 // we replace it with our own minimal Sound class via audio_shim.cpp.
 // Forward decl below is sufficient for ScummEngine's _sound member.
@@ -186,8 +199,14 @@ class MusicEngine { public: virtual ~MusicEngine() {} };
 // FM-Towns specific — disabled.
 class Player_Towns { public: virtual ~Player_Towns() {} };
 
-// Mac GUI — disabled.
-class MacGui { public: virtual ~MacGui() {} };
+// Mac GUI — disabled.  Methods called from transcribed code are stubbed.
+class MacGui {
+public:
+    virtual ~MacGui() {}
+    virtual void setPaletteDirty() {}
+    virtual void *getFontByScummId(int) { return nullptr; }
+    virtual void printCharToTextArea(int, int, int, int) {}
+};
 
 // Sound — bodies in audio_shim.cpp forward to imuse_*.  Methods listed
 // here are the ones transcribed code currently calls.
@@ -222,6 +241,38 @@ protected:
 };
 
 }  // namespace Scumm (tsb after rewrite)
+
+// ---------------------------------------------------------------------------
+// 6.6. Other stubs for global / Common:: / Graphics:: symbols transcribed
+//      code references but we don't fully provide.
+// ---------------------------------------------------------------------------
+
+// scummvm-upstream/common/config-manager.h — global ConfigManager singleton.
+// Real ConfMan reads ~/.config/scummvm.ini; we provide a no-op accessor.
+namespace Common {
+class ConfigManager {
+public:
+    bool getBool(const Common::String &) const   { return false; }
+    int  getInt(const Common::String &) const    { return 0; }
+    Common::String get(const Common::String &) const { return Common::String(); }
+    bool hasKey(const Common::String &) const    { return false; }
+    void setBool(const Common::String &, bool)   {}
+    void setInt(const Common::String &, int)     {}
+    void set(const Common::String &, const Common::String &) {}
+    void flushToDisk() {}
+    void registerDefault(const Common::String &, const Common::String &) {}
+    void registerDefault(const Common::String &, bool) {}
+    void registerDefault(const Common::String &, int)  {}
+};
+extern ConfigManager *_confMan;
+}
+#define ConfMan (*::Common::_confMan)
+
+// scummvm-upstream/graphics/macega.h — Mac gamma table.  We don't render
+// for Mac, so a 256-byte identity table is fine.
+namespace Graphics {
+extern const byte macGammaCorrectionLookUp[256];
+}
 
 // ---------------------------------------------------------------------------
 // 7. ThumbyScummby-side glue.  These exist solely to bridge our existing

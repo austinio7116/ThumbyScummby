@@ -67,7 +67,7 @@ add_library(thumbyscummby_engine STATIC
     # src/string.cpp         # depends on charset
     # src/object.cpp         # needs full ObjectData ctor + many ScummEngine methods
     # src/room.cpp           # needs initBGBuffers + setupRoomSubBlocks
-    # src/palette.cpp        # needs ColorCycle / palManip storage on ScummEngine
+    src/palette.cpp        # ColorCycle / palManip storage on ScummEngine
     # src/gfx.cpp            # needs Gdi class real def + virtscr alloc
     # src/sound.cpp          # replaced by audio_shim.cpp
     # src/verbs.cpp          # depends on charset + script_v5
@@ -82,6 +82,7 @@ add_library(thumbyscummby_engine STATIC
 
     # ---- Bridge implementations (will shrink as pivot completes) ----
     src/osystem_thumby.cpp
+    src/scummvm_stubs.cpp
     # audio_shim.cpp lands here in Phase 7.
 )
 

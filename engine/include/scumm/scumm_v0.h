@@ -1,8 +1,19 @@
-// Stub — v0 (Maniac/Zak) is out of MVP scope.  vars.cpp's
-// ScummEngine_v0::resetScummVars uses #ifdef ENABLE_SCUMM_V0 (we leave
-// undefined).
+// Stub — v0 (Maniac/Zak older) out of MVP scope.
 #ifndef SCUMM_V0_H_STUB
 #define SCUMM_V0_H_STUB
 #include "scummvm_compat.h"
-namespace Scumm { class ScummEngine_v0 : public ScummEngine_v4 {}; }
+namespace Scumm {
+class ScummEngine_v0 : public ScummEngine {
+public:
+    ScummEngine_v0(OSystem *syst, const DetectorResult &dr) : ScummEngine(syst, dr) {}
+};
+class ScummEngine_v2 : public ScummEngine {
+public:
+    ScummEngine_v2(OSystem *syst, const DetectorResult &dr) : ScummEngine(syst, dr) {}
+};
+class ScummEngine_v3 : public ScummEngine {
+public:
+    ScummEngine_v3(OSystem *syst, const DetectorResult &dr) : ScummEngine(syst, dr) {}
+};
+}
 #endif
