@@ -32,7 +32,7 @@
 #include "object.h"
 #include "walkbox.h"
 #include "text.h"
-#include "charset.h"
+#include "charset_legacy.h"
 
 namespace tsb { extern ObjectTable *get_object_table(); }
 

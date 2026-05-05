@@ -22,7 +22,7 @@
 #include "imuse.h"
 #include "audio_mix.h"
 #include "text.h"
-#include "charset.h"
+#include "charset_legacy.h"
 
 #include <cmath>       // std::modf for frame-pacing fractional carry
 

@@ -22,8 +22,12 @@ add_library(thumbyscummby_engine STATIC
     src/costume_legacy.cpp
     src/walkbox.cpp
     src/object.cpp
-    src/charset.cpp
-    src/string.cpp
+    # charset.cpp / string.cpp now hold scummvm-transcribed versions —
+    # bodies depend on charset_v7 / Mac GUI / Graphics::Font and other
+    # subsystems we don't have.  Legacy versions live at *_legacy.cpp
+    # until step 12 lights up the dependencies.
+    src/charset_legacy.cpp
+    src/string_legacy.cpp
     src/opl2.cpp
     src/dbopl.cpp
     src/adlib.cpp
@@ -54,6 +58,10 @@ add_library(thumbyscummby_engine STATIC
     # which transcribed code can reference.  Legacy vm.cpp +
     # opcodes.cpp + opcodes_v4.cpp keep driving runtime opcode dispatch
     # until the cascade above is closed.
+    #
+    # charset.cpp + string.cpp transcribed but not built — bodies use
+    # Graphics::Font / ConfMan / Mac GUI etc.  charset_legacy.cpp +
+    # string_legacy.cpp drive runtime text rendering.
 )
 
 target_include_directories(thumbyscummby_engine PUBLIC include)
