@@ -12,7 +12,7 @@
 #include "room.h"
 #include "vm.h"
 #include "resource.h"
-#include "object.h"
+#include "object_legacy.h"
 #include "actor.h"
 #include "actor_compat.h"
 #include "walkbox.h"

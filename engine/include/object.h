@@ -1,83 +1,211 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
-// Derived from / inspired by ScummVM (https://www.scummvm.org/).
-// See LICENSE for full GPL-3.0-or-later terms.
-//
-// ThumbyScummby — object draw and state.
-//
-// Objects in SCUMM v4/v5 are room-bound interactive elements. Each has:
-//   - OBIM small-chunk (image data, multiple states 0..N)
-//   - OBCD small-chunk (code header + verb scripts + name)
-//
-// Objects are drawn with strip-based images similar to room background,
-// at fixed positions, only when their `state != 0`.
+/* ScummVM - Graphic Adventure Engine
+ *
+ * ScummVM is the legal property of its developers, whose names
+ * are too numerous to list here. Please refer to the COPYRIGHT
+ * file distributed with this source distribution.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
 
-#pragma once
+#ifndef SCUMM_OBJECT_H
+#define SCUMM_OBJECT_H
 
-#include "types.h"
+// ThumbyScummby: includes for transcribed object.h.
+#include "scummvm_compat.h"
 
-namespace tsb {
+namespace Scumm {
+
+static inline int OBJECT_V0(int id, byte type) {
+	assert(id < 256);
+	return (type << 8 | id);
+}
+#define OBJECT_V0_ID(obj)	(obj & 0xFF)
+#define OBJECT_V0_TYPE(obj)	((obj >> 8) & 0xFF)
+
+enum ObjectV0Type {
+	kObjectV0TypeFG = 0,    // foreground object
+	                        //   - with owner/state, might (but has not to) be pickupable
+	                        //     -> with entry in _objectOwner/StateTable
+	                        //     -> all objects in _inventory have this type
+	                        //   - image can be exchanged (background overlay)
+	kObjectV0TypeBG = 1,    // background object
+	                        //   - without owner/state, not pickupable  (room only)
+	                        //     -> without entry in _objectOwner/StateTable
+	                        //   - image cannot be exchanged (part of background image)
+	kObjectV0TypeActor = 2  // object is an actor
+};
+
+enum ObjectClass {
+	kObjectClassNeverClip = 20,
+	kObjectClassAlwaysClip = 21,
+	kObjectClassIgnoreBoxes = 22,
+	kObjectClassYFlip = 29,
+	kObjectClassXFlip = 30,
+	kObjectClassPlayer = 31,	// Actor is controlled by the player
+	kObjectClassUntouchable = 32
+};
+
+enum ObjectStateV2 {
+	kObjectStatePickupable = 1,
+	kObjectStateUntouchable = 2,
+	kObjectStateLocked = 4,
+	kObjectStateIntrinsic = 8 // Some kind of general ON/OFF property for an object
+};
 
 struct ObjectData {
-    uint16_t obj_id;          // global object number (== ScummVM od.obj_nr)
-    uint8_t  x_strip;         // x position in 8-pixel units (multiply by 8)
-    uint8_t  y;
-    uint8_t  w_strip;         // width in 8-pixel units
-    uint8_t  h;
-    uint8_t  parentstate;     // expected state of parent for this obj to draw
-    uint8_t  parent;          // local-table slot index of parent (0 = none)
-    int16_t  walk_x, walk_y;
-    uint8_t  actor_dir;
-
-    Span     obim_payload;    // OBIM chunk payload (or empty if no image)
-    Span     obcd_payload;    // OBCD chunk payload (for verb scripts)
-
-    uint8_t  state;            // cached from global state table (0 = invisible)
+	uint32 OBIMoffset;
+	uint32 OBCDoffset;
+	int16 walk_x, walk_y;
+	uint16 obj_nr;
+	int16 x_pos;
+	int16 y_pos;
+	uint16 width;
+	uint16 height;
+	byte actordir;
+	byte parent;
+	byte parentstate;
+	byte state;
+	byte fl_object_index;
+	byte flags;
 };
 
-// Slot 0 is reserved (matches ScummVM convention — objs[0] is empty;
-// drawRoomObjects iterates from _numLocalObjects-1 down to 1; parent==0
-// means "no parent"). Local objects live in slots 1..num_objects.
-struct ObjectTable {
-    int          num_objects;     // count of populated slots (1..num_objects)
-    ObjectData   objects[MAX_OBJECTS];
+// ThumbyScummby: pack-start.h replaced by PACKED_STRUCT below.
+#ifndef PACKED_STRUCT
+#define PACKED_STRUCT __attribute__((packed))
+#endif
+
+struct RoomHeader {
+	union {
+		struct {
+			uint16 width, height;
+			uint16 numObjects;
+		} old;
+
+		struct {
+			uint32 version;
+			uint16 width, height;
+			uint16 numObjects;
+		} v7;
+
+		struct {
+			uint32 version;
+			uint32 width, height;
+			uint32 numObjects;
+			uint32 numZBuffer;
+			uint32 transparency;
+		} v8;
+	};
+} PACKED_STRUCT;
+
+struct CodeHeader {
+	union {
+		struct {
+			uint16 obj_id;
+			byte x, y, w, h;
+			byte flags;
+			byte parent;
+			int16 walk_x;
+			int16 walk_y;
+			byte actordir;
+		} v5;
+
+		struct {
+			uint16 obj_id;
+			int16 x, y;
+			uint16 w, h;
+			byte flags, parent;
+			uint16 unk1;
+			uint16 unk2;
+			byte actordir;
+		} v6;
+
+		struct {
+			uint32 version;
+			uint16 obj_id;
+			byte parent;
+			byte parentstate;
+		} v7;
+
+	};
+} PACKED_STRUCT;
+
+struct ImageHeader { /* file format */
+	union {
+		struct {
+			uint16 obj_id;
+			uint16 image_count;
+			uint16 unk[1];
+			byte flags;
+			byte unk1;
+			uint16 unk2[2];
+			uint16 width;
+			uint16 height;
+			uint16 hotspot_num;
+			struct {
+				int16 x, y;
+			} hotspot[15];
+		} old;
+
+		struct {
+			uint32 version;
+			uint16 obj_id;
+			uint16 image_count;
+			int16 x_pos, y_pos;
+			uint16 width, height;
+			byte unk2[3];
+			byte actordir;
+			uint16 hotspot_num;
+			struct {
+				int16 x, y;
+			} hotspot[15];
+		} v7;
+
+		struct {
+			char name[32];
+			uint32 unk_1[2];
+			uint32 version;		// 801 in COMI, 800 in the COMI demo
+			uint32 image_count;
+			uint32 x_pos;
+			uint32 y_pos;
+			uint32 width;
+			uint32 height;
+			uint32 actordir;
+			uint32 flags;	// This field is missing in the COMI demo (version == 800) !
+			struct {
+				int32 x, y;
+			} hotspot[15];
+		} v8;
+	};
+} PACKED_STRUCT;
+
+// ThumbyScummby: pack-end.h elided.
+
+struct FindObjectInRoom {
+	const CodeHeader *cdhd;
+	const byte *obcd;
+	const byte *obim;
+	const byte *roomptr;
 };
 
-void object_init(ObjectTable *t);
+enum FindObjectWhat {
+	foCodeHeader = 1,
+	foImageHeader = 2,
+	foCheckAlreadyLoaded = 4
+};
 
-// Parse all OBIM/OBCD chunks within a ROOM payload and populate the
-// ObjectTable. Returns number of objects loaded.
-int  object_load_from_room(Span room_chunk_payload, ObjectTable *t);
+} // End of namespace Scumm
 
-// Mark all objects to redraw on next frame.
-void object_mark_all_dirty(ObjectTable *t);
 
-// Render each visible object's current state image into the back virtual
-// screen (which acts as the background+objects composite — actors will
-// draw on top). `buf_w`/`buf_h` give the destination buffer extents
-// (== room.width / room.height for the ROOM-wide composite). Defaults
-// fall back to pitch / VIRTUAL_SCREEN_H. Mirrors ScummEngine_v5
-// drawRoomObjects in object.cpp:620-645, with clipping to the actual
-// room rectangle (audit F6).
-void object_render_all(const ObjectTable *t,
-                       uint8_t *vscreen_back, int pitch,
-                       int buf_w = 0, int buf_h = 0);
-
-// Look up object by ID. Returns nullptr if not in table.
-ObjectData *object_get_by_id(ObjectTable *t, int obj_id);
-
-// Draw a single object (by obj_id) into the room composite. Mirrors
-// ScummVM `processDrawQue`/`drawObject` (object.cpp:1178-1185, 647)
-// which paint the queued object's image into the bg buffer the same
-// frame the script's o5_drawObject fires. Without this, drawObject
-// only updates the object's state; the painted image only appears at
-// the next room load.
-void object_draw_single(const ObjectTable *t, int obj_id,
-                        uint8_t *vscreen_back, int pitch,
-                        int buf_w, int buf_h);
-
-// Find which object (if any) is at screen position (x,y). Used by
-// findObject opcode and click handling.
-int  object_find_at(const ObjectTable *t, int x, int y);
-
-}  // namespace tsb
+#endif

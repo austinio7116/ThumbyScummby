@@ -135,7 +135,7 @@ void actor_tick_all(const WalkboxGraph * /*wbg*/) {
 #include "walkbox.h"
 #include "resource.h"
 #include "engine.h"
-#include "object.h"        // for engine_get_class
+#include "object_legacy.h"        // for engine_get_class
 #include <stdlib.h>
 
 namespace tsb {

@@ -11,7 +11,7 @@
 #include "actor.h"
 #include "engine.h"
 #include "vm.h"
-#include "object.h"
+#include "object_legacy.h"
 #include "costume.h"
 
 #include <new>          // placement-new for Actor pool

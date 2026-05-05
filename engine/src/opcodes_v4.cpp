@@ -10,7 +10,7 @@
 
 #include "vm.h"
 #include "platform.h"
-#include "object.h"
+#include "object_legacy.h"
 #include "master_index.h"
 #include "engine.h"
 

@@ -29,7 +29,7 @@
 #include "actor_compat.h"
 #include "imuse.h"
 #include "engine.h"
-#include "object.h"
+#include "object_legacy.h"
 #include "walkbox.h"
 #include "text.h"
 #include "charset_legacy.h"

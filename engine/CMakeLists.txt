@@ -21,7 +21,9 @@ add_library(thumbyscummby_engine STATIC
     # until step 12 lights up scummvm's drawCostume + Surface stack.
     src/costume_legacy.cpp
     src/walkbox.cpp
-    src/object.cpp
+    # object.cpp is now scummvm-transcribed — bodies depend on too many
+    # subsystems.  Legacy is at object_legacy.cpp.
+    src/object_legacy.cpp
     # charset.cpp / string.cpp now hold scummvm-transcribed versions —
     # bodies depend on charset_v7 / Mac GUI / Graphics::Font and other
     # subsystems we don't have.  Legacy versions live at *_legacy.cpp
