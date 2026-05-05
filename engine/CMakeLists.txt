@@ -98,7 +98,7 @@ add_library(thumbyscummby_engine STATIC
     # ---- Bridge implementations (will shrink as pivot completes) ----
     src/osystem_thumby.cpp
     src/scummvm_stubs.cpp
-    # audio_shim.cpp lands here in Phase 7.
+    src/audio_shim.cpp     # Sound class bodies forwarding to imuse_*
 )
 
 target_include_directories(thumbyscummby_engine PUBLIC include)
