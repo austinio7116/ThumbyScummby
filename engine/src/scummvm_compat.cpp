@@ -125,6 +125,15 @@ void scummvm_compat_room_change(int new_room, int room_resource,
         boxm_payload.size <= ScummEngine::BOX_MATRIX_BUF_SIZE) {
         memcpy(g_scumm->_boxMatrixBuf, boxm_payload.data, boxm_payload.size);
         g_scumm->_boxMatrixSize = (int)boxm_payload.size;
+    } else if (g_scumm->_boxDataSize > 0) {
+        // V4 SMALL_HEADER rooms typically don't ship a BOXM — scummvm
+        // expects a script to call createBoxMatrix() before the first
+        // getNextBox.  Our walking was always available immediately
+        // (legacy walkbox.cpp built the matrix at room load), so call
+        // createBoxMatrix() here too.  Same code path as o5_matrixOps
+        // case 4 — uses transcribed Actor::findPathTowards-friendly
+        // adjacency from BOXD geometry.
+        g_scumm->createBoxMatrix();
     }
 
     // Reset scale slots, then drive setScaleSlot from SCAL payload.
