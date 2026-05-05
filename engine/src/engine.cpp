@@ -33,6 +33,11 @@
 
 namespace tsb {
 
+// Forward declarations from scummvm_compat.cpp.
+extern void scummvm_compat_init();
+extern void scummvm_compat_room_change(int new_room, int room_resource,
+                                       Span boxd_payload, Span boxm_payload);
+
 // Static state (no heap allocation). Sized for the device target budget.
 //
 // Two-tier screen buffer (mirrors ScummVM's `_virtscr[kMainVirtScreen]`
@@ -1003,6 +1008,11 @@ bool engine_change_room(int new_room) {
         memset(&g.walkboxes, 0, sizeof(g.walkboxes));
     }
 
+    // Sync transcribed scummvm state.  Copies BOXD into g_scumm's writable
+    // buffer so transcribed boxes.cpp can mutate flags / scales.
+    scummvm_compat_room_change(new_room, new_room,
+                               g.room.boxd_payload, g.room.boxm_payload);
+
     // Reset scale slots, then parse the SCAL ('SA') chunk into them.
     // Mirrors ScummEngine::setupRoomSubBlocks (room.cpp:603-628). v4 layout:
     //   per slot (8 bytes): LE16 s1, y1, s2, y2.  Slot 0 is unused; slots
@@ -1203,6 +1213,10 @@ bool engine_init() {
     // MI1 VGA Floppy is v4 resource format — install v4-only opcodes
     // (ifState, ifNotState, pickupObjectOld, oldRoomEffect, saveLoadVars).
     vm_opcodes_v4_init();
+
+    // Pin transcribed-scumm `g_scumm` to our state.  Must run before any
+    // transcribed code reads VAR(...) / _scummVars / _game.
+    scummvm_compat_init();
 
     // Clear screen (palette index 0)
     memset(g.vscreen_main, 0, sizeof(g.vscreen_main));

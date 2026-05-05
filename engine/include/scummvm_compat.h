@@ -141,6 +141,13 @@ struct Point {
 
     bool operator==(const Point &o) const { return x == o.x && y == o.y; }
     bool operator!=(const Point &o) const { return !(*this == o); }
+
+    // Squared distance — matches scummvm-upstream/common/rect.h.
+    unsigned int sqrDist(const Point &p) const {
+        int dx = x - p.x;
+        int dy = y - p.y;
+        return (unsigned int)(dx * dx + dy * dy);
+    }
 };
 
 struct Rect {
@@ -202,7 +209,19 @@ namespace tsb {
 
 #define error(...)    tsb::scummvm_error(__VA_ARGS__)
 #define warning(...)  platform::log(__VA_ARGS__)
-#define debug(...)    platform::log(__VA_ARGS__)
+
+// scummvm's `debug(level, fmt, ...)` and `debugC(level, channel, fmt, ...)`:
+// drop the leading level/channel args before forwarding to platform::log.
+namespace tsb {
+inline void scummvm_debug_impl(int /*level*/, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    char buf[256];
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    platform::log("%s\n", buf);
+}
+}
+#define debug(...)    tsb::scummvm_debug_impl(__VA_ARGS__)
 #define debugC(...)   ((void)0)         // category-gated debug — silenced
 
 #define assertRange_argDescription_param const char *
@@ -211,3 +230,262 @@ namespace tsb {
 // scummvm uses `assert()` from <cassert>. Keep the standard-library one;
 // platform::log will pick up failure via abort handler.
 #include <assert.h>
+
+// ---------------------------------------------------------------------------
+// 6. Engine state declarations (ScummEngine + Actor scaffolding).
+//
+// These are HAND-WRITTEN class declarations that match the API surface
+// transcribed scummvm sources expect. Each class lists ONLY the data
+// members and method signatures used by transcribed code — NOT a full
+// scummvm class hierarchy. Members are appended as files are transcribed.
+//
+// Method bodies live in the transcribed .cpp files (e.g. ScummEngine::
+// getMaskFromBox is defined in src/boxes.cpp). Only members whose bodies
+// would duplicate transcribed logic — e.g. `enhancementEnabled` returning
+// a constant — get inlined here.
+// ---------------------------------------------------------------------------
+
+namespace tsb {
+
+// Game / platform / feature constants (subset — matches
+// scummvm-upstream/engines/scumm/scumm.h).
+enum GameId {
+    GID_MANIAC = 1,
+    GID_ZAK = 2,
+    GID_INDY3 = 3,
+    GID_LOOM = 4,
+    GID_PASS = 5,
+    GID_MONKEY_EGA = 6,
+    GID_MONKEY_VGA = 7,
+    GID_MONKEY = 8,
+    GID_MONKEY2 = 9,
+    GID_INDY4 = 10,
+    GID_TENTACLE = 11,
+    GID_SAMNMAX = 12,
+    GID_FT = 13,
+    GID_DIG = 14,
+    GID_CMI = 15,
+};
+
+enum GameFeatures {
+    GF_SMALL_HEADER          = 1 << 0,   // v3-v4
+    GF_OLD_BUNDLE            = 1 << 1,
+    GF_NEW_COSTUMES          = 1 << 6,
+    GF_FEW_LOCALS            = 1 << 8,
+    GF_AMIGA                 = 1 << 14,
+    GF_USE_KEY               = 1 << 16,
+};
+
+enum ResourceType {
+    rtRoom = 1,
+    rtScript,
+    rtCostume,
+    rtSound,
+    rtInventory,
+    rtCharset,
+    rtString,
+    rtVerb,
+    rtActorName,
+    rtBuffer,
+    rtScaleTable,
+    rtTemp,
+    rtFlObject,
+    rtMatrix,
+    rtBox,
+    rtObjectName,
+    rtRoomScripts,
+    rtRoomImage,
+    rtImage,
+    rtTalkie,
+    rtSpoolBuffer,
+    rtNumTypes,
+};
+
+enum {
+    kEnhMinorBugFixes        = 1,
+    kEnhGameBreakingBugFixes = 2,
+    kEnhGameRestoredFixes    = 3,
+    kEnhVisualChanges        = 4,
+    kEnhAudioChanges         = 5,
+    kEnhSubFmtCntChanges     = 6,
+    kEnhTextLocFixes         = 7,
+    kEnhGrp1                 = 8,
+    kEnhGrp2                 = 9,
+    kEnhGrp3                 = 10,
+    kEnhGrp4                 = 11,
+};
+
+// Platform constants moved into namespace Common at global scope (see
+// section 4 above) — extending here so transcribed code's
+// Common::kPlatformDOS resolves alongside Common::Point/Common::Rect.
+}  // close `namespace tsb` momentarily so we can extend ::Common
+namespace Common {
+    enum Platform {
+        kPlatformDOS         = 1,
+        kPlatformAmiga       = 2,
+        kPlatformAtariST     = 3,
+        kPlatformMacintosh   = 4,
+        kPlatformFMTowns     = 5,
+        kPlatformWindows     = 6,
+        kPlatformNES         = 7,
+        kPlatformC64         = 8,
+        kPlatformSegaCD      = 9,
+        kPlatformPCEngine    = 10,
+        kPlatform3DO         = 11,
+    };
+}
+namespace tsb {
+
+struct GameSettings {
+    uint8_t  version;       // 4 for MI1 VGA Floppy, 5 for MI2 etc.
+    uint8_t  id;            // GID_*
+    uint16_t platform;      // Common::kPlatform*
+    uint32_t features;      // GF_* bitmask
+    uint8_t  heversion;     // 0 for non-HE
+};
+
+// ---- ScaleSlot mirrors scummvm-upstream/scumm.h ScaleSlot. ----
+struct ScaleSlot {
+    int x1, y1, scale1;
+    int x2, y2, scale2;
+};
+
+// kOldInvalidBox / kInvalidBox — scummvm-upstream/actor.h.
+// kInvalidBox is for v3+ (255), kOldInvalidBox is for v0-v2 (0).
+constexpr int kOldInvalidBox = 0;
+// Defined in struct Actor below as static constexpr; also expose
+// at namespace scope for code that uses Actor::kInvalidBox.
+
+// Forward declarations.
+struct Actor;
+struct Box;             // packed struct defined in boxes.cpp
+struct BoxCoords {      // matches scummvm-upstream/boxes.h
+    Common::Point ul;
+    Common::Point ur;
+    Common::Point ll;
+    Common::Point lr;
+};
+
+// scummvm-upstream/scumm/boxes.h sizes (per-version).
+#define SIZEOF_BOX_V0 5
+#define SIZEOF_BOX_V2 8
+#define SIZEOF_BOX_V3 18
+#define SIZEOF_BOX    20
+#define SIZEOF_BOX_V8 52
+
+// scummvm-upstream/scumm/boxes.h BoxFlags.
+enum BoxFlags {
+    kBoxXFlip       = 0x08,
+    kBoxYFlip       = 0x10,
+    kBoxIgnoreScale = 0x20,
+    kBoxPlayerOnly  = 0x20,
+    kBoxLocked      = 0x40,
+    kBoxInvisible   = 0x80,
+};
+
+int getClosestPtOnBox(const BoxCoords &box, int x, int y, int16_t &outX, int16_t &outY);
+
+// scummvm-upstream/scumm/util.h.
+void assertRange(int min, int value, int max, const char *desc);
+int  newDirToOldDir(int dir);
+int  oldDirToNewDir(int dir);
+int  toSimpleDir(int dirType, int dir);
+int  fromSimpleDir(int dirType, int dir);
+int  normalizeAngle(int dirType, int angle);
+
+// scummvm Resource manager stub. createResource(rtMatrix, 1, size) is the
+// only path our v4 transcribed code currently exercises (createBoxMatrix
+// allocates BOXM there).  We back rtMatrix slot 1 with the same buffer
+// getResourceAddress(rtMatrix, 1) returns.
+class Resources {
+public:
+    uint8_t *createResource(int type, int idx, size_t size);
+};
+extern Resources g_resources;
+
+class ScummEngine {
+public:
+    ScummEngine();
+
+    // ---- Game state (set at engine init / on room change) ----
+    GameSettings _game;
+    int _currentRoom;
+    int _roomResource;
+
+    // ---- Scale slots: mirrors scummvm _scaleSlots[20] ----
+    ScaleSlot _scaleSlots[20];
+
+    // ---- Resource pool: scummvm has a real resource manager. We back
+    //      rtMatrix slot 1 (BOXM) and slot 2 (BOXD) with writable
+    //      buffers loaded from the room on each room change. ----
+    static constexpr size_t BOX_DATA_BUF_SIZE   = 1280;   // 64 * SIZEOF_BOX
+    static constexpr size_t BOX_MATRIX_BUF_SIZE = 2000;
+    uint8_t _boxDataBuf[BOX_DATA_BUF_SIZE];
+    int     _boxDataSize;       // bytes actually used
+    uint8_t _boxMatrixBuf[BOX_MATRIX_BUF_SIZE];
+    int     _boxMatrixSize;
+
+    // _extraBoxFlags is v7+ only — empty for our purposes.
+    int _extraBoxFlags[65];
+
+    // ---- ScummEngine API used by boxes.cpp / actor.cpp transcription.
+    //      Bodies live in the transcribed sources; declarations here. ----
+    uint8_t getMaskFromBox(int box);
+    void    setBoxFlags(int box, int val);
+    uint8_t getBoxFlags(int box);
+    void    setBoxScale(int box, int scale);
+    void    setBoxScaleSlot(int box, int slot);
+    int     getScale(int box, int x, int y);
+    int     getScaleFromSlot(int slot, int x, int y);
+    int     getBoxScale(int box);
+    void    convertScaleTableToScaleSlot(int slot);
+    void    setScaleSlot(int slot, int x1, int y1, int scale1, int x2, int y2, int scale2);
+    uint8_t getNumBoxes();
+    Box    *getBoxBaseAddr(int box);
+    bool    checkXYInBoxBounds(int boxnum, int x, int y);
+    BoxCoords getBoxCoordinates(int boxnum);
+    uint8_t *getBoxMatrixBaseAddr();
+    uint8_t *getBoxConnectionBase(int box);
+    int     getNextBox(uint8_t from, uint8_t to);
+    void    calcItineraryMatrix(uint8_t *itineraryMatrix, int num);
+    void    createBoxMatrix();
+    bool    areBoxesNeighbors(int box1nr, int box2nr);
+
+    // Stubbed: scummvm has `_res->getResourceAddress(type, idx)`. We
+    // forward only the slots transcribed code asks for; everything else
+    // returns nullptr for now. Implementation in scummvm_compat.cpp.
+    uint8_t *getResourceAddress(int type, int idx);
+    int      getResourceSize(int type, int idx);
+
+    // Enhancement gates: scummvm has a config-driven set of bug-fix
+    // toggles. For an embedded port we always enable canonical (= no
+    // workaround). Transcribed code stays untouched.
+    bool enhancementEnabled(int /*group*/) { return false; }
+
+    // VAR access — scummvm has VAR(x) macro that resolves to
+    // _scummVars[x]. Plumb through to our existing g_vm.globals.
+    int32_t *_scummVars;        // points at g_vm.globals[]
+
+    // scummvm: ScummEngine has `ResourceManager *_res;`.  We provide a
+    // tiny Resources facade — see Resources class above.
+    Resources *_res;
+};
+
+extern ScummEngine *g_scumm;
+
+// ---- Actor scaffolding (will grow as actor.cpp is transcribed). ----
+//
+// Defined as a *class* (matching scummvm) with public members so transcribed
+// code's `_pos.x = ...` / `a->_walkbox = ...` works unchanged.
+class Actor {
+public:
+    static constexpr int kInvalidBox = 0xFF;
+    // Members will be added file-by-file when actor.cpp / boxes.cpp need
+    // them.  At present transcribed boxes.cpp's Actor::findPathTowards is
+    // moved to actor.cpp transcription — so this class needs nothing yet.
+};
+
+}  // namespace tsb
+
+// Inline a scummvm `VAR(x)` macro that resolves to g_scumm->_scummVars[x].
+#define VAR(x) (tsb::g_scumm->_scummVars[(x)])
