@@ -174,6 +174,16 @@ void scummvm_compat_init() {
     g_scumm->_scummVars     = g_vm.globals;
     g_scumm->_res           = &g_resources;
 
+    // scummvm-upstream/scumm/scumm.cpp ScummEngine::initActors sets
+    // Actor::kInvalidBox per game version: kOldInvalidBox (255) for
+    // GF_SMALL_HEADER (v3, v4), kNewInvalidBox (0) for v5+.  We don't
+    // run initActors yet (it's inside scumm.cpp transcription, future
+    // step), so set it here to match what the transcribed boxes.cpp /
+    // actor.cpp expect for v4.
+    Actor::kInvalidBox = (g_scumm->_game.features & GF_SMALL_HEADER)
+        ? (byte)kOldInvalidBox     // 255
+        : (byte)kNewInvalidBox;    // 0
+
     // Wire actor pool (kMaxActors slots).  Transcribed walkActors / putActors
     // / showActors etc. iterate _actors[1.._numActors-1] (slot 0 unused).
     g_scumm->_numActors = ScummEngine::kMaxActors;
