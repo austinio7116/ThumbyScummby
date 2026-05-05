@@ -73,8 +73,9 @@ add_library(thumbyscummby_engine STATIC
     src/script.cpp         # VM core
     src/script_v4.cpp      # v4 saveLoadVars
     src/script_v5.cpp      # ~80 v5 opcodes
-    # src/scumm.cpp          # huge dep cone: clickteam, macresman, md5,
-                              # keymapper, gui/message, akos, file_nes
+    # src/scumm.cpp          # huge dep cone: GUIO_*, ScummMenuDialog, MacResExtractor,
+                              # ScummNESFile, ruScummPatcherTable, openPatch — ~30 stubs
+                              # Worth replacing with hand-written init in main.cpp.
     src/vars.cpp           # setupScummVars / resetScummVars
     src/input.cpp          # event handling
     src/cursor.cpp         # mouse cursor
