@@ -737,12 +737,21 @@ public:
     // v0 delay counters (scummvm-upstream/scumm.h:1589).  Always zero for v4.
     ScummEngine_v0_Delays _V0Delay = {};
 
-    // Stubbed gfx-usage trackers (v6+ optimisation).  Always false for v4.
-    bool testGfxAnyUsageBits(int /*strip*/) { return false; }
-    bool testGfxUsageBit(int /*strip*/, int /*bit*/) { return false; }
-    bool testGfxOtherUsageBits(int /*strip*/, int /*bit*/) { return false; }
-    void setGfxUsageBit(int /*strip*/, int /*bit*/) {}
-    void clearGfxUsageBit(int /*strip*/, int /*bit*/) {}
+    // gfx-usage trackers — implementations transcribed in usage_bits.cpp.
+    // scummvm-upstream/scumm/scumm.h:1555 sizes the array to 410*3.
+    uint32_t gfxUsageBits[410 * 3];
+    void setGfxUsageBit(int strip, int bit);
+    void clearGfxUsageBit(int strip, int bit);
+    bool testGfxAnyUsageBits(int strip);
+    bool testGfxObjectUsageBits(int strip);
+    bool testGfxOtherUsageBits(int strip, int bit);
+    bool testGfxUsageBit(int strip, int bit) {     // inline matches scumm.h
+        assert(strip >= 0 && strip < (int)(sizeof(gfxUsageBits) / sizeof(gfxUsageBits[0]) / 3));
+        assert(1 <= bit && bit <= 96);
+        bit--;
+        return (gfxUsageBits[3 * strip + bit / 32] & (1 << (bit % 32))) != 0;
+    }
+    void upgradeGfxUsageBits();
 
     // isValidActor declared here, defined in actor.cpp (transcribed
     // ScummEngine method body).  Removed inline because actor.cpp also

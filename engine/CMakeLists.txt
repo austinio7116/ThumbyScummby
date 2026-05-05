@@ -46,6 +46,7 @@ add_library(thumbyscummby_engine STATIC
     # (header swap, version-specific #if 0 blocks, namespace alias).
     src/util.cpp
     src/boxes.cpp
+    src/usage_bits.cpp
     # base-costume.cpp + costume.cpp transcribed but not built yet — their
     # bodies depend on gfx.cpp's full VirtScreen / Graphics::Surface
     # implementation (step 12).  Headers are active so transcribed actor.h

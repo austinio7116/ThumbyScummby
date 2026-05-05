@@ -20,8 +20,9 @@
  */
 
 
-#include "scumm/scumm.h"
-#include "scumm/usage_bits.h"
+// ThumbyScummby: replaces scummvm-private headers.
+#include "scummvm_compat.h"
+#include "usage_bits.h"
 
 namespace Scumm {
 
