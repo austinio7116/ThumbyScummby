@@ -785,23 +785,18 @@ static void walk_actor(Actor *a, const WalkboxGraph *wbg) {
     actor_calc_movement_factor(a, a->dest_x, a->dest_y);
 }
 
-// Mirrors ScummEngine::Actor::setupActorScale (actor.cpp:451-474).
-// For v4 the scale comes from the actor's current walkbox: if the
-// box.scale 16-bit value has bit 0x8000 set it would index a SCAL
-// slot (not loaded in v4), else it is the flat scale directly.
+// Direct port of Actor::setupActorScale (scummvm-upstream/actor.cpp:451-467).
+// _ignoreBoxes → no scale change. Otherwise call getScale(walkbox, x, y),
+// which itself follows the slot indirection if box.scale has bit 0x8000.
 static void setup_actor_scale(Actor *a, const WalkboxGraph *wbg) {
     if (a->flags & ACTOR_FLAG_IGNORE_BOX) return;
     if (!wbg || !wbg->valid) return;
     if (a->walkbox >= wbg->num_boxes) return;
-    uint16_t s = wbg->boxes[a->walkbox].scale;
-    if (s & 0x8000) {
-        // SCAL slot lookup — not modelled (v4 BOXM/SCAL absent in MI1).
-        return;
-    }
-    if (s == 0) return;
-    if (s > 0xFF) s = 0xFF;
-    a->scalex = (uint8_t)s;
-    a->scaley = (uint8_t)s;
+    int scale = engine_get_scale((int)a->walkbox, (int)a->x, (int)a->y);
+    if (scale > 255) scale = 255;
+    if (scale < 1)   scale = 1;
+    a->scalex = (uint8_t)scale;
+    a->scaley = (uint8_t)scale;
 }
 
 // Mirrors Actor::animateCostume (actor.cpp:2877-2895). Once per frame

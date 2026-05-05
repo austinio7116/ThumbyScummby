@@ -157,6 +157,14 @@ bool room_load(int room_id, const MasterIndex &master, Room *out) {
         out->boxd_payload = c.payload;
     }
 
+    // Scale slot table — 'SA' = SCAL. v4-7 stores per slot (LE16 s1, y1, s2, y2);
+    // ScummEngine::setupRoomSubBlocks (room.cpp:606-628) iterates these into
+    // _scaleSlots and getScale interpolates by Y. Empty if no SCAL chunk.
+    out->scal_payload = Span{nullptr, 0};
+    if (small_find(room_chunk.payload, stag::SA, &c)) {
+        out->scal_payload = c.payload;
+    }
+
     // CYCL ('CC' in v4) — palette cycle table. Mirrors
     // ScummEngine::initCycl, GF_SMALL_HEADER branch (palette.cpp:605-620):
     // 16 entries, each (BE16 delay, u8 start, u8 end). counter is set to

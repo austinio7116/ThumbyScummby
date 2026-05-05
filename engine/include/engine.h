@@ -136,6 +136,12 @@ const uint8_t *engine_zmask(int plane_idx);
 int            engine_zmask_count();
 int            engine_zmask_pitch();
 
+// Direct ports of ScummEngine::getScale / getScaleFromSlot / getBoxScale
+// (scummvm-upstream/boxes.cpp:247-323). Used by Actor::setupActorScale.
+int engine_get_scale(int box, int x, int y);
+int engine_get_scale_from_slot(int slot, int x, int y);
+int engine_get_box_scale(int box);
+
 // Rebuild z-mask buffers from the current room's z-plane chain plus the
 // OBIM z-planes of every visible object. Called automatically by
 // engine_change_room and op_drawObject — exposed here so the VM can

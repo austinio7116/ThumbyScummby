@@ -1885,8 +1885,9 @@ static void op_getActorWidth(VM *vm) {
 static void op_getActorScale(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
-    (void)act;
-    vm_write_var(vm, result_var, 0xFF);
+    Actor *a = actor_get(act);
+    // Mirrors scummvm o5_getActorScale → Actor::_scalex (script_v5.cpp).
+    vm_write_var(vm, result_var, a ? (int32_t)a->scalex : 0xFF);
 }
 
 static void op_getAnimCounter(VM *vm) {

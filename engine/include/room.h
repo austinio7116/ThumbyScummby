@@ -42,6 +42,7 @@ struct Room {
     Span     palette_payload;  // PA / SL / CL — whichever the room has
     Span     boxd_payload;     // BOXD (BX) — walkbox table
     Span     boxm_payload;     // BOXM ('BM' as a sibling, not the bitmap)
+    Span     scal_payload;     // SCAL (SA) — scale slot table (4 × 8 bytes)
 
     // Z-plane spans extracted from the BM chunk's chained-offset list.
     // First plane base = bm_smap_payload + LE32 at offset 0; each plane's

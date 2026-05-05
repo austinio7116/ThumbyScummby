@@ -110,6 +110,13 @@ struct EngineState {
     // Walkbox graph for the current room
     WalkboxGraph walkboxes;
 
+    // Scale slots — mirrors ScummEngine::_scaleSlots (scumm.h declares 20).
+    // Loaded from the room's SCAL ('SA') chunk on room change. Slots are
+    // 1-indexed (slot 0 reserved). Each slot stores a (y1,scale1)→(y2,scale2)
+    // linear interpolation over Y at x=0; getScaleFromSlot uses this.
+    struct ScaleSlot { int x1, y1, scale1, x2, y2, scale2; bool used; };
+    ScaleSlot scale_slots[20];
+
     // Display state
     platform::ScaleMode scale_mode;
     int      crop_x, crop_y;
@@ -645,6 +652,54 @@ WalkboxGraph *engine_active_walkbox_graph() {
     return g.walkboxes.valid ? &g.walkboxes : nullptr;
 }
 
+// Direct port of ScummEngine::getScaleFromSlot (scummvm-upstream/boxes.cpp:277).
+// Linear interpolation between (y1, scale1) and (y2, scale2) by Y, with
+// the result clamped to 1..255. v4 only varies along Y (x1 == x2 == 0).
+int engine_get_scale_from_slot(int slot, int x, int y) {
+    if (slot < 1 || slot > 19) return 255;
+    auto &s = g.scale_slots[slot];
+    if (!s.used) return 255;
+    if (s.y1 == s.y2 && s.x1 == s.x2) return 255;       // invalid slot
+    int scale, scaleX = 0, scaleY = 0;
+    if (s.y1 != s.y2) {
+        if (y < 0) y = 0;
+        scaleY = (s.scale2 - s.scale1) * (y - s.y1) / (s.y2 - s.y1) + s.scale1;
+    }
+    if (s.x1 == s.x2) {
+        scale = scaleY;
+    } else {
+        scaleX = (s.scale2 - s.scale1) * (x - s.x1) / (s.x2 - s.x1) + s.scale1;
+        if (s.y1 == s.y2) scale = scaleX;
+        else              scale = (scaleX + scaleY) / 2;
+    }
+    if (scale < 1) scale = 1;
+    else if (scale > 255) scale = 255;
+    return scale;
+}
+
+// Direct port of ScummEngine::getScale (scummvm-upstream/boxes.cpp:247).
+// For v4: read box.scale 16-bit field; if bit 0x8000 set, the low 15 bits
+// (plus 1) name a scale slot; else the value is the flat scale.
+int engine_get_scale(int box, int x, int y) {
+    if (!g.walkboxes.valid) return 255;
+    if (box < 0 || box >= g.walkboxes.num_boxes) return 255;
+    int scale = (int)g.walkboxes.boxes[box].scale;
+    int slot = 0;
+    if (scale & 0x8000) slot = (scale & 0x7FFF) + 1;
+    if (slot) scale = engine_get_scale_from_slot(slot, x, y);
+    if (scale < 1) scale = 1;
+    if (scale > 255) scale = 255;
+    return scale;
+}
+
+// Direct port of ScummEngine::getBoxScale — returns the raw 16-bit scale
+// field stored in the box record (used by drawActorCostume's _boxscale).
+int engine_get_box_scale(int box) {
+    if (!g.walkboxes.valid) return 255;
+    if (box < 0 || box >= g.walkboxes.num_boxes) return 255;
+    return (int)g.walkboxes.boxes[box].scale;
+}
+
 // Exposed to string.cpp — the text VirtScreen. Mirrors ScummVM
 // kTextVirtScreen: a transparent overlay drawn on top of the main
 // composite each frame. The sentinel for "no text here, fall through"
@@ -946,6 +1001,30 @@ bool engine_change_room(int new_room) {
         walkbox_load(g.room.boxd_payload, Span{nullptr, 0}, &g.walkboxes);
     } else {
         memset(&g.walkboxes, 0, sizeof(g.walkboxes));
+    }
+
+    // Reset scale slots, then parse the SCAL ('SA') chunk into them.
+    // Mirrors ScummEngine::setupRoomSubBlocks (room.cpp:603-628). v4 layout:
+    //   per slot (8 bytes): LE16 s1, y1, s2, y2.  Slot 0 is unused; slots
+    //   are 1-indexed.  We accept up to 19 slots (1..19) bounded by the
+    //   chunk size.
+    for (int i = 0; i < 20; i++) g.scale_slots[i].used = false;
+    if (!g.room.scal_payload.empty()) {
+        const uint8_t *p = g.room.scal_payload.data;
+        size_t avail = g.room.scal_payload.size;
+        int max_slots = (int)(avail / 8);
+        if (max_slots > 19) max_slots = 19;
+        for (int i = 1; i <= max_slots; i++, p += 8) {
+            uint16_t s1 = read_le16(p + 0);
+            uint16_t y1 = read_le16(p + 2);
+            uint16_t s2 = read_le16(p + 4);
+            uint16_t y2 = read_le16(p + 6);
+            if (s1 || y1 || s2 || y2) {
+                g.scale_slots[i].x1 = 0; g.scale_slots[i].y1 = (int)y1; g.scale_slots[i].scale1 = (int)s1;
+                g.scale_slots[i].x2 = 0; g.scale_slots[i].y2 = (int)y2; g.scale_slots[i].scale2 = (int)s2;
+                g.scale_slots[i].used = true;
+            }
+        }
     }
 
     // Camera + camera vars — mirror ScummEngine::startScene
