@@ -1,13 +1,25 @@
-// ThumbyScummby — SDL host main.
+// ThumbyScummby — SDL host main (post-OSystem-pivot).
 //
 // Usage: thumbyscummby <path-to-mi1-data-dir>
 //
-// Loads game data files (decrypts on read), initializes engine, runs main
-// loop until quit.
+// Lifecycle:
+//   1. tsb::platform_sdl::init       — SDL2 window, audio, input
+//   2. tsb::platform_sdl::load_data_dir — mmap + decrypt LFL/LEC chunks
+//   3. tsb::imuse_init               — DOSBox OPL2 + iMUSE sequencer
+//   4. construct OSystem_Thumby      — translates engine I/O to platform::*
+//   5. construct ScummEngine_v5      — the canonical scummvm interpreter
+//   6. eng->run()                    — blocking main loop (init + go)
+//
+// On quit, OSystem_Thumby::quit() flips a flag the engine's loop
+// checks via Engine::shouldQuit().
 
-#include "engine.h"
+#include "scummvm_compat.h"
+#include "scumm/scumm.h"
+#include "scumm/scumm_v5.h"
+#include "scumm/detection.h"
+#include "osystem_thumby.h"
 #include "platform.h"
-#include "types.h"
+#include "imuse.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,10 +27,9 @@
 
 #include <SDL2/SDL.h>
 
-// Forward declarations from platform_sdl.cpp
 namespace tsb::platform_sdl {
     bool init(int argc, char **argv);
-    bool main_loop_iter();   // returns false when quit requested
+    bool main_loop_iter();
     void shutdown();
     bool load_data_dir(const char *path);
 }
@@ -41,17 +52,35 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (!tsb::engine_init()) {
-        fprintf(stderr, "engine init failed\n");
-        tsb::platform_sdl::shutdown();
-        return 1;
+    // iMUSE / OPL2 stack — driven by audio callback, hooked into platform.
+    tsb::imuse_init();
+
+    // OSystem subclass that bridges to tsb::platform::*.  Lives on the stack
+    // for the duration of main(); engine holds a pointer.
+    tsb::OSystem_Thumby osys;
+    osys.initBackend();
+
+    // Construct the canonical engine.  MI1 VGA Floppy is GID_MONKEY (v4)
+    // — but our 100% transcribed runtime uses ScummEngine_v5 dispatch
+    // (v5 is the dominant SCUMM5 variant; our MI1 floppy works in v5
+    // codepath via DetectorResult.version=4 + DetectorResult.platform).
+    tsb::DetectorResult dr;
+    dr.game.id           = (int)tsb::GID_MONKEY;
+    dr.game.version      = 4;
+    dr.game.platform     = Common::kPlatformDOS;
+    dr.game.features     = tsb::GF_SMALL_HEADER | tsb::GF_USE_KEY;
+    dr.game.heversion    = 0;
+    dr.language          = Common::EN_ANY;
+    dr.extra             = "";
+
+    tsb::ScummEngine *eng = new tsb::ScummEngine_v5(&osys, dr);
+
+    Common::Error err = eng->run();
+    if (err.getCode() != Common::kNoError) {
+        fprintf(stderr, "engine run() returned error\n");
     }
 
-    while (tsb::platform_sdl::main_loop_iter()) {
-        if (!tsb::engine_tick()) break;
-    }
-
-    tsb::engine_shutdown();
+    delete eng;
     tsb::platform_sdl::shutdown();
     return 0;
 }

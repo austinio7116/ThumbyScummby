@@ -11,7 +11,7 @@
 #include "master_index.h"
 #include "room_legacy.h"
 #include "vm.h"
-#include "resource.h"
+#include "lfl_resource.h"
 #include "object_legacy.h"
 #include "scumm/actor.h"
 #include "actor_compat.h"

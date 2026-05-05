@@ -133,7 +133,7 @@ void actor_tick_all(const WalkboxGraph * /*wbg*/) {
 
 #include "costume_legacy.h"
 #include "walkbox.h"
-#include "resource.h"
+#include "lfl_resource.h"
 #include "engine.h"
 #include "object_legacy.h"        // for engine_get_class
 #include <stdlib.h>

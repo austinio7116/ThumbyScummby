@@ -22,7 +22,7 @@
 
 #include "vm.h"
 #include "platform.h"
-#include "resource.h"
+#include "lfl_resource.h"
 
 namespace tsb {
 

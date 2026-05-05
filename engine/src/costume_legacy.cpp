@@ -44,7 +44,7 @@
 
 #include "costume_legacy.h"
 #include "scumm/actor.h"
-#include "resource.h"
+#include "lfl_resource.h"
 #include "platform.h"
 
 #include <string.h>

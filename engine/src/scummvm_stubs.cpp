@@ -33,7 +33,59 @@ const byte macGammaCorrectionLookUp[256] = {
 };
 }
 
-// Empty body for ScummEngine_v6::palManipulateInit declared in v6 stub.
-// palette.cpp's transcribed definition would conflict if we provided one
-// here; instead the transcribed body is the only one (v6 is a parse-only
-// path).  This file just provides the data symbols above.
+// ----------------------------------------------------------------------
+// Link-stubs for upstream symbols whose .cpp files we don't compile.
+// These are the minimum symbols the linker needs; bodies are no-op or
+// trivial.
+// ----------------------------------------------------------------------
+
+#include "common/system.h"
+#include "common/mutex.h"
+#include "engines/engine.h"
+#include "common/config-manager.h"
+
+// scummvm-upstream/common/system.cpp: g_system = OSystem singleton ptr.
+// Set by main() after constructing OSystem_Thumby.
+OSystem *g_system = nullptr;
+
+// scummvm-upstream/common/mutex.cpp: Mutex bodies.  Single-threaded engine,
+// so all are no-op.
+namespace Common {
+Mutex::Mutex() : _mutex(nullptr) {}
+Mutex::~Mutex()                      {}
+bool Mutex::lock()                   { return true; }
+bool Mutex::unlock()                 { return true; }
+StackLock::StackLock(MutexInternal *m, const char *n) : _mutex(m), _mutexName(n) {}
+StackLock::StackLock(const Mutex &m, const char *n) : _mutex(m._mutex), _mutexName(n) {}
+StackLock::~StackLock()              {}
+bool StackLock::lock()               { return true; }
+bool StackLock::unlock()             { return true; }
+}
+
+// engines/engine.cpp: Engine class — most of it is already inline in
+// engine.h, but a few constants live in the cpp.
+const char *gScummVMVersion       = "ThumbyScummby-1.0";
+const char *gScummVMFullVersion   = "ThumbyScummby v1.0";
+const char *gScummVMFeatures      = "";
+
+// common/translation.cpp: Common::convertBiDiString (char arg only — no-op).
+namespace Common {
+class U32String;
+U32String convertBiDiString(const String &s, Language) { return U32String(); }
+U32String convertBiDiU32String(const U32String &s, bool) { return U32String(); }
+}
+
+// common/textconsole.cpp::warning is provided by upstream's textconsole.cpp
+// already linked.  Same with debug/error.
+
+// common/U32String missing operator+= (provided by str-enc.cpp which we
+// don't compile).  Trivial impl: append nothing — text we don't render
+// anyway.
+namespace Common {
+U32String &U32String::operator+=(char32_t /*c*/) {
+    // For our headless v4-DOS path this is only hit through str-enc paths
+    // that never run.  No-op is safe for runtime, may need real impl if
+    // GUI text rendering is exercised.
+    return *this;
+}
+}

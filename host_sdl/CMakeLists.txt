@@ -19,3 +19,14 @@ target_compile_options(thumbyscummby PRIVATE
     -fno-exceptions -fno-rtti
     -g -O2
 )
+
+# --gc-sections drops unused functions/data based on the
+# -ffunction-sections / -fdata-sections compile flags set on
+# thumbyscummby_engine.  This is critical for fitting on RP2350 — the
+# transcribed scummvm code drags in v6/v7/v8/HE/Mac/Towns/NES/C64 paths
+# that are never reached from our v4/v5 entry point, but their symbols
+# would otherwise need link-stubs.
+target_link_options(thumbyscummby PRIVATE
+    -Wl,--gc-sections
+    -Wl,--print-gc-sections    # log what got stripped (turn off later)
+)

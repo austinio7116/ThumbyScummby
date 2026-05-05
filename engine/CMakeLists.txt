@@ -30,7 +30,7 @@ add_library(thumbyscummby_engine STATIC
     src/small_chunk.cpp
     src/master_index.cpp
     src/smap.cpp
-    src/resource.cpp
+    src/lfl_resource.cpp
 
     # ---- Group 2: scummvm common/graphics ----
     src/common/str.cpp

@@ -107,24 +107,8 @@ class TimerManager;
 #include "engines/savestate.h"   // SaveStateDescriptor / SaveStateList
 #include "engines/metaengine.h"  // MetaEngine — full def for getMetaEngine() use
 
-// engines/metaengine.h: DetectorResult.  scumm.h's ScummEngine ctor takes
-// `(OSystem *, const DetectorResult &)`.  Real scummvm fills DetectorResult
-// from the detection pass; we synthesise one in OSystem_Thumby init.
-namespace Scumm {
-struct DetectorResult {
-    int gameId = 0;
-    int features = 0;
-    int platform = 0;
-    int version = 4;
-    int variant = 0;
-    int language = 0;
-    Common::Path fsPath;
-    Common::String md5;
-    Common::String extra;
-    int  midi = 0;
-    bool guiOptions = false;
-};
-}
+// DetectorResult comes from scummvm-upstream/scumm/detection.h via
+// scumm/scumm.h's include cone.  We synthesise an instance in main().
 
 // ---------------------------------------------------------------------------
 // 5. Namespace token rewrite — transcribed scummvm code opens

@@ -81,6 +81,8 @@ public:
     void quit() override { _quitting = true; }
     void logMessage(LogMessageType::Type type, const char *message) override;
     void setWindowCaption(const Common::U32String &caption) override {}
+    void displayMessageOnOSD(const Common::U32String &) override {}
+    void displayActivityIconOnOSD(const Graphics::Surface *) override {}
 
 private:
     int _w = 320;
