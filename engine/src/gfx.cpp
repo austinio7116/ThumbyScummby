@@ -21,8 +21,8 @@
 
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
-#include "actor.h"
-#include "gfx.h"
+#include "scumm/actor.h"
+#include "scumm/gfx.h"
 #include "scumm/util.h"
 
 #ifdef USE_ARM_GFX_ASM

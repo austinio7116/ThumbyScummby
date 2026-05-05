@@ -13,7 +13,7 @@
 #include "vm.h"
 #include "resource.h"
 #include "object_legacy.h"
-#include "actor.h"
+#include "scumm/actor.h"
 #include "actor_compat.h"
 #include "walkbox.h"
 #include "smap.h"

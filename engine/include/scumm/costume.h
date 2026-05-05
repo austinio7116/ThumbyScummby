@@ -22,7 +22,7 @@
 #ifndef SCUMM_COSTUME_H
 #define SCUMM_COSTUME_H
 
-#include "base-costume.h"
+#include "scumm/base-costume.h"
 
 namespace Scumm {
 class ClassicCostumeLoader : public BaseCostumeLoader {

@@ -24,7 +24,7 @@
 
 // ThumbyScummby: replaces common/scummsys.h, scumm/actor.h.
 #include "scummvm_compat.h"
-#include "actor.h"
+#include "scumm/actor.h"
 
 namespace Scumm {
 

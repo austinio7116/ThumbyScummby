@@ -14,7 +14,7 @@
 #pragma once
 
 #include "scummvm_compat.h"
-#include "actor.h"
+#include "scumm/actor.h"
 
 namespace tsb {
 

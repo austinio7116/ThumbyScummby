@@ -43,7 +43,7 @@
 // inner loop matches base-costume.cpp:286-421.
 
 #include "costume_legacy.h"
-#include "actor.h"
+#include "scumm/actor.h"
 #include "resource.h"
 #include "platform.h"
 

@@ -8,11 +8,11 @@
 // resource-address forwarding, and the room-change sync.
 
 #include "scummvm_compat.h"
-#include "actor.h"
+#include "scumm/actor.h"
 #include "engine.h"
 #include "vm.h"
 #include "object_legacy.h"
-#include "costume.h"
+#include "scumm/costume.h"
 
 #include <new>          // placement-new for Actor pool
 

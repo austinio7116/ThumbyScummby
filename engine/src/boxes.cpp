@@ -25,7 +25,7 @@
 // scummvm_compat.h provides Box / BoxCoords / ScummEngine et al;
 // actor.h is needed for Actor::kInvalidBox / kOldInvalidBox / kNewInvalidBox.
 #include "scummvm_compat.h"
-#include "actor.h"
+#include "scumm/actor.h"
 
 namespace Scumm {
 

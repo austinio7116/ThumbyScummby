@@ -22,7 +22,7 @@
 
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
-#include "usage_bits.h"
+#include "scumm/usage_bits.h"
 
 namespace Scumm {
 

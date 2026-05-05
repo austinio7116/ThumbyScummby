@@ -29,7 +29,7 @@
 #include "vm.h"
 #include "platform.h"
 #include "charset_legacy.h"
-#include "actor.h"
+#include "scumm/actor.h"
 #include "actor_compat.h"
 #include "engine.h"
 

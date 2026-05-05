@@ -21,8 +21,8 @@
 
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
-#include "actor.h"
-#include "verbs.h"
+#include "scumm/actor.h"
+#include "scumm/verbs.h"
 
 namespace Scumm {
 

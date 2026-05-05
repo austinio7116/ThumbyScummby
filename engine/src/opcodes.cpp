@@ -25,7 +25,7 @@
 #include "vm.h"
 #include "platform.h"
 #include "resource.h"
-#include "actor.h"
+#include "scumm/actor.h"
 #include "actor_compat.h"
 #include "imuse.h"
 #include "engine.h"

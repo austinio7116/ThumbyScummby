@@ -5,7 +5,7 @@
 
 #include "actor_compat.h"
 #include "scummvm_compat.h"
-#include "actor.h"
+#include "scumm/actor.h"
 
 namespace tsb {
 

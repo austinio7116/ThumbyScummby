@@ -21,7 +21,7 @@
 
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
-#include "charset.h"
+#include "scumm/charset.h"
 
 namespace Scumm {
 

@@ -22,7 +22,7 @@
 
 // ThumbyScummby: replaces scumm/base-costume.h, scumm/util.h.
 #include "scummvm_compat.h"
-#include "base-costume.h"
+#include "scumm/base-costume.h"
 
 namespace Scumm {
 

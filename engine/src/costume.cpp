@@ -23,8 +23,8 @@
 // ThumbyScummby: replaces scumm/scumm.h, scumm/actor.h, scumm/costume.h,
 // scumm/sound.h, scumm/util.h.
 #include "scummvm_compat.h"
-#include "actor.h"
-#include "costume.h"
+#include "scumm/actor.h"
+#include "scumm/costume.h"
 
 namespace Scumm {
 

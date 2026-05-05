@@ -23,7 +23,7 @@
 #define SCUMM_SCRIPT_V4_H
 
 // ThumbyScummby: replaces scumm/scumm_v5.h.
-#include "scumm_v5.h"
+#include "scumm/scumm_v5.h"
 
 namespace Scumm {
 
