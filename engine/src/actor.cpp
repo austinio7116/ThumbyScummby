@@ -24,6 +24,8 @@
 // part of our scope; method bodies that touch them are wrapped in #if 0.
 #include "scummvm_compat.h"
 #include "actor.h"
+#include "base-costume.h"     // BaseCostumeLoader / Renderer (transcribed)
+#include "costume.h"          // ClassicCostumeLoader / Renderer (transcribed)
 
 #include <math.h>      // atan2, M_PI used in calcMovementFactor
 #ifndef M_PI

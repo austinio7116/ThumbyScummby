@@ -442,12 +442,54 @@ struct ScummEngine_v0_Delays {
 };
 
 // scummvm-upstream/scumm/scumm.h: VirtScreenNumber — the four virtscreens.
-// Used by transcribed actor.cpp drawActorCostume (we #if 0 those paths).
 enum VirtScreenNumber {
     kMainVirtScreen = 0,
     kTextVirtScreen = 1,
     kVerbVirtScreen = 2,
     kUnkVirtScreen  = 3,
+};
+
+}  // close `namespace tsb` for Graphics namespace at global scope
+
+// scummvm-upstream/graphics/surface.h: Graphics::Surface.  Minimal stub
+// providing the API surface base-costume.h declarations need.  Real impl
+// lands at step 12 (gfx.cpp + common/surface.cpp).
+namespace Graphics {
+
+struct Surface {
+    int16_t   w;
+    int16_t   h;
+    int16_t   pitch;
+    uint8_t  *_pixels;
+    int       format;        // pixel format placeholder
+
+    Surface() : w(0), h(0), pitch(0), _pixels(nullptr), format(0) {}
+
+    uint8_t *getPixels()             { return _pixels; }
+    const uint8_t *getPixels() const { return _pixels; }
+    void setPixels(uint8_t *p)       { _pixels = p; }
+    uint8_t *getBasePtr(int x, int y) const {
+        return _pixels + y * pitch + x;
+    }
+};
+
+}  // namespace Graphics
+
+namespace tsb {
+
+// scummvm-upstream/scumm/gfx.h: VirtScreen.  Minimal stub — extends
+// Graphics::Surface with xstart, topline, hasTwoBuffers, backBuf.
+struct VirtScreen : public Graphics::Surface {
+    int16_t topline;
+    int16_t xstart;
+    int     number;
+    bool    hasTwoBuffers;
+    uint8_t *backBuf;
+
+    VirtScreen() : topline(0), xstart(0), number(0),
+                   hasTwoBuffers(false), backBuf(nullptr) {}
+
+    uint8_t *getBackPixels() { return backBuf; }
 };
 
 // scummvm-upstream/scumm/object.h: ObjectClass.  Copied verbatim until
@@ -748,33 +790,8 @@ extern ScummEngine *g_scumm;
 // replaced by the canonical ones.
 // ---------------------------------------------------------------------------
 
-// scummvm-upstream/scumm/base-costume.h: BaseCostumeLoader.  Adapter
-// version — bodies in scummvm_compat.cpp forward to our existing
-// costume_decode_data() / costume_increase_anims().
-class BaseCostumeLoader {
-public:
-    virtual ~BaseCostumeLoader() {}
-    virtual void loadCostume(int id) = 0;
-    virtual void costumeDecodeData(Actor *a, int frame, uint usemask) = 0;
-    virtual byte increaseAnims(Actor *a) = 0;
-    // hasManyDirections — used by Actor::startWalkAnim (v7 path).
-    // v3-v6 return false.  Verbatim from scummvm-upstream/base-costume.h.
-    virtual bool hasManyDirections(int /*costume*/) { return false; }
-};
-
-// scummvm-upstream/scumm/base-costume.h: BaseCostumeRenderer.  Stub —
-// the actor.cpp paths that touch it (drawActorCostume, prepareDrawActor)
-// are #if 0'd until costume.cpp is transcribed.
-class BaseCostumeRenderer {
-public:
-    virtual ~BaseCostumeRenderer() {}
-    int _scaleX = 0, _scaleY = 0;
-    int _shadowMode = 0;
-    int _actorX = 0, _actorY = 0;
-    int _x = 0, _y = 0;
-    int _drawTop = 0, _drawBottom = 0;
-    Actor *_actorID = nullptr;
-};
+// BaseCostumeLoader / BaseCostumeRenderer transcribed at step 4
+// (engine/include/base-costume.h).  Stubs removed.
 
 // scummvm-upstream/scumm/charset.h: CharsetRenderer.  Transcribed
 // actor.cpp touches `_charset->_str.left/right/top/bottom`. The full

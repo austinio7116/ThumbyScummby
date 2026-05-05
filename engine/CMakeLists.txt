@@ -15,7 +15,11 @@ add_library(thumbyscummby_engine STATIC
     src/opcodes_examples.cpp
     src/opcodes_v4.cpp
     src/actor.cpp
-    src/costume.cpp
+    # costume.cpp is now the transcribed scummvm version — see deferred
+    # comment in transcribed-from-scummvm-upstream block below.  The
+    # legacy ByleRLE costume parser/renderer lives at costume_legacy.cpp
+    # until step 12 lights up scummvm's drawCostume + Surface stack.
+    src/costume_legacy.cpp
     src/walkbox.cpp
     src/object.cpp
     src/charset.cpp
@@ -36,6 +40,11 @@ add_library(thumbyscummby_engine STATIC
     # (header swap, version-specific #if 0 blocks, namespace alias).
     src/util.cpp
     src/boxes.cpp
+    # base-costume.cpp + costume.cpp transcribed but not built yet — their
+    # bodies depend on gfx.cpp's full VirtScreen / Graphics::Surface
+    # implementation (step 12).  Headers are active so transcribed actor.h
+    # method signatures resolve; legacy actor_render_all keeps drawing
+    # for now.
 )
 
 target_include_directories(thumbyscummby_engine PUBLIC include)

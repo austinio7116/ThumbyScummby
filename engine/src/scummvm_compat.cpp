@@ -24,11 +24,12 @@ namespace tsb {
 // transcribed.  Each method is one line.
 class ClassicCostumeLoader_Adapter : public BaseCostumeLoader {
 public:
+    ClassicCostumeLoader_Adapter() : BaseCostumeLoader(g_scumm) {}
     void loadCostume(int /*id*/) override { /* costume_parse is per-call; no-op here */ }
     void costumeDecodeData(Actor *a, int frame, uint usemask) override;
-    byte increaseAnims(Actor *a) override;
+    bool increaseAnims(Actor *a) override;     // matches new BaseCostumeLoader
 };
-static ClassicCostumeLoader_Adapter g_costume_loader_adapter;
+static ClassicCostumeLoader_Adapter *g_costume_loader_adapter;
 static CharsetRenderer               g_charset_stub;
 static Sound                         g_sound_stub;
 
@@ -194,7 +195,9 @@ void scummvm_compat_init() {
     }
 
     // Subsystem stubs.
-    g_scumm->_costumeLoader = &g_costume_loader_adapter;
+    static ClassicCostumeLoader_Adapter loader_instance;
+    g_costume_loader_adapter = &loader_instance;
+    g_scumm->_costumeLoader = g_costume_loader_adapter;
     g_scumm->_charset       = &g_charset_stub;
     g_scumm->_sound         = &g_sound_stub;
 
@@ -341,9 +344,9 @@ void ClassicCostumeLoader_Adapter::costumeDecodeData(Actor *a, int frame, uint u
     costume_decode_data(a, frame, usemask);
 }
 
-byte ClassicCostumeLoader_Adapter::increaseAnims(Actor *a) {
+bool ClassicCostumeLoader_Adapter::increaseAnims(Actor *a) {
     extern bool costume_increase_anims(Actor *a);
-    return costume_increase_anims(a) ? 1 : 0;
+    return costume_increase_anims(a);
 }
 
 }  // namespace tsb

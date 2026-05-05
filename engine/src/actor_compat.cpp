@@ -131,7 +131,7 @@ void actor_tick_all(const WalkboxGraph * /*wbg*/) {
 // until costume.cpp + gfx.cpp transcriptions land at steps 4/12.
 }  // namespace tsb (close briefly to import legacy headers)
 
-#include "costume.h"
+#include "costume_legacy.h"
 #include "walkbox.h"
 #include "resource.h"
 #include "engine.h"
