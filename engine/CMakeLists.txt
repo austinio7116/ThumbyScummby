@@ -62,6 +62,7 @@ add_library(thumbyscummby_engine STATIC
     # The following files have additional cone deps (Graphics::Font /
     # MacGui::getFontByScummId / ScummFile / VirtualMachineState members
     # that aren't yet stubbed).  Activated one-by-one as stubs land.
+    # src/vars.cpp           # pulls scumm/{music,scumm_v0,scumm_v8}.h, he/* — many subclasses
     # src/charset.cpp        # needs Graphics::Font + MacGui::getFontByScummId
     # src/string.cpp         # depends on charset
     # src/object.cpp         # needs full ObjectData ctor + many ScummEngine methods
