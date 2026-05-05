@@ -188,6 +188,44 @@ struct Rect {
     }
 };
 
+// scummvm-upstream/common/serializer.h — stub. Save/load not supported;
+// saveLoadWithSerializer is non-pure (default empty body) so Actor /
+// ScummEngine subclasses don't need to provide one.
+class Serializer;
+class Serializable {
+public:
+    virtual ~Serializable() {}
+    virtual void saveLoadWithSerializer(Serializer &) {}
+};
+
+// scummvm-upstream/common/array.h — minimal stub.
+template<typename T>
+class Array {
+public:
+    Array() : _data(nullptr), _size(0), _cap(0) {}
+    ~Array() { free(_data); }
+    void push_back(const T &v) {
+        if (_size == _cap) {
+            _cap = _cap ? _cap * 2 : 8;
+            _data = (T *)realloc(_data, _cap * sizeof(T));
+        }
+        _data[_size++] = v;
+    }
+    T &operator[](size_t i) { return _data[i]; }
+    const T &operator[](size_t i) const { return _data[i]; }
+    size_t size() const { return _size; }
+    bool empty() const { return _size == 0; }
+    void clear() { _size = 0; }
+    T *begin() { return _data; }
+    T *end()   { return _data + _size; }
+private:
+    T *_data;
+    size_t _size, _cap;
+};
+
+// Common::kRender* aliases — added later (after the enum is declared in
+// namespace tsb).  See bottom of file just before the closing brace.
+
 }  // namespace Common
 
 // ---------------------------------------------------------------------------
@@ -267,11 +305,14 @@ enum GameId {
     GID_CMI = 15,
 };
 
+// scummvm-upstream/scumm/scumm.h: GameFeatures. Copied verbatim until
+// scumm.h is transcribed.
 enum GameFeatures {
     GF_SMALL_HEADER          = 1 << 0,   // v3-v4
     GF_OLD_BUNDLE            = 1 << 1,
     GF_NEW_COSTUMES          = 1 << 6,
     GF_FEW_LOCALS            = 1 << 8,
+    GF_DEMO                  = 1 << 10,
     GF_AMIGA                 = 1 << 14,
     GF_USE_KEY               = 1 << 16,
 };
@@ -350,15 +391,76 @@ struct ScaleSlot {
     int x2, y2, scale2;
 };
 
-// kOldInvalidBox / kInvalidBox — scummvm-upstream/actor.h.
-// kInvalidBox is for v3+ (255), kOldInvalidBox is for v0-v2 (0).
-constexpr int kOldInvalidBox = 0;
-// Defined in struct Actor below as static constexpr; also expose
-// at namespace scope for code that uses Actor::kInvalidBox.
-
-// Forward declarations.
-struct Actor;
+// kOldInvalidBox / kNewInvalidBox / Actor / CostumeData — declared in
+// actor.h (transcribed scummvm-upstream/scumm/actor.h).
+class  Actor;
 struct Box;             // packed struct defined in boxes.cpp
+class  BaseCostumeRenderer;     // scumm/base-costume.h — fwd-decl only.
+class  BaseCostumeLoader;       // scumm/base-costume.h — fwd-decl only.
+class  CharsetRenderer;         // scumm/charset.h — minimal stub below.
+class  Sound;                   // scumm/sound.h — minimal stub below.
+
+// scummvm-upstream/scumm/actor.h: HE100_CHORE_REDIRECT_*. Verbatim.
+#define HE100_CHORE_REDIRECT_INIT       1056
+#define HE100_CHORE_REDIRECT_WALK       1057
+#define HE100_CHORE_REDIRECT_STAND      1058
+#define HE100_CHORE_REDIRECT_START_TALK 1059
+#define HE100_CHORE_REDIRECT_STOP_TALK  1060
+
+// scummvm-upstream/scumm/scumm.h: NUM_SCRIPT_LOCAL — # of int args a
+// runScript call can take.
+#define NUM_SCRIPT_LOCAL 26
+
+// scummvm-upstream/common/system.h: render mode constants.  v4 always
+// runs the default VGA path; CGA / EGA / Hercules are detection paths.
+enum RenderMode {
+    kRenderDefault = 0,
+    kRenderEGA,
+    kRenderCGA,
+    kRenderHercG,
+    kRenderHercA,
+    kRenderAmiga,
+    kRenderFMTowns,
+    kRenderPC9821,
+    kRenderPC9801,
+    kRenderApple2GS,
+    kRenderMacintosh,
+    kRenderMacintoshBW,
+    kRenderCGA_BW,
+    kRenderCGAComp,
+    kRenderAtariST,
+    kRenderVGA,
+};
+
+// scummvm-upstream/scumm/scumm.h:201-208 — verbatim.
+struct ScummEngine_v0_Delays {
+    bool _screenScroll;
+    uint _objectRedrawCount;
+    uint _objectStripRedrawCount;
+    uint _actorRedrawCount;
+    uint _actorLimbRedrawDrawCount;
+};
+
+// scummvm-upstream/scumm/scumm.h: VirtScreenNumber — the four virtscreens.
+// Used by transcribed actor.cpp drawActorCostume (we #if 0 those paths).
+enum VirtScreenNumber {
+    kMainVirtScreen = 0,
+    kTextVirtScreen = 1,
+    kVerbVirtScreen = 2,
+    kUnkVirtScreen  = 3,
+};
+
+// scummvm-upstream/scumm/object.h: ObjectClass.  Copied verbatim until
+// object.h is transcribed.
+enum ObjectClass {
+    kObjectClassNeverClip   = 20,
+    kObjectClassAlwaysClip  = 21,
+    kObjectClassIgnoreBoxes = 22,
+    kObjectClassYFlip       = 29,
+    kObjectClassXFlip       = 30,
+    kObjectClassPlayer      = 31,
+    kObjectClassUntouchable = 32,
+};
 struct BoxCoords {      // matches scummvm-upstream/boxes.h
     Common::Point ul;
     Common::Point ur;
@@ -469,23 +571,245 @@ public:
     // scummvm: ScummEngine has `ResourceManager *_res;`.  We provide a
     // tiny Resources facade — see Resources class above.
     Resources *_res;
+
+    // VAR_* indices — scummvm declares these as `byte VAR_X = 0xFF;`
+    // members of ScummEngine, populated per-game in setupScummVars.
+    // We populate v4-MI1 indices in scummvm_compat_init.  Copied
+    // verbatim from scummvm-upstream/scumm/scumm.h:1804-1838+.
+    byte VAR_KEYPRESS = 0xFF;
+    byte VAR_SYNC = 0xFF;
+    byte VAR_EGO = 0xFF;
+    byte VAR_CAMERA_POS_X = 0xFF;
+    byte VAR_HAVE_MSG = 0xFF;
+    byte VAR_ROOM = 0xFF;
+    byte VAR_OVERRIDE = 0xFF;
+    byte VAR_TMR_1 = 0xFF;
+    byte VAR_TMR_2 = 0xFF;
+    byte VAR_TMR_3 = 0xFF;
+    byte VAR_MUSIC_TIMER = 0xFF;
+    byte VAR_ACTOR_RANGE_MIN = 0xFF;
+    byte VAR_ACTOR_RANGE_MAX = 0xFF;
+    byte VAR_CAMERA_MIN_X = 0xFF;
+    byte VAR_CAMERA_MAX_X = 0xFF;
+    byte VAR_TIMER_NEXT = 0xFF;
+    byte VAR_VIRT_MOUSE_X = 0xFF;
+    byte VAR_VIRT_MOUSE_Y = 0xFF;
+    byte VAR_ROOM_RESOURCE = 0xFF;
+    byte VAR_LAST_SOUND = 0xFF;
+    byte VAR_CUTSCENEEXIT_KEY = 0xFF;
+    byte VAR_TALK_ACTOR = 0xFF;
+    byte VAR_CAMERA_FAST_X = 0xFF;
+    byte VAR_SCROLL_SCRIPT = 0xFF;
+    byte VAR_ENTRY_SCRIPT = 0xFF;
+    byte VAR_ENTRY_SCRIPT2 = 0xFF;
+    byte VAR_EXIT_SCRIPT = 0xFF;
+    byte VAR_EXIT_SCRIPT2 = 0xFF;
+    byte VAR_VERB_SCRIPT = 0xFF;
+    byte VAR_SENTENCE_SCRIPT = 0xFF;
+    byte VAR_INVENTORY_SCRIPT = 0xFF;
+    byte VAR_CUTSCENE_START_SCRIPT = 0xFF;
+    byte VAR_CUTSCENE_END_SCRIPT = 0xFF;
+    byte VAR_CHARINC = 0xFF;
+    byte VAR_WALKTO_OBJ = 0xFF;
+    byte VAR_DEBUGMODE = 0xFF;
+    byte VAR_HEAPSPACE = 0xFF;
+    byte VAR_RESTART_KEY = 0xFF;
+    byte VAR_PAUSE_KEY = 0xFF;
+    byte VAR_MAINMENU_KEY = 0xFF;
+    byte VAR_SAVELOAD_SCRIPT = 0xFF;
+    byte VAR_SAVELOAD_SCRIPT2 = 0xFF;
+    byte VAR_SOUNDCARD = 0xFF;
+    byte VAR_VIDEOMODE = 0xFF;
+    byte VAR_SOUNDPARAM = 0xFF;
+    byte VAR_SOUNDPARAM2 = 0xFF;
+    byte VAR_SOUNDPARAM3 = 0xFF;
+    byte VAR_INPUTMODE = 0xFF;
+    byte VAR_MEMORY_PERFORMANCE = 0xFF;
+    byte VAR_VIDEO_PERFORMANCE = 0xFF;
+    byte VAR_GAME_LOADED = 0xFF;
+    byte VAR_FIXEDDISK = 0xFF;
+    byte VAR_CURSORSTATE = 0xFF;
+    byte VAR_USERPUT = 0xFF;
+    byte VAR_SOUNDRESULT = 0xFF;
+    byte VAR_TALKSTOP_KEY = 0xFF;
+    byte VAR_FADE_DELAY = 0xFF;
+    byte VAR_NOSUBTITLES = 0xFF;
+    byte VAR_SOUNDPARAM3_2 = 0xFF;
+    byte VAR_SAVELOADDIALOG_SCRIPT = 0xFF;
+    byte VAR_SAVELOADDIALOG_SCRIPT2 = 0xFF;
+    byte VAR_PRE_SAVELOAD_SCRIPT = 0xFF;
+    byte VAR_POST_SAVELOAD_SCRIPT = 0xFF;
+    byte VAR_BOOT_PARAM = 0xFF;
+    byte VAR_DEFAULT_SCRIPT_PRIORITY = 0xFF;
+    byte VAR_SKIP_RESET_TALK_ACTOR = 0xFF;
+    byte VAR_ALWAYS_REDRAW_ACTORS = 0xFF;       // v8/HE only — stays 0xFF for v4
+    byte VAR_CUSTOMSCALETABLE = 0xFF;           // AKOS scale (v6+) — 0xFF for v4
+
+    // ---- Actor pool (scummvm-upstream/scumm/scumm.h:815-816).  We use a
+    // fixed-size pool of 16 actors instead of scummvm's heap-allocated
+    // `Actor **` to keep the embedded RAM budget tight. ----
+    static constexpr int kMaxActors = 16;
+    Actor *_actors[kMaxActors];
+    Actor *_sortedActors[kMaxActors];
+    int _numActors;
+
+    // ---- Per-object class bitfield. scummvm: `uint32 *_classData;`. ----
+    // 1024 matches NUM_GLOBAL_OBJECTS in engine.h (avoids include cycle).
+    uint32_t _classData[1024];
+
+    // ---- Misc engine state used by transcribed actor.cpp. ----
+    bool   _egoPositioned;
+    bool   _useTalkAnims;
+    int    _talkDelay;
+    int    _haveActorSpeechMsg;
+    int    _useCJKMode;
+
+    // ---- Subsystem pointers. Stub class definitions live below.
+    // _costumeLoader::costumeDecodeData adapts to our existing
+    // costume_decode_data() until costume.cpp is transcribed. ----
+    BaseCostumeLoader   *_costumeLoader;
+    BaseCostumeRenderer *_costumeRenderer;
+    CharsetRenderer     *_charset;
+    Sound               *_sound;
+
+    // ---- Misc engine flags / state used by transcribed actor.cpp.
+    // Verbatim from scummvm-upstream/scumm/scumm.h. ----
+    int  _currentScript = 0xFF;
+    byte _fastMode = 0;
+    int  _screenStartStrip = 0;
+    bool _fullRedraw = false;
+    void *_gdi = nullptr;       // CharsetRendererCommon / Gdi — stub ptr
+    void *_virtscr = nullptr;   // VirtScreen array — stub ptr
+
+    // Shadow palette — already maintained by our existing engine.cpp via
+    // a separate global; keep a parallel pointer here for transcribed code.
+    // Bound at engine init (scummvm_compat_init).
+    byte *_shadowPalette = nullptr;
+
+    // Render mode (DOS VGA / CGA / EGA / Amiga / Hercules / FMTowns / etc).
+    // Always kRenderDefault for our DOS targets.
+    int _renderMode = kRenderDefault;
+    byte *_currentPalette = nullptr;     // 256*3 RGB triplets
+    byte *_darkenPalette  = nullptr;     // optional darkened mirror
+
+    // v0 delay counters (scummvm-upstream/scumm.h:1589).  Always zero for v4.
+    ScummEngine_v0_Delays _V0Delay = {};
+
+    // Stubbed gfx-usage trackers (v6+ optimisation).  Always false for v4.
+    bool testGfxAnyUsageBits(int /*strip*/) { return false; }
+    bool testGfxUsageBit(int /*strip*/, int /*bit*/) { return false; }
+    bool testGfxOtherUsageBits(int /*strip*/, int /*bit*/) { return false; }
+    void setGfxUsageBit(int /*strip*/, int /*bit*/) {}
+    void clearGfxUsageBit(int /*strip*/, int /*bit*/) {}
+
+    // isValidActor declared here, defined in actor.cpp (transcribed
+    // ScummEngine method body).  Removed inline because actor.cpp also
+    // defines it.
+    bool isValidActor(int id) const;
+
+    // ---- Methods called from actor.cpp but defined elsewhere. The
+    // ones boxes.cpp / transcribed actor.cpp implement are above; the
+    // rest are wired in scummvm_compat.cpp via thin forwarders. ----
+    bool getClass(int obj, int cls) const;
+    int  getObjectOrActorXY(int object, int &x, int &y);
+    int  getObjectOrActorWidth(int object, int &width);
+    void runScript(int script, bool freezeResistant, bool recursive,
+                   int *lvarptr, int cycle = 0);
+    void stopScript(int script);
+    void stopTalk();
+    int  getTalkingActor();
+    void setTalkingActor(int i);
+    void ensureResourceLoaded(int type, int idx);
+    int  remapPaletteColor(int r, int g, int b, int threshold);
+    const uint8_t *findResourceData(uint32 tag, const uint8_t *ptr);
+    int  getResourceDataSize(const uint8_t *ptr) const;
+
+    // Methods DEFINED IN actor.cpp itself (just need declarations here).
+    // Verbatim from scummvm-upstream/scumm/scumm.h.
+    void walkActors();
+    void playActorSounds();
+    void showActors();
+    void redrawAllActors();
+    void setActorRedrawFlags();
+    void putActors();
+    void processActors();
+    void processUpperActors();
+    int  getActorFromPos(int x, int y);
+    Actor *derefActor(int id, const char *errmsg = nullptr) const;
+    Actor *derefActorSafe(int id, const char *errmsg) const;
 };
 
 extern ScummEngine *g_scumm;
 
-// ---- Actor scaffolding (will grow as actor.cpp is transcribed). ----
-//
-// Defined as a *class* (matching scummvm) with public members so transcribed
-// code's `_pos.x = ...` / `a->_walkbox = ...` works unchanged.
-class Actor {
+// ---------------------------------------------------------------------------
+// Subsystem stubs.  Each is the minimum API surface transcribed actor.cpp
+// touches.  When the corresponding scummvm source file is transcribed
+// (costume.cpp / charset.cpp / sound.cpp), these classes are deleted and
+// replaced by the canonical ones.
+// ---------------------------------------------------------------------------
+
+// scummvm-upstream/scumm/base-costume.h: BaseCostumeLoader.  Adapter
+// version — bodies in scummvm_compat.cpp forward to our existing
+// costume_decode_data() / costume_increase_anims().
+class BaseCostumeLoader {
 public:
-    static constexpr int kInvalidBox = 0xFF;
-    // Members will be added file-by-file when actor.cpp / boxes.cpp need
-    // them.  At present transcribed boxes.cpp's Actor::findPathTowards is
-    // moved to actor.cpp transcription — so this class needs nothing yet.
+    virtual ~BaseCostumeLoader() {}
+    virtual void loadCostume(int id) = 0;
+    virtual void costumeDecodeData(Actor *a, int frame, uint usemask) = 0;
+    virtual byte increaseAnims(Actor *a) = 0;
+    // hasManyDirections — used by Actor::startWalkAnim (v7 path).
+    // v3-v6 return false.  Verbatim from scummvm-upstream/base-costume.h.
+    virtual bool hasManyDirections(int /*costume*/) { return false; }
+};
+
+// scummvm-upstream/scumm/base-costume.h: BaseCostumeRenderer.  Stub —
+// the actor.cpp paths that touch it (drawActorCostume, prepareDrawActor)
+// are #if 0'd until costume.cpp is transcribed.
+class BaseCostumeRenderer {
+public:
+    virtual ~BaseCostumeRenderer() {}
+    int _scaleX = 0, _scaleY = 0;
+    int _shadowMode = 0;
+    int _actorX = 0, _actorY = 0;
+    int _x = 0, _y = 0;
+    int _drawTop = 0, _drawBottom = 0;
+    Actor *_actorID = nullptr;
+};
+
+// scummvm-upstream/scumm/charset.h: CharsetRenderer.  Transcribed
+// actor.cpp touches `_charset->_str.left/right/top/bottom`. The full
+// class lands when charset.cpp is transcribed.
+class CharsetRenderer {
+public:
+    Common::Rect _str;
+};
+
+// scummvm-upstream/scumm/sound.h: Sound. Transcribed actor.cpp touches
+// stopSound, isSoundRunning, startSound (talk), isSoundInQueue.
+class Sound {
+public:
+    virtual ~Sound() {}
+    virtual void stopSound(int /*sound*/) {}
+    virtual bool isSoundRunning(int /*sound*/) const { return false; }
+    virtual void startSound(int /*sound*/, int /*heFlags*/ = 0) {}
+    virtual bool isSoundInQueue(int /*sound*/) const { return false; }
 };
 
 }  // namespace tsb
 
-// Inline a scummvm `VAR(x)` macro that resolves to g_scumm->_scummVars[x].
-#define VAR(x) (tsb::g_scumm->_scummVars[(x)])
+// Now that tsb::kRender* enums are declared, expose Common::kRender*.
+namespace Common {
+    using ::tsb::kRenderDefault;
+    using ::tsb::kRenderEGA;
+    using ::tsb::kRenderCGA;
+    using ::tsb::kRenderHercG;
+    using ::tsb::kRenderHercA;
+    using ::tsb::kRenderAmiga;
+    using ::tsb::kRenderVGA;
+}
+
+// scummvm `VAR(x)` macro — textual `_scummVars[x]`.  Inside ScummEngine
+// methods this resolves to `this->_scummVars[x]`; outside it appears as
+// `_vm->VAR(...)` which expands to `_vm->_scummVars[...]`.  Matches
+// scummvm-upstream/engines/scumm/scumm.h #define exactly.
+#define VAR(x) _scummVars[x]

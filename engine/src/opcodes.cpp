@@ -26,6 +26,7 @@
 #include "platform.h"
 #include "resource.h"
 #include "actor.h"
+#include "actor_compat.h"
 #include "imuse.h"
 #include "engine.h"
 #include "object.h"
@@ -685,7 +686,7 @@ static void op_loadRoomWithEgo(VM *vm) {
 
     int ego = (int)vm_read_var(vm, VAR_EGO);
     Actor *a = actor_get(ego);
-    int old_dir = a ? (int)a->facing : 0;
+    int old_dir = a ? (int)a->_facing : 0;
     // scummvm: a->putActor(room) — 1-arg-room form, sets room field
     // through the master putActor so visibility flips with room.
     actor_put_in_room(ego, room);
@@ -708,18 +709,18 @@ static void op_loadRoomWithEgo(VM *vm) {
                 // scummvm: if facing didn't change during ENCD,
                 // turn 180° so the ego enters facing AWAY from the
                 // walk-target object (matches "approach from outside").
-                if ((int)a->facing == old_dir) {
+                if ((int)a->_facing == old_dir) {
                     int new_dir = (obj_dir + 180) & 0x1FF;
-                    a->facing = (uint16_t)new_dir;
-                    a->target_facing = (uint16_t)new_dir;
+                    a->_facing = (uint16_t)new_dir;
+                    a->_targetFacing = (uint16_t)new_dir;
                 } else {
-                    a->facing = (uint16_t)obj_dir;
-                    a->target_facing = (uint16_t)obj_dir;
+                    a->_facing = (uint16_t)obj_dir;
+                    a->_targetFacing = (uint16_t)obj_dir;
                 }
             }
         }
     }
-    if (a) a->moving = 0;
+    if (a) a->_moving = 0;
 
     // Centre camera on ego (scummvm setCameraFollows + camera._cur.x set).
     engine_camera_set_follows(ego, /*force=*/true);
@@ -866,7 +867,7 @@ static void op_wait(VM *vm) {
     case 1: {   // SO_WAIT_FOR_ACTOR
         int actor_id = vm_get_var_or_byte(vm, 0x80);
         Actor *a = actor_get(actor_id);
-        if (a && a->moving != 0) {
+        if (a && a->_moving != 0) {
             // ScummVM: rewind to the wait opcode so it re-executes next
             // frame, then o5_breakHere — yield. Mirrors script_v5.cpp:
             // 3280-3287 "if (a && a->_moving) { _scriptPointer = oldaddr;
@@ -937,7 +938,7 @@ static void op_setClass(VM *vm) {
             // SMALL_HEADER actor side-effect (script_v5.cpp:680-685).
             if (obj >= 1 && obj < MAX_ACTORS) {
                 Actor *a = actor_get(obj);
-                if (a) { a->flags &= ~ACTOR_FLAG_IGNORE_BOX; a->force_clip = 0; }
+                if (a) { a->_ignoreBoxes = false; a->_forceClip = 0; }
             }
         } else {
             engine_put_class(obj, cls, (cls & 0x80) != 0);
@@ -1245,27 +1246,27 @@ static void op_actorOps(VM *vm) {
         }
         case 4: {  // walk_anim
             int f = vm_get_var_or_byte(vm, 0x80);
-            if (a) a->walk_frame = (uint8_t)f;
+            if (a) a->_walkFrame = (uint8_t)f;
             break;
         }
         case 6: {  // stand_anim
             int f = vm_get_var_or_byte(vm, 0x80);
-            if (a) a->stand_frame = (uint8_t)f;
+            if (a) a->_standFrame = (uint8_t)f;
             break;
         }
         case 12: { // talk_color
             int c = vm_get_var_or_byte(vm, 0x80);
-            if (a) a->talk_color = (uint8_t)c;
+            if (a) a->_talkColor = (uint8_t)c;
             break;
         }
         case 14: { // init_animation
             int f = vm_get_var_or_byte(vm, 0x80);
-            if (a) { a->init_frame = (uint8_t)f; a->frame = (uint8_t)f; }
+            if (a) { a->_initFrame = (uint8_t)f; a->_frame = (uint8_t)f; }
             break;
         }
         case 16: { // SO_ACTOR_WIDTH — script_v5.cpp:600-602
             int w = vm_get_var_or_byte(vm, 0x80);
-            if (a) a->width = (uint8_t)w;
+            if (a) a->_width = (uint8_t)w;
             break;
         }
         case 19:   // SO_ALWAYS_ZCLIP — script_v5.cpp:617
@@ -1274,33 +1275,36 @@ static void op_actorOps(VM *vm) {
             break;
         case 22: { // anim_speed
             int s = vm_get_var_or_byte(vm, 0x80);
-            if (a) a->anim_speed = (uint8_t)s;
+            if (a) a->_animSpeed = (uint8_t)s;
             break;
         }
         case 2: {  // step_dist
             int sx = vm_get_var_or_byte(vm, 0x80);
             int sy = vm_get_var_or_byte(vm, 0x40);
-            if (a) { a->speedx = (uint16_t)sx; a->speedy = (uint16_t)sy; }
+            if (a) { a->_speedx = (uint16_t)sx; a->_speedy = (uint16_t)sy; }
             break;
         }
         case 5: {  // talk_anim
             int s = vm_get_var_or_byte(vm, 0x80);
             int e = vm_get_var_or_byte(vm, 0x40);
-            if (a) { a->talk_start_frame = (uint8_t)s;
-                     a->talk_stop_frame  = (uint8_t)e; }
+            if (a) { a->_talkStartFrame = (uint8_t)s;
+                     a->_talkStopFrame  = (uint8_t)e; }
             break;
         }
         case 11: { // palette
             int idx = vm_get_var_or_byte(vm, 0x80);
             int col = vm_get_var_or_byte(vm, 0x40);
-            if (a && idx >= 0 && idx < 32) a->palette[idx] = (uint8_t)col;
+            // scummvm Actor::_palette is uint16_t[256] (matches the
+            // scumm.h declaration); v4 only writes the low 8 bits and
+            // reads them as colour indices, so this still works.
+            if (a && idx >= 0 && idx < 32) a->_palette[idx] = (uint16_t)col;
             break;
         }
         case 17: { // actor_scale — v4 reads ONE byte (sx==sy);
                    // v5+ reads two bytes (sx, sy). MI1 VGA Floppy is v4.
             int sx = vm_get_var_or_byte(vm, 0x80);
             int sy = sx;
-            if (a) { a->scalex = (uint8_t)sx; a->scaley = (uint8_t)sy; }
+            if (a) { a->_scalex = (uint8_t)sx; a->_scaley = (uint8_t)sy; }
             break;
         }
         case 7:    // obsolete : 3 bytes
@@ -1318,25 +1322,25 @@ static void op_actorOps(VM *vm) {
             // Mirrors script_v5.cpp:510-514 — set the five frame slots
             // back to 1/2/3/4/5.
             if (a) {
-                a->init_frame = 1;
-                a->walk_frame = 2;
-                a->stand_frame = 3;
-                a->talk_start_frame = 4;
-                a->talk_stop_frame = 5;
+                a->_initFrame = 1;
+                a->_walkFrame = 2;
+                a->_standFrame = 3;
+                a->_talkStartFrame = 4;
+                a->_talkStopFrame = 5;
             }
             break;
         case 18:   // SO_NEVER_ZCLIP — script_v5.cpp:614 sets _forceClip = 0
-            if (a) { a->force_clip = 0; a->flags &= ~ACTOR_FLAG_FORCE_ZCLIP; }
+            if (a) { a->_forceClip = 0; }
             break;
         case 20:   // ignore_boxes
-            if (a) a->flags |= ACTOR_FLAG_IGNORE_BOX;
+            if (a) a->_ignoreBoxes = true;
             break;
         case 21:   // follow_boxes
-            if (a) a->flags &= ~ACTOR_FLAG_IGNORE_BOX;
+            if (a) a->_ignoreBoxes = false;
             break;
         case 9: {  // elevation : word
             int v = vm_get_var_or_word(vm, 0x80);
-            if (a) a->elevation = (int16_t)v;
+            if (a) a->_elevation = (int16_t)v;
             break;
         }
         case 13:   // actor_name : in-line string
@@ -1488,7 +1492,7 @@ static void op_walkActorTo(VM *vm) {
     int y   = vm_get_var_or_word(vm, 0x20);
     if (act >= 7 && act <= 9) {
         platform::log("walkActorTo: a%d (cost=%u) -> (%d,%d)\n",
-                      act, actor_get(act) ? actor_get(act)->costume : 0, x, y);
+                      act, actor_get(act) ? actor_get(act)->_costume : 0, x, y);
     }
     actor_walk_to(act, x, y);
 }
@@ -1499,7 +1503,7 @@ static void op_walkActorToActor(VM *vm) {
     int dist = vm_fetch_byte(vm);
     (void)dist;
     Actor *d = actor_get(dest);
-    if (d) actor_walk_to(act, d->x, d->y);
+    if (d) actor_walk_to(act, d->_pos.x, d->_pos.y);
 }
 
 // Mirrors o5_walkActorToObject (script_v5.cpp:2120-2158).
@@ -1822,56 +1826,56 @@ static void op_getActorRoom(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, a ? a->room : 0);
+    vm_write_var(vm, result_var, a ? a->_room : 0);
 }
 
 static void op_getActorX(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, a ? a->x : 0);
+    vm_write_var(vm, result_var, a ? a->_pos.x : 0);
 }
 
 static void op_getActorY(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, a ? a->y : 0);
+    vm_write_var(vm, result_var, a ? a->_pos.y : 0);
 }
 
 static void op_getActorMoving(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, a ? a->moving : 0);
+    vm_write_var(vm, result_var, a ? a->_moving : 0);
 }
 
 static void op_getActorFacing(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, a ? a->facing : 0);
+    vm_write_var(vm, result_var, a ? a->_facing : 0);
 }
 
 static void op_getActorCostume(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, a ? a->costume : 0);
+    vm_write_var(vm, result_var, a ? a->_costume : 0);
 }
 
 static void op_getActorElevation(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, a ? a->elevation : 0);
+    vm_write_var(vm, result_var, a ? a->_elevation : 0);
 }
 
 static void op_getActorWalkBox(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, (a && a->walkbox != INVALID_BOX) ? a->walkbox : 0);
+    vm_write_var(vm, result_var, (a && a->_walkbox != INVALID_BOX) ? a->_walkbox : 0);
 }
 
 // Mirrors o5_getActorWidth (script_v5.cpp:1340-1345).
@@ -1879,7 +1883,7 @@ static void op_getActorWidth(VM *vm) {
     uint16_t result_var = vm_get_result_pos(vm);
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
-    vm_write_var(vm, result_var, a ? a->width : 24);
+    vm_write_var(vm, result_var, a ? a->_width : 24);
 }
 
 static void op_getActorScale(VM *vm) {
@@ -1887,7 +1891,7 @@ static void op_getActorScale(VM *vm) {
     int act = vm_get_var_or_byte(vm, 0x80);
     Actor *a = actor_get(act);
     // Mirrors scummvm o5_getActorScale → Actor::_scalex (script_v5.cpp).
-    vm_write_var(vm, result_var, a ? (int32_t)a->scalex : 0xFF);
+    vm_write_var(vm, result_var, a ? (int32_t)a->_scalex : 0xFF);
 }
 
 static void op_getAnimCounter(VM *vm) {
@@ -1908,10 +1912,10 @@ static void op_actorFromPos(VM *vm) {
     int found = 0;
     for (int i = 1; i < MAX_ACTORS; i++) {
         Actor *a = actor_get(i);
-        if (!a || !(a->flags & ACTOR_FLAG_VISIBLE)) continue;
-        int hw = (a->width / 2) ? (a->width / 2) : 12;
-        if (x >= a->x - hw && x <= a->x + hw &&
-            y >= a->y - 32 && y <= a->y) { found = i; break; }
+        if (!a || !a->_visible) continue;
+        int hw = (a->_width / 2) ? (a->_width / 2) : 12;
+        if (x >= a->_pos.x - hw && x <= a->_pos.x + hw &&
+            y >= a->_pos.y - 32 && y <= a->_pos.y) { found = i; break; }
     }
     vm_write_var(vm, result_var, found);
 }
@@ -1924,8 +1928,8 @@ static bool resolve_world_xy(int id, int *out_x, int *out_y) {
     if (id < MAX_ACTORS) {
         Actor *a = actor_get(id);
         if (!a) return false;
-        if (out_x) *out_x = a->x;
-        if (out_y) *out_y = a->y;
+        if (out_x) *out_x = a->_pos.x;
+        if (out_y) *out_y = a->_pos.y;
         return true;
     }
     int dir = 0;
@@ -2026,7 +2030,7 @@ static void op_isActorInBox(VM *vm) {
     Actor *a = actor_get(act);
     bool in_box = false;
     if (a) {
-        in_box = walkbox_contains(box, a->x, a->y);
+        in_box = walkbox_contains(box, a->_pos.x, a->_pos.y);
     }
     vm_jump_relative(vm, in_box);
 }

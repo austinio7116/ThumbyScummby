@@ -22,9 +22,10 @@
 // ThumbyScummby transcription header — replaces:
 //   scumm/scumm.h, scumm/actor.h, scumm/boxes.h, scumm/resource.h,
 //   scumm/scumm_v0.h, scumm/scumm_v6.h, scumm/util.h, common/util.h.
-// All necessary types (Box / BoxCoords / ScummEngine etc.) are declared
-// in scummvm_compat.h.
+// scummvm_compat.h provides Box / BoxCoords / ScummEngine et al;
+// actor.h is needed for Actor::kInvalidBox / kOldInvalidBox / kNewInvalidBox.
 #include "scummvm_compat.h"
+#include "actor.h"
 
 namespace Scumm {
 
@@ -812,10 +813,6 @@ int ScummEngine::getNextBox(byte from, byte to) {
 	return dest;
 }
 
-// ThumbyScummby: Actor::findPathTowards transcribed alongside the rest of
-// Actor's methods (actor.cpp), not here. Elided to keep boxes.cpp free of
-// Actor class members until actor.cpp transcription puts them in place.
-#if 0
 /*
  * Computes the next point actor a has to walk towards in a straight
  * line in order to get from box1 to box3 via box2.
@@ -950,7 +947,6 @@ bool Actor::findPathTowards(byte box1nr, byte box2nr, byte box3nr, Common::Point
 	}
 	return false;
 }
-#endif  // findPathTowards elided — see actor.cpp
 
 #if BOX_DEBUG
 static void printMatrix(byte *boxm, int num) {

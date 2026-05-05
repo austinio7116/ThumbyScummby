@@ -25,7 +25,7 @@ namespace tsb {
 // small_header). The format-specific offsets follow the layout described
 // in spec_03_actor_costume.md §4 and the v4 ScummVM loader at
 // costume.cpp:417-493.
-struct CostumeData {
+struct ParsedCostume {
     Span           resource;        // payload of the COST small-chunk
     const uint8_t *baseptr;         // base for offset arithmetic (= resource.data)
     uint8_t        num_anim;        // number of animations
@@ -40,7 +40,7 @@ struct CostumeData {
     bool valid;                     // false if parse failed
 };
 
-bool costume_parse(Span resource, CostumeData *out);
+bool costume_parse(Span resource, ParsedCostume *out);
 
 // Forward — keep includes light. Defined in actor.h.
 struct Actor;
@@ -78,7 +78,7 @@ int  costume_new_dir_to_old(int dir);
 //  cost          — parsed costume.
 //  limb_idx      — 0..15.
 //  cel_index     — index into the limb's frame table (the value pulled from
-//                  the actor's CostumeData::curpos, masked & 0x7F via the
+//                  the actor's ParsedCostume::curpos, masked & 0x7F via the
 //                  command stream lookup). For now we treat it as a direct
 //                  cel index; the caller can pass either the animation-
 //                  command-resolved value or the raw frame number.
@@ -101,7 +101,7 @@ int  costume_new_dir_to_old(int dir);
 //  transparent_color — palette index treated as transparent (no write).
 //
 // Out-of-bounds and zero-size cels are silently skipped.
-void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
+void costume_render_limb(const ParsedCostume *cost, int limb_idx, int cel_index,
                          int dx, int dy, int scale_x, int scale_y, bool flip_x,
                          const uint8_t *actor_palette,
                          const uint8_t *mask_buf, int mask_pitch,

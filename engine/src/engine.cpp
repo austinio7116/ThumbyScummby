@@ -14,6 +14,7 @@
 #include "resource.h"
 #include "object.h"
 #include "actor.h"
+#include "actor_compat.h"
 #include "walkbox.h"
 #include "smap.h"
 #include "opl2.h"
@@ -421,14 +422,14 @@ void engine_walk_actor_to_object(int actor_num, int obj_id) {
     if (!engine_object_walk_pos(obj_id, &x, &y, &dir)) return;
     actor_walk_to(actor_num, x, y);
     Actor *a = actor_get(actor_num);
-    if (a) a->target_facing = (uint16_t)dir;
+    if (a) a->_targetFacing = (uint16_t)dir;
 }
 void engine_put_actor_at_object(int actor_num, int obj_id) {
     int x, y, dir;
     if (!engine_object_walk_pos(obj_id, &x, &y, &dir)) return;
     actor_put_at(actor_num, x, y);
     Actor *a = actor_get(actor_num);
-    if (a) { a->facing = (uint16_t)dir; a->target_facing = (uint16_t)dir; }
+    if (a) { a->_facing = (uint16_t)dir; a->_targetFacing = (uint16_t)dir; }
 }
 
 // Mirrors ScummEngine::drawBox (gfx.cpp). Renders a filled rectangle
@@ -1115,7 +1116,7 @@ void engine_camera_set_follows(int actor_num, bool force) {
     Actor *a = actor_get(actor_num);
     if (!a) return;
 
-    if (a->room != g.current_room_id) {
+    if (a->_room != g.current_room_id) {
         // Mirror scummvm setCameraFollows (camera.cpp:69-74): when the
         // followed actor lives in a different room, run the FULL scene
         // start (including ENCD), not just engine_change_room. Without
@@ -1126,15 +1127,15 @@ void engine_camera_set_follows(int actor_num, bool force) {
         // room; startScript starts a wait script; actorFollowCamera
         // then triggers this code path which is the only place the
         // room-38 ENCD has a chance to run.
-        engine_start_scene(&g_vm, a->room);
+        engine_start_scene(&g_vm, a->_room);
         g.camera.mode = kFollowActorCameraMode;
-        g.camera.cur_x = a->x;
+        g.camera.cur_x = a->_pos.x;
         engine_camera_set_at(g.camera.cur_x);
     }
 
-    int t = a->x / 8 - g.camera.screenStartStrip;
+    int t = a->_pos.x / 8 - g.camera.screenStartStrip;
     if (t < g.camera.leftTrigger || t > g.camera.rightTrigger || force) {
-        engine_camera_set_at(a->x);
+        engine_camera_set_at(a->_pos.x);
     }
 
     // ScummVM also marks every actor in the current room as needing redraw
@@ -1167,8 +1168,8 @@ static void camera_move_tick() {
 
     if (g.camera.mode == kFollowActorCameraMode) {
         a = actor_get(g.camera.follows);
-        if (a && a->room == g.current_room_id) {
-            int actorx = a->x;
+        if (a && a->_room == g.current_room_id) {
+            int actorx = a->_pos.x;
             int t = actorx / 8 - g.camera.screenStartStrip;
             if (t < g.camera.leftTrigger || t > g.camera.rightTrigger) {
                 g.camera.movingToActor = 1;
@@ -1178,8 +1179,8 @@ static void camera_move_tick() {
 
     if (g.camera.movingToActor) {
         a = actor_get(g.camera.follows);
-        if (a && a->room == g.current_room_id) {
-            g.camera.dest_x = a->x;
+        if (a && a->_room == g.current_room_id) {
+            g.camera.dest_x = a->_pos.x;
         }
     }
 
@@ -1190,7 +1191,7 @@ static void camera_move_tick() {
     if (g.camera.cur_x > g.camera.dest_x) g.camera.cur_x -= 8;
 
     if (g.camera.movingToActor && a &&
-        (g.camera.cur_x / 8) == (a->x / 8)) {
+        (g.camera.cur_x / 8) == (a->_pos.x / 8)) {
         g.camera.movingToActor = 0;
     }
 

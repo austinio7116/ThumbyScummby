@@ -44,6 +44,7 @@
 
 #include "costume.h"
 #include "actor.h"
+#include "actor_compat.h"
 #include "resource.h"
 #include "platform.h"
 
@@ -104,7 +105,7 @@ static const uint8_t kSmallScaleTable[256] = {
 //   _animCmds = _baseptr + READ_LE16(ptr + 8 + N)
 //   _dataOffsets  = (ptr + 8 + N) + 34        (16 frame offsets * 2 bytes)
 // ---------------------------------------------------------------------------
-bool costume_parse(Span resource, CostumeData *out) {
+bool costume_parse(Span resource, ParsedCostume *out) {
     memset(out, 0, sizeof(*out));
     if (resource.size < 8) {
         platform::log("costume_parse: resource too small (%zu bytes)\n",
@@ -287,7 +288,7 @@ static void byle_rle_decode(
 // Resolve a limb's frame data within the costume resource and dispatch to
 // the ByleRLE decoder.
 // ---------------------------------------------------------------------------
-void costume_render_limb(const CostumeData *cost, int limb_idx, int cel_index,
+void costume_render_limb(const ParsedCostume *cost, int limb_idx, int cel_index,
                          int dx, int dy, int scale_x, int scale_y, bool flip_x,
                          const uint8_t *actor_palette,
                          const uint8_t *mask_buf, int mask_pitch,
@@ -394,14 +395,14 @@ int costume_new_dir_to_old(int dir) {
 // command-stream offset (j) and the extra byte; commands 0x79/0x7A
 // toggle stopped, otherwise set up curpos/start/end/frame.
 void costume_decode_data(Actor *a, int frame, unsigned usemask) {
-    if (!a || a->costume == 0) return;
-    Span cspan = resource_get_costume(a->costume);
+    if (!a || a->_costume == 0) return;
+    Span cspan = resource_get_costume(a->_costume);
     if (cspan.empty()) return;
-    CostumeData cd{};
+    ParsedCostume cd{};
     if (!costume_parse(cspan, &cd) || !cd.valid) return;
     if (!cd.anim_cmds) return;
 
-    int anim = costume_new_dir_to_old(a->facing) + frame * 4;
+    int anim = costume_new_dir_to_old(a->_facing) + frame * 4;
     if (anim > cd.num_anim) return;
 
     const uint8_t *res_end = cd.resource.data + cd.resource.size;
@@ -432,25 +433,25 @@ void costume_decode_data(Actor *a, int frame, unsigned usemask) {
 
             if (usemask & 0x8000) {
                 if (j == 0xFFFF) {
-                    a->cost.curpos[i] = 0xFFFF;
-                    a->cost.start[i]  = 0;
-                    a->cost.frame[i]  = (uint16_t)anim;
+                    a->_cost.curpos[i] = 0xFFFF;
+                    a->_cost.start[i]  = 0;
+                    a->_cost.frame[i]  = (uint16_t)anim;
                 } else {
                     if (r >= res_end) return;
                     uint8_t extra = *r++;
                     if ((cd.anim_cmds + j) >= res_end) return;
                     uint8_t cmd = cd.anim_cmds[j];
                     if (cmd == 0x7A) {
-                        a->cost.stopped_mask &= ~(uint16_t)(1 << i);
+                        a->_cost.stopped &= ~(uint16_t)(1 << i);
                     } else if (cmd == 0x79) {
-                        a->cost.stopped_mask |=  (uint16_t)(1 << i);
+                        a->_cost.stopped |=  (uint16_t)(1 << i);
                     } else {
-                        a->cost.curpos[i] = (uint16_t)j;
-                        a->cost.start[i]  = (uint16_t)j;
-                        a->cost.end[i]    = (uint16_t)(j + (extra & 0x7F));
+                        a->_cost.curpos[i] = (uint16_t)j;
+                        a->_cost.start[i]  = (uint16_t)j;
+                        a->_cost.end[i]    = (uint16_t)(j + (extra & 0x7F));
                         if (extra & 0x80)
-                            a->cost.curpos[i] |= 0x8000;
-                        a->cost.frame[i] = (uint16_t)anim;
+                            a->_cost.curpos[i] |= 0x8000;
+                        a->_cost.frame[i] = (uint16_t)anim;
                     }
                 }
             } else {
@@ -473,18 +474,18 @@ void costume_decode_data(Actor *a, int frame, unsigned usemask) {
 // it hits a valid drawable command, looping start..end as needed and
 // honouring the 0x8000 high bit (no-loop / clamp-at-end).
 bool costume_increase_anim(Actor *a, int slot) {
-    if (!a || a->costume == 0) return false;
-    Span cspan = resource_get_costume(a->costume);
+    if (!a || a->_costume == 0) return false;
+    Span cspan = resource_get_costume(a->_costume);
     if (cspan.empty()) return false;
-    CostumeData cd{};
+    ParsedCostume cd{};
     if (!costume_parse(cspan, &cd) || !cd.valid) return false;
     if (!cd.anim_cmds) return false;
 
-    if (a->cost.curpos[slot] == 0xFFFF) return false;
+    if (a->_cost.curpos[slot] == 0xFFFF) return false;
 
-    int highflag = a->cost.curpos[slot] & 0x8000;
-    int i        = a->cost.curpos[slot] & 0x7FFF;
-    int end      = a->cost.end[slot];
+    int highflag = a->_cost.curpos[slot] & 0x8000;
+    int i        = a->_cost.curpos[slot] & 0x7FFF;
+    int end      = a->_cost.end[slot];
 
     const uint8_t *res_end = cd.resource.data + cd.resource.size;
     auto cmd_at = [&](int idx) -> int {
@@ -501,7 +502,7 @@ bool costume_increase_anim(Actor *a, int slot) {
     while (true) {
         if (!highflag) {
             // Loop start..end inclusive.
-            if (i++ >= end) i = a->cost.start[slot];
+            if (i++ >= end) i = a->_cost.start[slot];
         } else {
             // High flag: clamp at end.
             if (i != end) i++;
@@ -511,13 +512,13 @@ bool costume_increase_anim(Actor *a, int slot) {
         if (nc == 0x7C) {
             // animCounter++ (we don't model — fall through). If start ==
             // end this is an explicit "no-progress" marker.
-            if (a->cost.start[slot] != end) continue;
+            if (a->_cost.start[slot] != end) continue;
         } else if (nc == 0x78) {
             // Sound counter (v<=5). Skip.
-            if (a->cost.start[slot] != end) continue;
+            if (a->_cost.start[slot] != end) continue;
         }
 
-        a->cost.curpos[slot] = (uint16_t)(i | highflag);
+        a->_cost.curpos[slot] = (uint16_t)(i | highflag);
         return (cmd_at(i) & 0x7F) != code;
     }
 }
@@ -525,7 +526,7 @@ bool costume_increase_anim(Actor *a, int slot) {
 bool costume_increase_anims(Actor *a) {
     bool r = false;
     for (int i = 0; i < 16; i++) {
-        if (a->cost.curpos[i] != 0xFFFF) {
+        if (a->_cost.curpos[i] != 0xFFFF) {
             if (costume_increase_anim(a, i)) r = true;
         }
     }

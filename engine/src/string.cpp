@@ -30,6 +30,7 @@
 #include "platform.h"
 #include "charset.h"
 #include "actor.h"
+#include "actor_compat.h"
 #include "engine.h"
 
 #include <string.h>
@@ -417,8 +418,8 @@ void string_actor_talk(int actor_to_print_for, const uint8_t *msg) {
         g_talking_actor = actor_to_print_for;
         // runActorTalkScript(_talkStartFrame) — actor.cpp:3505. With no
         // talk-script, this is just startAnimActor(_talkStartFrame).
-        a->frame = a->talk_start_frame;
-        g_charset_color = a->talk_color;
+        a->_frame = a->_talkStartFrame;
+        g_charset_color = a->_talkColor;
     }
 
     int n = string_convert_message(msg, g_charset_buffer,
@@ -447,7 +448,7 @@ void string_stop_talk() {
     g_talk_delay = 0;
     if (g_talking_actor != 0 && g_talking_actor < 0x80) {
         Actor *a = actor_get(g_talking_actor);
-        if (a) a->frame = a->talk_stop_frame;
+        if (a) a->_frame = a->_talkStopFrame;
     }
     // ScummVM v3-7 path: setTalkingActor(0xFF) — preserves history.
     g_talking_actor = 0xFF;

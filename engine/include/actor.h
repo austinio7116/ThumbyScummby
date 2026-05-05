@@ -1,169 +1,502 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
-// Derived from / inspired by ScummVM (https://www.scummvm.org/).
-// See LICENSE for full GPL-3.0-or-later terms.
-//
-// ThumbyScummby — actor state and operations.
-//
-// Walking, animation, costume render. Walking uses 16.16 fixed-point
-// fractional accumulators (matches SCUMM v4/v5 disasm — see
-// scummvm-upstream/engines/scumm/actor.cpp:520-682).
+/* ScummVM - Graphic Adventure Engine
+ *
+ * ScummVM is the legal property of its developers, whose names
+ * are too numerous to list here. Please refer to the COPYRIGHT
+ * file distributed with this source distribution.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
 
-#pragma once
 
-#include "types.h"
-#include "walkbox.h"
+#ifndef SCUMM_ACTOR_H
+#define SCUMM_ACTOR_H
 
-namespace tsb {
+// ThumbyScummby: replaces common/scummsys.h, common/serializer.h, scumm/scumm.h.
+#include "scummvm_compat.h"
 
-constexpr int ACTOR_FLAG_VISIBLE     = 0x01;
-constexpr int ACTOR_FLAG_IGNORE_BOX  = 0x02;
-constexpr int ACTOR_FLAG_NEVER_ZCLIP = 0x04;
-constexpr int ACTOR_FLAG_FORCE_ZCLIP = 0x08;
-constexpr int ACTOR_FLAG_FLIP_X      = 0x10;
+namespace Scumm {
 
-constexpr int MOVE_NEW_LEG  = 1;
-constexpr int MOVE_IN_LEG   = 2;
-constexpr int MOVE_TURN     = 4;
-constexpr int MOVE_LAST_LEG = 8;
-// Mirrors Actor::MF_FROZEN (actor.h:54). Set by freezeActors / cleared
-// by unfreezeActors. While set, walkActor / animateCostume become no-ops.
-constexpr int MOVE_FROZEN   = 0x80;
+#define CHORE_REDIRECT_INIT        56
+#define CHORE_REDIRECT_WALK        57
+#define CHORE_REDIRECT_STAND       58
+#define CHORE_REDIRECT_START_TALK  59
+#define CHORE_REDIRECT_STOP_TALK   60
+#define CHORE_TURN_DIR             61
+#define CHORE_FACE_DIR             62
+#define CHORE_STOP                 63
 
-// Per-limb costume animation state. Mirrors ScummVM CostumeData (one slot
-// per limb). 0xFFFF in `frame` / `curpos` means "limb empty/stopped".
-struct ActorCostumeAnim {
-    uint8_t  anim_type[16];
-    uint16_t curpos[16];
-    uint16_t start[16];
-    uint16_t end[16];
-    uint16_t frame[16];
-    uint16_t stopped_mask;
+enum {
+	V12_X_MULTIPLIER = 8,
+	V12_Y_MULTIPLIER = 2,
+
+	V12_X_SHIFT = 3,
+	V12_Y_SHIFT = 1
 };
 
-struct Actor {
-    uint8_t  number;
-    uint8_t  room;
-    uint16_t costume;
-
-    int16_t  x, y;
-    int16_t  elevation;
-
-    uint16_t facing;
-    uint16_t target_facing;
-    uint8_t  moving;
-    uint8_t  walkbox;
-    uint16_t speedx, speedy;
-
-    uint8_t  frame;
-    uint8_t  init_frame, walk_frame, stand_frame;
-    uint8_t  talk_start_frame, talk_stop_frame;
-    uint8_t  anim_speed;
-    uint8_t  anim_progress;
-
-    uint8_t  scalex, scaley;
-    uint8_t  talk_color;
-    uint8_t  shadow_mode;
-    int16_t  talk_pos_x, talk_pos_y;
-    // Actor::_width — default 24 (ScummVM actor.cpp:195 initActor). Used
-    // by walkActorToActor distance and centred talk-text placement.
-    uint8_t  width;
-
-    uint8_t  flags;
-    uint8_t  layer;
-    uint8_t  force_clip;
-    // ScummVM Actor::_walkScript / _talkScript — script numbers invoked
-    // by startWalkAnim / runActorTalkScript. 0 = default (built-in
-    // setDirection / startAnimActor path).
-    uint16_t walk_script;
-    uint16_t talk_script;
-
-    // Walk-data — mirrors ScummVM Actor::_walkdata (actor.h:138-156).
-    int16_t  dest_x, dest_y;     // walkdata.dest
-    uint8_t  dest_box;           // walkdata.destbox
-    uint8_t  cur_box;            // walkdata.curbox (box current leg starts in)
-    int16_t  cur_x, cur_y;       // walkdata.cur (position at start of leg)
-    int16_t  next_x, next_y;     // walkdata.next (end of current leg)
-    int32_t  delta_x, delta_y;   // walkdata.deltaXFactor / deltaYFactor (16.16)
-    uint16_t xfrac, yfrac;       // walkdata.xfrac / yfrac (16-bit sub-pixel)
-    int16_t  point3_x;           // walkdata.point3.x — 32000 sentinel ("no findPath result")
-    int16_t  walk_dest_dir;      // walkdata.destdir — facing at final stop
-
-    // Costume per-limb animation
-    ActorCostumeAnim cost;
-
-    // Per-actor palette remap (32 entries — costumes use up to 32 colors)
-    uint8_t  palette[32];
+enum MoveFlags {
+	MF_NEW_LEG = 1,
+	MF_IN_LEG = 2,
+	MF_TURN = 4,
+	MF_LAST_LEG = 8,
+	MF_FROZEN = 0x80
 };
 
-void actor_init_all();
-Actor *actor_get(int actor_num);  // bounds-checked; returns nullptr on bad id
-// Direct port of scummvm Actor::putActor(int x, int y, int newRoom)
-// (actor.cpp:1730-1782). actor_put_at and actor_put_in_room are the
-// 2-arg and 1-arg-room shorthands that funnel here, matching the
-// scummvm header overloads (actor.h:213-225).
-void   actor_put_actor(int actor_num, int x, int y, int new_room);
-void   actor_put_at(int actor_num, int x, int y);
-void   actor_put_in_room(int actor_num, int room);
-void   actor_hide(int actor_num);
-void   actor_hide_all();
-void   actor_show_in_current_room(int current_room);
+struct CostumeData {
+	CostumeData() {
+		reset();
+	}
 
-// Direct port of Actor::adjustActorPos (scummvm-upstream/actor.cpp:2090).
-// Snaps the actor onto the closest walkbox, then sets walkdata.destbox /
-// walkbox / kicks off setupActorScale via setBox.  Called from putActor
-// (visible-in-current branch) and showActor.
-void   actor_adjust_pos(Actor *a);
+	byte animType[16];
+	uint16 animCounter;
+	byte soundCounter;
+	byte soundPos;
+	uint16 stopped;
+	uint16 curpos[16];
+	uint16 start[16];
+	uint16 end[16];
+	uint16 frame[16];
 
-// Mirrors scummvm `_egoPositioned`. Set true by actor_put_at when the
-// actor being placed IS the ego (VAR_EGO). loadRoomWithEgo clears it
-// before running ENCD; if ENCD positions the ego, the flag becomes
-// true and the v4 "walk-pos fallback" is skipped. Without this we
-// always teleport the ego to the object's walk-pos, overriding
-// whatever the entry script set.
-bool   actor_ego_positioned_get();
-void   actor_ego_positioned_set(bool v);
-void   actor_set_costume(int actor_num, int costume_id);
-void   actor_walk_to(int actor_num, int x, int y);
+	/* HE specific */
+	uint16 heJumpOffsetTable[16] = {};
+	uint16 heJumpCountTable[16] = {};
+	uint32 heCondMaskTable[16] = {};
 
-// Direct port of Actor::startWalkActor (scummvm-upstream/actor.cpp:850).
-// dir == -1 means "no preferred final facing"; non-negative dir is in
-// degrees (the engine's 4-direction encoding).
-void   actor_start_walk(int actor_num, int dst_x, int dst_y, int dir);
-void   actor_animate(int actor_num, int anim);
-void   actor_face_object(int actor_num, int object);
-void   actor_set_facing(int actor_num, int direction);  // setDirection
+	void reset() {
+		animCounter = 0;
+		soundCounter = 0;
+		soundPos = 0;
+		stopped = 0;
+		memset(animType, 0, sizeof(animType)); // AKAT_Empty
+		memset(curpos, 0xFF, sizeof(curpos));
+		memset(start, 0xFF, sizeof(start));
+		memset(end, 0xFF, sizeof(end));
+		memset(frame, 0xFF, sizeof(frame));
+	}
+};
 
-// Mirrors Actor::startAnimActor (actor.cpp:2692-2759). Decodes the
-// chore redirect sentinels (CHORE_REDIRECT_INIT/WALK/STAND/...), then
-// runs costumeDecodeData(frame, ~0) to refresh per-limb state. Also
-// resets _cost on initFrame.
-void   actor_start_anim(int actor_num, int frame);
+struct AdjustBoxResult {	/* Result type of AdjustBox functions */
+	int16 x, y;
+	byte box;
+};
 
-// Mirrors Actor::animateActor (actor.cpp:2817-2874): chore = anim>>2,
-// dir = oldDirToNewDir(anim & 3). Chore 2 = stop walking, 3 =
-// setDirection, 4 = turnToDirection, default = startAnimActor.
-void   actor_animate_chore(int actor_num, int anim);
-// Re-init one actor — mirrors ScummEngine::Actor::initActor with `mode`:
-//   -1 = full reset (used at game-startup);
-//    0 = soft reset (preserves room/cost/pos/facing — o5_actorOps SO_DEFAULT);
-//    1 = same as -1 but skips animVariable (rare, used by setOwnerOf).
-void   actor_init_one(int actor_num, int mode);
+enum {
+	kOldInvalidBox = 255,	// For GF_SMALL_HEADER games
+	kNewInvalidBox = 0
+};
 
-// Class-data flip for o5_setClass (object.cpp::putClass action on
-// actors: if the object is in actor range, classChanged toggles
-// _ignoreBoxes / _forceClip flags). Mirrors actor.cpp::classChanged.
-void   actor_class_changed(int actor_num, int cls, bool set);
+class Actor : public Common::Serializable {
+public:
+	static byte kInvalidBox;
 
-// Per-frame walking + costume render hooks called from the engine main loop.
-// `wbg` is the current room's walkbox graph (may be nullptr if the room has
-// no walkboxes — e.g. inventory/title screens).
-void   actor_tick_all(const WalkboxGraph *wbg);
-// Renders all visible actors. `x_off` is subtracted from each actor's
-// draw position, mapping room x → viewport x. Mirrors the way ScummVM
-// processActors writes to the main VirtScreen using positions relative
-// to camera/_screenStartStrip.
-void   actor_render_all(uint8_t *vscreen_main, int pitch,
-                        const WalkboxGraph *wbg, int x_off = 0);
+// ThumbyScummby transitional: scummvm marks _vm/_pos as protected.  Our
+// legacy opcodes.cpp / engine.cpp reach them directly until step 5
+// (script_v5.cpp transcription) replaces those callers.  Restore
+// `protected:` after step 5.
+public:    // was protected:
+	ScummEngine *_vm;
 
-}  // namespace tsb
+	/** The position of the actor inside the virtual screen. */
+	Common::Point _pos;
+
+public:
+	int _top = 0, _bottom = 0;
+	uint _width = 0;
+	byte _number = 0;
+	uint16 _costume = 0;
+	byte _room = 0;
+
+public:
+	byte _talkColor = 0;
+	int _talkFrequency = 0;
+	byte _talkPan = 0;
+	byte _talkVolume = 0;
+	uint16 _boxscale = 0;
+	byte _scalex = 0, _scaley = 0;
+	byte _charset = 0;
+	byte _moving = 0;
+	bool _ignoreBoxes = false;
+	byte _forceClip = 0;
+	uint16 _lastValidX = 0, _lastValidY = 0;
+
+	byte _initFrame = 0;
+	byte _walkFrame = 0;
+	byte _standFrame = 0;
+	byte _talkStartFrame = 0;
+	byte _talkStopFrame = 0;
+
+	bool _needRedraw = false, _needBgReset = false, _visible = false;
+	byte _shadowMode = 0;
+	bool _flip = false;
+	byte _frame = 0;
+	byte _walkbox = 0;
+	int16 _talkPosX = 0, _talkPosY = 0;
+	uint16 _talkScript = 0, _walkScript = 0;
+	bool _ignoreTurns = false;
+	bool _drawToBackBuf = false;
+	int32 _layer = 0;
+	uint16 _sound[32] = {};
+	CostumeData _cost;
+
+	/* HE specific */
+	int _heOffsX = 0, _heOffsY = 0;
+	bool _heSkipLimbs = false;
+	uint32 _heCondMask = 0;
+	uint32 _hePaletteNum = 0;
+	uint32 _heShadow = 0;
+
+// ThumbyScummby transitional: was `protected:` upstream.  See note at top.
+public:    // was protected:
+	struct ActorWalkData {
+		Common::Point dest;           // Final destination point
+		byte destbox = 0;             // Final destination box
+		int16 destdir = 0;            // Final destination, direction to face at
+
+		Common::Point cur;            // Last position
+		byte curbox = 0;              // Last box
+
+		Common::Point next;           // Next position on our way to the destination, i.e. our intermediate destination
+
+		Common::Point point3;
+		int32 deltaXFactor = 0, deltaYFactor = 0;
+		uint16 xfrac = 0, yfrac = 0;
+		uint16 xAdd = 0, yAdd = 0;
+		int16 facing = 0;
+
+		void reset() {
+			dest.x = dest.y = 0;
+			destbox = 0;
+			destdir = 0;
+			cur.x = cur.y = 0;
+			curbox = 0;
+			next.x = next.y = 0;
+			point3.x = point3.y = 0;
+			deltaXFactor = 0;
+			deltaYFactor = 0;
+			xfrac = 0;
+			yfrac = 0;
+			xAdd = 0;
+			yAdd = 0;
+			facing = 0;
+		}
+	};
+
+
+	uint16 _palette[256] = {};
+	int _elevation = 0;
+	uint16 _facing = 0;
+	uint16 _targetFacing = 0;
+	uint _speedx = 0, _speedy = 0;
+	byte _animProgress = 0, _animSpeed = 0;
+	bool _costumeNeedsInit = false;
+	ActorWalkData _walkdata;
+	int16 _animVariable[27] = {};
+
+public:
+
+	Actor(ScummEngine *scumm, int id);
+	~Actor() override {}
+
+//protected:
+	virtual void hideActor();
+	void showActor();
+
+	virtual void initActor(int mode);
+
+	void putActor() {
+		putActor(_pos.x, _pos.y, _room);
+	}
+
+	void putActor(int room) {
+		putActor(_pos.x, _pos.y, room);
+	}
+
+	void putActor(int x, int y) {
+		putActor(x, y, _room);
+	}
+
+	void putActor(int x, int y, int room);
+	void setActorWalkSpeed(uint newSpeedX, uint newSpeedY);
+protected:
+	virtual int calcMovementFactor(const Common::Point& next);
+	virtual int actorWalkStep();
+	virtual int remapDirection(int dir, bool is_walking);
+	virtual void setupActorScale();
+
+	void setBox(int box);
+	int updateActorDirection(bool is_walking);
+
+public:
+	void adjustActorPos();
+	virtual AdjustBoxResult adjustXYToBeInBox(int dstX, int dstY);
+
+	virtual void setDirection(int direction);
+	void faceToObject(int obj);
+	virtual void turnToDirection(int newdir);
+	virtual void walkActor();
+	void drawActorCostume(bool hitTestMode = false);
+	virtual void prepareDrawActorCostume(BaseCostumeRenderer *bcr);
+	virtual void animateCostume();
+	virtual void setActorCostume(int c);
+
+	void animateLimb(int limb, int f);
+
+	bool actorHitTest(int x, int y);
+
+	const byte *getActorName();
+	void startWalkActor(int x, int y, int dir);
+	void stopActorMoving();
+protected:
+	void startWalkAnim(int cmd, int angle);
+public:
+	void runActorTalkScript(int f);
+	virtual void startAnimActor(int frame);
+
+	void remapActorPalette(int r_fact, int g_fact, int b_fact, int threshold);
+	void remapActorPaletteColor(int slot, int color);
+
+	void animateActor(int anim);
+
+	bool isInCurrentRoom() const {
+		return _room == _vm->_currentRoom;
+	}
+
+	Common::Point getPos() const {
+		Common::Point p(_pos);
+		if (_vm->_game.version <= 2) {
+			p.x *= V12_X_MULTIPLIER;
+			p.y *= V12_Y_MULTIPLIER;
+		}
+		return p;
+	}
+
+	const Common::Point& getRealPos() const {
+		return _pos;
+	}
+
+	int getRoom() const {
+		return _room;
+	}
+
+	int getFacing() const {
+		return _facing;
+	}
+
+	void setFacing(int newFacing) {
+		_facing = newFacing;
+	}
+
+	int getAnimVar(byte var) const;
+	void setAnimVar(byte var, int value);
+
+	void setAnimSpeed(byte newAnimSpeed) {
+		_animSpeed = newAnimSpeed;
+		_animProgress = 0;
+	}
+
+	int getAnimSpeed() const {
+		return _animSpeed;
+	}
+
+	int getAnimProgress() const {
+		return _animProgress;
+	}
+
+	int getElevation() const {
+		return _elevation;
+	}
+
+	void setElevation(int newElevation) {
+		if (_elevation != newElevation) {
+			_elevation = newElevation;
+			_needRedraw = true;
+		}
+
+		if (_vm->_game.heversion >= 70) {
+			_needRedraw = true;
+			_needBgReset = true;
+		}
+	}
+
+	void setPalette(int idx, int val) {
+		_palette[idx] = val;
+		_needRedraw = true;
+	}
+
+	void setScale(int sx, int sy) {
+		if (sx != -1)
+			_scalex = sx;
+		if (sy != -1)
+			_scaley = sy;
+		_needRedraw = true;
+
+		if (_vm->_game.heversion >= 70) {
+			_needBgReset = true;
+		}
+	}
+
+	void classChanged(int cls, bool value);
+
+	void saveLoadWithSerializer(Common::Serializer &ser) override;
+
+protected:
+	bool isInClass(int cls);
+
+	virtual bool isPlayer();
+
+	bool findPathTowards(byte box, byte box2, byte box3, Common::Point &foundPath);
+};
+
+class Actor_v3 : public Actor {
+public:
+	Actor_v3(ScummEngine *scumm, int id) : Actor(scumm, id), _stepX(1), _stepThreshold(0), _facingXYratio(scumm->_game.version == 3 ? 3 : 1) {}
+
+	void initActor(int mode) override;
+	void walkActor() override;
+
+	void saveLoadWithSerializer(Common::Serializer &ser) override;
+
+protected:
+	int calcMovementFactor(const Common::Point& next) override;
+	void setupActorScale() override;
+	void findPathTowardsOld(byte box, byte box2, byte box3, Common::Point &p2, Common::Point &p3);
+	uint _stepThreshold;
+private:
+	virtual int actorWalkStep() override;
+	uint _stepX;
+	const int _facingXYratio;
+};
+
+class Actor_v2 : public Actor_v3 {
+public:
+	Actor_v2(ScummEngine *scumm, int id) : Actor_v3(scumm, id) {}
+
+	void initActor(int mode) override;
+	void walkActor() override;
+	AdjustBoxResult adjustXYToBeInBox(int dstX, int dstY) override;
+
+protected:
+	bool isPlayer() override;
+	void prepareDrawActorCostume(BaseCostumeRenderer *bcr) override;
+private:
+	int actorWalkStep() override;
+	int remapDirection(int dir, bool is_walking) override;
+};
+
+class Actor_v7 final : public Actor {
+public:
+	Actor_v7(ScummEngine *scumm, int id) : Actor(scumm, id) {}
+
+	void initActor(int mode) override;
+	void walkActor() override;
+	void turnToDirection(int newdir) override;
+	void startAnimActor(int frame) override;
+
+private:
+	int updateActorDirection();
+};
+
+enum ActorV0MiscFlags {
+	kActorMiscFlagStrong    = 0x01, // Kid is strong (Hunk-O-Matic used)
+	kActorMiscFlagGTFriend  = 0x02, // Kid is green tentacle's friend (recording contract)
+	kActorMiscFlagWatchedTV = 0x04, // Kid knows publisher's address (watched TV)
+	kActorMiscFlagEdsEnemy  = 0x08, // Kid is not Weird Ed's friend
+	kActorMiscFlag_10       = 0x10, // ???
+	kActorMiscFlag_20       = 0x20, // ???
+	kActorMiscFlagFreeze    = 0x40, // Stop moving
+	kActorMiscFlagHide      = 0x80  // Kid is invisible (dead or in radiation suit)
+};
+
+class Actor_v0 : public Actor_v2 {
+public:
+	Common::Point _CurrentWalkTo, _NewWalkTo;
+
+	Common::Array<byte> _walkboxHistory;
+
+	byte _walkboxQueue[0x10] = {};
+	byte _walkboxQueueIndex = 0;
+
+	byte _costCommandNew = 0;
+	byte _costCommand = 0;
+	byte _miscflags = 0;
+	byte _speaking = 0;
+
+	byte _walkCountModulo = 0;
+	bool _newWalkBoxEntered = false;
+
+	byte _walkDirX = 0;
+	byte _walkDirY = 0;
+
+	byte _walkYCountGreaterThanXCount = 0;
+	byte _walkXCount = 0;
+	byte _walkXCountInc = 0;
+	byte _walkYCount = 0;
+	byte _walkYCountInc = 0;
+
+	byte _walkMaxXYCountInc = 0;
+
+	Common::Point _tmp_Pos;
+	Common::Point _tmp_NewPos;
+	byte _tmp_WalkBox = 0;
+	bool _tmp_NewWalkBoxEntered = false;
+
+	int8 _animFrameRepeat = 0;
+	int8 _limbFrameRepeatNew[8] = {};
+	int8 _limbFrameRepeat[8] = {};
+
+	bool _limb_flipped[8] = {};
+
+private:
+
+	bool walkBoxQueueAdd(int box);
+	bool walkBoxQueueFind(int box);
+	void walkboxQueueReverse();
+
+public:
+	Actor_v0(ScummEngine *scumm, int id) : Actor_v2(scumm, id) {}
+
+	void initActor(int mode) override;
+	void animateActor(int anim);
+	void animateCostume() override;
+
+	void limbFrameCheck(int limb);
+
+	void directionUpdate();
+	void speakCheck();
+	void setDirection(int direction) override;
+	void startAnimActor(int f) override;
+
+	bool calcWalkDistances();
+	void walkActor() override;
+	void actorSetWalkTo();
+	byte actorWalkXCalculate();
+	byte actorWalkYCalculate();
+	byte updateWalkbox();
+
+	void walkBoxQueueReset();
+	bool walkBoxQueuePrepare();
+
+	AdjustBoxResult adjustXYToBeInBox(int dstX, int dstY) override;
+	AdjustBoxResult adjustPosInBorderWalkbox(AdjustBoxResult box);
+
+	void setActorToTempPosition();
+	void setActorToOriginalPosition();
+
+	void saveLoadWithSerializer(Common::Serializer &ser) override;
+};
+
+
+} // End of namespace Scumm
+
+#endif

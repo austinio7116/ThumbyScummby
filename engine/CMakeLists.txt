@@ -26,8 +26,10 @@ add_library(thumbyscummby_engine STATIC
     src/imuse.cpp
     src/audio_mix.cpp
     src/engine.cpp
-    # Hand-written compat shim implementations (singleton, room-change sync).
+    # Hand-written compat shim implementations (singleton, room-change sync,
+    # legacy free-function adapters that wrap transcribed Actor methods).
     src/scummvm_compat.cpp
+    src/actor_compat.cpp
     # --- Transcribed from scummvm-upstream ---
     # Each entry below is a near-verbatim copy of the canonical ScummVM
     # source file with only the boundary edits described in scummvm_compat.h

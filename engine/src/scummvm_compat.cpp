@@ -8,10 +8,34 @@
 // resource-address forwarding, and the room-change sync.
 
 #include "scummvm_compat.h"
+#include "actor.h"
 #include "engine.h"
 #include "vm.h"
+#include "object.h"
+#include "costume.h"
+
+#include <new>          // placement-new for Actor pool
 
 namespace tsb {
+
+// ----- ClassicCostumeLoader adapter --------------------------------------
+// Forwards transcribed actor.cpp's `_costumeLoader->costumeDecodeData(...)`
+// calls to our existing free functions in costume.cpp until that file is
+// transcribed.  Each method is one line.
+class ClassicCostumeLoader_Adapter : public BaseCostumeLoader {
+public:
+    void loadCostume(int /*id*/) override { /* costume_parse is per-call; no-op here */ }
+    void costumeDecodeData(Actor *a, int frame, uint usemask) override;
+    byte increaseAnims(Actor *a) override;
+};
+static ClassicCostumeLoader_Adapter g_costume_loader_adapter;
+static CharsetRenderer               g_charset_stub;
+static Sound                         g_sound_stub;
+
+// ----- Static actor pool --------------------------------------------------
+// Actor has no default constructor (takes ScummEngine *, int). Allocate
+// raw storage and placement-new at engine_init time.
+alignas(Actor) static unsigned char g_actor_storage[ScummEngine::kMaxActors][sizeof(Actor)];
 
 ScummEngine::ScummEngine()
     : _game{},
@@ -23,7 +47,20 @@ ScummEngine::ScummEngine()
       _boxMatrixBuf{},
       _boxMatrixSize(0),
       _extraBoxFlags{},
-      _scummVars(nullptr) {}
+      _scummVars(nullptr),
+      _res(nullptr),
+      _actors{},
+      _sortedActors{},
+      _numActors(0),
+      _classData{},
+      _egoPositioned(false),
+      _useTalkAnims(false),
+      _talkDelay(0),
+      _haveActorSpeechMsg(0),
+      _useCJKMode(0),
+      _costumeLoader(nullptr),
+      _charset(nullptr),
+      _sound(nullptr) {}
 
 // Singleton — transcribed code uses `g_scumm` exactly like scummvm-upstream.
 static ScummEngine g_scumm_engine;
@@ -127,6 +164,167 @@ void scummvm_compat_init() {
     g_scumm->_game.heversion = 0;
     g_scumm->_scummVars     = g_vm.globals;
     g_scumm->_res           = &g_resources;
+
+    // Wire actor pool (kMaxActors slots).  Transcribed walkActors / putActors
+    // / showActors etc. iterate _actors[1.._numActors-1] (slot 0 unused).
+    g_scumm->_numActors = ScummEngine::kMaxActors;
+    for (int i = 0; i < ScummEngine::kMaxActors; i++) {
+        Actor *a = ::new (&g_actor_storage[i][0]) Actor(g_scumm, i);
+        g_scumm->_actors[i] = a;
+        g_scumm->_sortedActors[i] = a;
+    }
+
+    // Subsystem stubs.
+    g_scumm->_costumeLoader = &g_costume_loader_adapter;
+    g_scumm->_charset       = &g_charset_stub;
+    g_scumm->_sound         = &g_sound_stub;
+
+    // VAR_* indices for v4 MI1 — copied from
+    // scummvm-upstream/engines/scumm/vars.cpp setupScummVarsOld() (v3-v4).
+    g_scumm->VAR_EGO              = 1;
+    g_scumm->VAR_CAMERA_POS_X     = 2;
+    g_scumm->VAR_HAVE_MSG         = 3;
+    g_scumm->VAR_ROOM             = 4;
+    g_scumm->VAR_OVERRIDE         = 5;
+    g_scumm->VAR_TMR_1            = 11;
+    g_scumm->VAR_TMR_2            = 12;
+    g_scumm->VAR_TMR_3            = 13;
+    g_scumm->VAR_MUSIC_TIMER      = 14;
+    g_scumm->VAR_ACTOR_RANGE_MIN  = 15;
+    g_scumm->VAR_ACTOR_RANGE_MAX  = 16;
+    g_scumm->VAR_CAMERA_MIN_X     = 17;
+    g_scumm->VAR_CAMERA_MAX_X     = 18;
+    g_scumm->VAR_TIMER_NEXT       = 19;
+    g_scumm->VAR_VIRT_MOUSE_X     = 20;
+    g_scumm->VAR_VIRT_MOUSE_Y     = 21;
+    g_scumm->VAR_ROOM_RESOURCE    = 22;
+    g_scumm->VAR_LAST_SOUND       = 23;
+    g_scumm->VAR_CUTSCENEEXIT_KEY = 24;
+    g_scumm->VAR_TALK_ACTOR       = 25;
+    g_scumm->VAR_CAMERA_FAST_X    = 26;
+    g_scumm->VAR_SCROLL_SCRIPT    = 27;
+    g_scumm->VAR_ENTRY_SCRIPT     = 28;
+    g_scumm->VAR_ENTRY_SCRIPT2    = 29;
+    g_scumm->VAR_EXIT_SCRIPT      = 30;
+    g_scumm->VAR_EXIT_SCRIPT2     = 31;
+    g_scumm->VAR_VERB_SCRIPT      = 32;
+    g_scumm->VAR_SENTENCE_SCRIPT  = 33;
+    g_scumm->VAR_INVENTORY_SCRIPT = 34;
+    g_scumm->VAR_CUTSCENE_START_SCRIPT = 35;
+    g_scumm->VAR_CUTSCENE_END_SCRIPT = 36;
+    g_scumm->VAR_CHARINC          = 37;
+    g_scumm->VAR_WALKTO_OBJ       = 38;
+    g_scumm->VAR_DEBUGMODE        = 39;
+    g_scumm->VAR_HEAPSPACE        = 40;
+    // SKIP_RESET_TALK_ACTOR is HE-only (v98+); leave 0xFF for v4.
+}
+
+// ---------------------------------------------------------------------------
+// Forwarders.  Each is a 1-3 line bridge from transcribed
+// `_vm->method(...)` calls to our existing free-function code.  These
+// disappear when the corresponding scummvm source file is transcribed.
+// ---------------------------------------------------------------------------
+
+// Existing free functions in our engine (declared as `extern` here so we
+// don't have to pull in our internal headers).
+extern bool engine_get_class(int obj_id, int cls);
+
+bool ScummEngine::getClass(int obj, int cls) const {
+    return engine_get_class(obj, cls);
+}
+
+// Mirrors scummvm-upstream/scumm/object.cpp ScummEngine::getObjectOrActorXY.
+// For object IDs in actor range (1..kMaxActors-1), return the actor's
+// _pos.  For non-actor objects we'd need to read the object's walk_x/y;
+// our existing object.cpp has that data — call into our existing helper
+// once it's transcribed.  Stubbed for now.
+int ScummEngine::getObjectOrActorXY(int object, int &x, int &y) {
+    if (object > 0 && object < kMaxActors) {
+        Actor *a = _actors[object];
+        if (a && a->_room == _currentRoom) {
+            x = a->_pos.x;
+            y = a->_pos.y;
+            return 0;
+        }
+        return -1;
+    }
+    // TODO: object case — wire when object.cpp transcribes.
+    x = 0; y = 0;
+    return -1;
+}
+
+int ScummEngine::getObjectOrActorWidth(int /*object*/, int &width) {
+    width = 0;  // Stubbed — only used by Actor::faceToObject; will wire
+                // through engine_compat once object.cpp is transcribed.
+    return 0;
+}
+
+void ScummEngine::runScript(int script, bool freezeResistant, bool recursive,
+                            int *lvarptr, int /*cycle*/) {
+    // Forward to our existing VM. Cast lvarptr (int *) to (int32_t *).
+    // freezeResistant / recursive map to vm_start_script's last 2 args.
+    if (script <= 0) return;
+    int n_args = 0;
+    int32_t args_buf[26] = {};
+    if (lvarptr) {
+        for (int i = 0; i < 26; i++) args_buf[i] = (int32_t)lvarptr[i];
+        n_args = 26;
+    }
+    vm_start_script(&g_vm, script, args_buf, n_args,
+                    freezeResistant, recursive);
+}
+
+void ScummEngine::stopScript(int script) {
+    vm_stop_script(&g_vm, script);
+}
+
+void ScummEngine::stopTalk() {
+    // Existing engine_stop_talk forwards to charset clear.
+    extern void engine_clear_text_vscreen();
+    engine_clear_text_vscreen();
+    if (VAR_TALK_ACTOR != 0xFF) _scummVars[VAR_TALK_ACTOR] = 0;
+}
+
+int ScummEngine::getTalkingActor() {
+    if (VAR_TALK_ACTOR == 0xFF) return -1;
+    return (int)_scummVars[VAR_TALK_ACTOR];
+}
+
+void ScummEngine::setTalkingActor(int i) {
+    if (VAR_TALK_ACTOR != 0xFF) _scummVars[VAR_TALK_ACTOR] = i;
+}
+
+void ScummEngine::ensureResourceLoaded(int /*type*/, int /*idx*/) {
+    // No-op: our resource model is XIP-mapped; there's no preload step.
+}
+
+int ScummEngine::remapPaletteColor(int /*r*/, int /*g*/, int /*b*/, int /*threshold*/) {
+    // Stubbed; only used by Actor::remapActorPaletteColor (v6+).
+    return 0;
+}
+
+const uint8_t *ScummEngine::findResourceData(uint32 /*tag*/, const uint8_t *ptr) {
+    // Stubbed; only used by Actor::getActorName (object name table) which
+    // we'll wire when object.cpp is transcribed.
+    return ptr;
+}
+
+int ScummEngine::getResourceDataSize(const uint8_t * /*ptr*/) const {
+    return 0;
+}
+
+// derefActor / derefActorSafe defined in transcribed actor.cpp.
+
+// ---- ClassicCostumeLoader adapter bodies ----
+void ClassicCostumeLoader_Adapter::costumeDecodeData(Actor *a, int frame, uint usemask) {
+    // Forward to our existing free function until costume.cpp is transcribed.
+    extern void costume_decode_data(Actor *a, int frame, unsigned usemask);
+    costume_decode_data(a, frame, usemask);
+}
+
+byte ClassicCostumeLoader_Adapter::increaseAnims(Actor *a) {
+    extern bool costume_increase_anims(Actor *a);
+    return costume_increase_anims(a) ? 1 : 0;
 }
 
 }  // namespace tsb
