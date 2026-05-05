@@ -31,6 +31,10 @@
 
 namespace tsb {
 
+// Provided by engine.cpp — pointer to the current room's WalkboxGraph,
+// or nullptr if the room has no walkboxes (also used by walkbox.cpp).
+extern WalkboxGraph *engine_active_walkbox_graph();
+
 static Actor g_actors[MAX_ACTORS];
 
 // ---------------------------------------------------------------------------
@@ -184,36 +188,43 @@ void actor_set_facing(int n, int direction) {
     }
 }
 
-// Mirrors Actor::startAnimActor (actor.cpp:2692-2759). For v3+ if frame
-// equals _initFrame, _cost.reset() is called first; then
-// costumeDecodeData(frame, (uint)-1) refreshes every limb.
+// Direct port of Actor::startAnimActor (actor.cpp:2692-2759).
+// CHORE_REDIRECT_* are decimal 56..60 in scummvm-upstream/actor.h:32-36 —
+// NOT 0xFA..0xFE as we previously had. The decode is gated on
+// isInCurrentRoom() && _costume != 0, and only the _cost.reset() (limb
+// clear) happens when frame == _initFrame.
 void actor_start_anim(int n, int frame) {
     Actor *a = actor_get(n); if (!a) return;
-    // Resolve chore-redirect sentinels (actor.cpp:2714-2733):
+
     switch (frame) {
-    case 0xFE: frame = a->init_frame; break;       // CHORE_REDIRECT_INIT
-    case 0xFD: frame = a->walk_frame; break;       // CHORE_REDIRECT_WALK
-    case 0xFC: frame = a->stand_frame; break;      // CHORE_REDIRECT_STAND
-    case 0xFB: frame = a->talk_start_frame; break; // CHORE_REDIRECT_START_TALK
-    case 0xFA: frame = a->talk_stop_frame; break;  // CHORE_REDIRECT_STOP_TALK
+    case 56: frame = a->init_frame; break;       // CHORE_REDIRECT_INIT
+    case 57: frame = a->walk_frame; break;       // CHORE_REDIRECT_WALK
+    case 58: frame = a->stand_frame; break;      // CHORE_REDIRECT_STAND
+    case 59: frame = a->talk_start_frame; break; // CHORE_REDIRECT_START_TALK
+    case 60: frame = a->talk_stop_frame; break;  // CHORE_REDIRECT_STOP_TALK
     default: break;
     }
-    if (a->costume == 0) return;
-    a->anim_progress = 0;
-    if (frame == a->init_frame) {
-        for (int l = 0; l < 16; l++) {
-            a->cost.curpos[l] = 0xFFFF;
-            a->cost.start[l]  = 0xFFFF;
-            a->cost.end[l]    = 0xFFFF;
-            a->cost.frame[l]  = 0xFFFF;
+
+    int current_room = engine_current_room_id();
+    bool in_current = ((int)a->room == current_room);
+    if (in_current && a->costume != 0) {
+        a->anim_progress = 0;
+        // _cost.animCounter = 0 — we don't track this field.
+        if (frame == a->init_frame) {
+            // CostumeData::reset() (actor.h:78-89): every limb empty,
+            // stopped = 0 (NOT 0xFFFF — limbs are stopped/unstopped by
+            // decode commands 0x79 / 0x7A).
+            for (int l = 0; l < 16; l++) {
+                a->cost.curpos[l] = 0xFFFF;
+                a->cost.start[l]  = 0xFFFF;
+                a->cost.end[l]    = 0xFFFF;
+                a->cost.frame[l]  = 0xFFFF;
+            }
+            a->cost.stopped_mask = 0;
         }
-        // Mirrors CostumeData::reset() (actor.h:81): no limbs are
-        // stopped at the start of an init-frame anim — the decode
-        // sets bits via 0x79 cmds, and clears them via 0x7A.
-        a->cost.stopped_mask = 0;
+        costume_decode_data(a, frame, (unsigned)-1);
+        a->frame = (uint8_t)frame;
     }
-    costume_decode_data(a, frame, (unsigned)-1);
-    a->frame = (uint8_t)frame;
 }
 
 // Mirrors Actor::animateActor (actor.cpp:2817-2874).
@@ -256,6 +267,43 @@ static bool g_ego_positioned = false;
 bool actor_ego_positioned_get() { return g_ego_positioned; }
 void actor_ego_positioned_set(bool v) { g_ego_positioned = v; }
 
+// Mirror of Actor::setBox (actor.cpp:416): _walkbox = box; setupActorScale().
+// We forward-declare setup_actor_scale below so the caller compiles; the
+// scale recompute happens once per setBox to match scummvm exactly.
+static void setup_actor_scale(Actor *a, const WalkboxGraph *wbg);
+static void actor_set_box(Actor *a, int box) {
+    a->walkbox = (uint8_t)box;
+    setup_actor_scale(a, engine_active_walkbox_graph());
+}
+
+// Direct port of Actor::adjustActorPos (actor.cpp:2090-2113).
+// Snaps the actor onto the closest walkbox after a putActor in the
+// current room, then sets walkdata.destbox / walkbox / kicks off a
+// turnToDirection if the box has any "follow boxes" flag bits set.
+void actor_adjust_pos(Actor *a) {
+    int adj_x = a->x, adj_y = a->y;
+    WalkboxGraph *wbg = engine_active_walkbox_graph();
+    uint8_t adj_box = walkbox_adjust_xy(wbg, a->x, a->y, &adj_x, &adj_y);
+
+    a->x = (int16_t)adj_x;
+    a->y = (int16_t)adj_y;
+    a->dest_box = adj_box;
+
+    actor_set_box(a, adj_box);
+
+    a->dest_x = -1;     // mirrors _walkdata.dest.x = -1
+
+    // stopActorMoving: clear walk state, stop walk script if any.
+    if (a->walk_script) vm_stop_script(&g_vm, a->walk_script);
+    a->moving = 0;
+    // _cost.soundCounter = 0; _cost.soundPos = 0  (we don't track these.)
+
+    // If the resulting walkbox has a flag (mirroring scummvm's
+    // `getBoxFlags(_walkbox) & 7`), kick off a turn. We don't model
+    // turnToDirection's smooth-turn, so this is a no-op for now —
+    // actors will face their default facing.
+}
+
 // Direct port of scummvm Actor::putActor(int dstX, int dstY, int newRoom)
 // (actor.cpp:1730-1782). All other putActor variants funnel here, which
 // is why scummvm gets the visibility / room transitions right and we
@@ -279,20 +327,33 @@ void actor_put_actor(int n, int x, int y, int new_room) {
 
     if (was_visible) {
         if (in_current) {
-            a->moving = 0;          // stopActorMoving
-            // (startAnimActor(_standFrame) + adjustActorPos: TODO; the
-            //  visible flag is already set, our render uses position
-            //  directly so adjustActorPos is a no-op for now.)
+            // scummvm: if (_moving) { stopActorMoving(); startAnimActor(_standFrame); }
+            // adjustActorPos();
+            if (a->moving) {
+                a->moving = 0;
+                actor_start_anim(n, a->stand_frame);
+            }
+            actor_adjust_pos(a);
         } else {
-            a->flags &= (uint8_t)~ACTOR_FLAG_VISIBLE;  // hideActor
+            // hideActor (actor.cpp:2174-2187): clear _visible, stop moving.
+            a->flags &= (uint8_t)~ACTOR_FLAG_VISIBLE;
             a->moving = 0;
         }
     } else {
         if (in_current) {
-            // showActor — match Actor::showActor: set visible, no
-            // costume gate (NPCs whose costume is set later still need
-            // the flag NOW so subsequent actorOps find them).
+            // showActor (actor.cpp:2198-2241): only acts if _currentRoom != 0.
+            // For v3+ : adjustActorPos, ensureResourceLoaded(rtCostume, _costume),
+            // if (_costumeNeedsInit) startAnimActor(_initFrame), stopActorMoving,
+            // _visible = true.  We don't track _costumeNeedsInit explicitly —
+            // setActorCostume's path already startAnimActor's on visible
+            // transitions, and showActor here picks up actors whose costume
+            // was set while invisible.
+            actor_adjust_pos(a);
             a->flags |= ACTOR_FLAG_VISIBLE;
+            a->moving = 0;
+            if (a->costume != 0) {
+                actor_start_anim(n, a->init_frame);
+            }
         }
     }
 }
@@ -327,59 +388,150 @@ void actor_hide_all() {
     }
 }
 
-// Mirror of scummvm showActors (actor.cpp:2243-2250) + Actor::showActor
-// (actor.cpp:2198+). For every actor whose `_room == _currentRoom`, set
-// the visible flag. scummvm Actor::showActor only gates on
-// `_currentRoom == 0` early-return and "already visible" — NOT on the
-// costume field. Some actors (like NPCs whose costume gets set by an
-// LSCR after the room transition) need to be flagged visible BEFORE
-// their costume is set, otherwise the LSCR's actorOps can't find them
-// running.
+// Mirror of ScummEngine::showActors + Actor::showActor
+// (scummvm-upstream/actor.cpp:2198-2241, 2243-2250). For each actor
+// already in the current room, run adjustActorPos, kick off the init
+// frame, mark visible, stop moving. Direct port — earlier hand-rolled
+// variant only set the visible flag, missing the box snap that
+// setupActorScale relies on.
 void actor_show_in_current_room(int current_room) {
     if (current_room == 0) return;
     for (int i = 0; i < MAX_ACTORS; i++) {
         Actor &a = g_actors[i];
-        if ((int)a.room == current_room) {
-            a.flags |= ACTOR_FLAG_VISIBLE;
+        if ((int)a.room != current_room) continue;
+        if (a.flags & ACTOR_FLAG_VISIBLE) continue;     // already visible
+        actor_adjust_pos(&a);
+        if (a.costume != 0) {
+            // ensureResourceLoaded skipped — our resource path is
+            // disk-mapped, no separate cache.
+            actor_start_anim(i, a.init_frame);
         }
+        a.flags |= ACTOR_FLAG_VISIBLE;
+        a.moving = 0;
     }
 }
 
+// Direct port of Actor::setActorCostume (scummvm-upstream/actor.cpp:3661).
+// For v4 MI1 (non-GF_NEW_COSTUMES): if visible, hideActor + reset _cost +
+// set new costume + showActor (so adjustActorPos and the init-frame anim
+// fire as a single transaction). If invisible, just set the field —
+// the next showActor (room enter) will handle the rest.
 void actor_set_costume(int n, int cost) {
     Actor *a = actor_get(n); if (!a) return;
-    a->costume = (uint16_t)cost;
-    // Mirrors ScummEngine::Actor::setActorCostume (actor.cpp:3690-3711)
-    // for v4/v5 (non-GF_OLD_BUNDLE):
-    //   _cost.reset();        — CostumeData::reset() at actor.h:78-89
-    //                           sets stopped = 0 (NOT 0xFFFF), all
-    //                           curpos/start/end/frame = 0xFFFF.
-    //   for (i = 0; i < 32; i++) _palette[i] = 0xFF;
-    //   _animProgress = 0; _needRedraw = true; _costumeNeedsInit = true;
-    a->cost.stopped_mask = 0;
-    for (int l = 0; l < 16; l++) {
-        a->cost.curpos[l] = 0xFFFF;
-        a->cost.start[l]  = 0xFFFF;
-        a->cost.end[l]    = 0xFFFF;
-        a->cost.frame[l]  = 0xFFFF;
+
+    // _costumeNeedsInit = true — we don't track it directly; the equivalent
+    // is that showActor (called below) always startAnimActor(_initFrame).
+
+    auto reset_cost = [a]() {
+        a->cost.stopped_mask = 0;
+        for (int l = 0; l < 16; l++) {
+            a->cost.curpos[l] = 0xFFFF;
+            a->cost.start[l]  = 0xFFFF;
+            a->cost.end[l]    = 0xFFFF;
+            a->cost.frame[l]  = 0xFFFF;
+        }
+    };
+
+    if (a->flags & ACTOR_FLAG_VISIBLE) {
+        // hideActor: stopMoving + (was-moving → standFrame) + clear visible.
+        if (a->moving) {
+            a->moving = 0;
+            actor_start_anim(n, a->stand_frame);
+        }
+        a->flags &= (uint8_t)~ACTOR_FLAG_VISIBLE;
+
+        reset_cost();
+        a->costume = (uint16_t)cost;
+
+        // showActor: adjustActorPos, startAnimActor(_initFrame), visible = true.
+        actor_adjust_pos(a);
+        a->flags |= ACTOR_FLAG_VISIBLE;
+        a->moving = 0;
+        if (cost != 0) {
+            actor_start_anim(n, a->init_frame);
+        }
+    } else {
+        a->costume = (uint16_t)cost;
+        reset_cost();
     }
+
+    // Default palette (non-GF_OLD_BUNDLE): all 32 entries 0xFF (sentinel —
+    // costume's own palette[i] is used).  scummvm-upstream/actor.cpp:3702.
     for (int p = 0; p < 32; p++) a->palette[p] = 0xFF;
     a->anim_progress = 0;
-    // Mirrors Actor::setActorCostume (actor.cpp:3672-3677): when the
-    // actor is visible, immediately startAnimActor(_initFrame) so the
-    // costume's idle pose plays. Without this, every limb stays at
-    // 0xFFFF (cost.curpos == "empty") and the costume render path
-    // skips them, producing invisible actors — symptom: MI1 cloud
-    // actors (cost=111) flagged visible at room enter rendered
-    // nothing until the boot script later issued an animateActor.
-    if (a->flags & ACTOR_FLAG_VISIBLE) {
-        actor_start_anim(n, a->init_frame);
-    }
 }
 
+// Direct port of Actor::startWalkActor (scummvm-upstream/actor.cpp:850-917).
+// v4 path: skip adjustXYToBeInBox (game uses the destination as-is — the
+// pathing inside walkActor will route through walkboxes), then arm the
+// walkdata fields and set _moving = MF_NEW_LEG.
 void actor_walk_to(int n, int x, int y) {
+    actor_start_walk(n, x, y, /*dir=*/-1);     // see header for signature
+}
+
+void actor_start_walk(int n, int dst_x, int dst_y, int dir) {
     Actor *a = actor_get(n); if (!a) return;
-    a->dest_x = (int16_t)x; a->dest_y = (int16_t)y;
-    a->moving |= MOVE_NEW_LEG;
+
+    // v4: AdjustBoxResult is just (destX, destY, kInvalidBox) — the
+    // routing happens later in walkActor. (v5+ would call adjustXYToBeInBox here.)
+    int abr_x = dst_x;
+    int abr_y = dst_y;
+    uint8_t abr_box = INVALID_BOX;
+
+    int current_room = engine_current_room_id();
+    bool in_current = ((int)a->room == current_room);
+
+    // For v4-6: if not in current room, just teleport and set facing.
+    if (!in_current) {
+        a->x = (int16_t)abr_x;
+        a->y = (int16_t)abr_y;
+        // _ignoreTurns isn't tracked; assume false for v4 MI1.
+        if (dir != -1) a->facing = (uint16_t)dir;
+        return;
+    }
+
+    if (a->flags & ACTOR_FLAG_IGNORE_BOX) {
+        abr_box = INVALID_BOX;
+        a->walkbox = INVALID_BOX;
+    } else {
+        // checkXYInBoxBounds(_walkdata.destbox, abr.x, abr.y) — if the
+        // existing destbox still contains the new (x,y), reuse it; else
+        // re-snap.
+        WalkboxGraph *wbg = engine_active_walkbox_graph();
+        if (wbg && wbg->valid && a->dest_box != INVALID_BOX &&
+            walkbox_xy_in_box(wbg, a->dest_box, abr_x, abr_y)) {
+            abr_box = a->dest_box;
+        } else {
+            int adj_x = abr_x, adj_y = abr_y;
+            abr_box = walkbox_adjust_xy(wbg, abr_x, abr_y, &adj_x, &adj_y);
+            abr_x = adj_x; abr_y = adj_y;
+        }
+
+        // If we were already heading to the same destination + dir, no-op.
+        if (a->moving && (int)a->walk_dest_dir == dir &&
+            a->dest_x == abr_x && a->dest_y == abr_y) {
+            return;
+        }
+    }
+
+    if (a->x == abr_x && a->y == abr_y) {
+        // Already at destination — turn-only.
+        if (dir != -1 && (int)a->facing != dir) {
+            a->target_facing = (uint16_t)dir;
+            a->moving |= MOVE_TURN;
+        }
+        return;
+    }
+
+    a->dest_x = (int16_t)abr_x;
+    a->dest_y = (int16_t)abr_y;
+    a->dest_box = abr_box;
+    a->walk_dest_dir = (int16_t)dir;
+    a->point3_x = 32000;        // sentinel
+    a->cur_box = a->walkbox;
+
+    // v3+: _moving = (_moving & MF_IN_LEG) | MF_NEW_LEG.
+    a->moving = (a->moving & MOVE_IN_LEG) | MOVE_NEW_LEG;
 }
 
 // Mirrors o5_animateActor -> Actor::animateActor (actor.cpp:2817-2874).
@@ -417,224 +569,220 @@ void actor_face_object(int n, int object) {
 }
 
 // ---------------------------------------------------------------------------
-// Walking
+// Walking — direct ports of scummvm Actor::calcMovementFactor /
+// Actor::actorWalkStep / Actor::walkActor / Actor::startWalkAnim.
 // ---------------------------------------------------------------------------
-//
-// We compute a per-frame 16.16 (xfrac, yfrac) increment from
-// (next - cur), divided by max(|dx|, |dy|) and scaled by speed*scalex.
-// Each frame we accumulate, integerize, advance position. When position
-// reaches `next`, we either advance to the next box-gate or, on the final
-// leg, clear MOVE_IN_LEG.
 
-static int16_t clip16(int v) {
-    if (v < -32767) return -32767;
-    if (v >  32767) return  32767;
-    return (int16_t)v;
-}
-
-// Compute (delta_x, delta_y, xfrac, yfrac) for the next leg toward (next_x,
-// next_y) starting from current (a->x, a->y). Returns false if we're
-// already there.
-static bool start_leg(Actor *a, int next_x, int next_y) {
-    int dx = next_x - a->x;
-    int dy = next_y - a->y;
-    if (dx == 0 && dy == 0) return false;
-
-    a->next_x = (int16_t)next_x;
-    a->next_y = (int16_t)next_y;
-
-    int abs_dx = dx < 0 ? -dx : dx;
-    int abs_dy = dy < 0 ? -dy : dy;
-
-    // ScummVM v5 normalizes by deltaY (vertical-major) then re-checks vs
-    // speedx; if the implied deltaX exceeds speedx, recomputes by deltaX.
-    // We do the simpler formulation: compute step as a fixed-point fraction
-    // such that the longer axis steps speed pixels per frame.
-    int speedx = a->speedx ? a->speedx : 1;
-    int speedy = a->speedy ? a->speedy : 1;
-
-    int32_t dxf, dyf;
-    if (abs_dy >= abs_dx) {
-        // vertical-major
-        dyf = (int32_t)speedy << 16;
-        if (dy < 0) dyf = -dyf;
-        // dxf = dyf * dx / dy
-        if (dy != 0)
-            dxf = (int32_t)((int64_t)dyf * dx / dy);
-        else
-            dxf = 0;
-        // If implied |dxf>>16| > speedx, recompute by dxf
-        int implied_dx = dxf < 0 ? -((int)(dxf >> 16)) : (int)(dxf >> 16);
-        if (implied_dx > speedx) {
-            dxf = (int32_t)speedx << 16;
-            if (dx < 0) dxf = -dxf;
-            if (dx != 0)
-                dyf = (int32_t)((int64_t)dxf * dy / dx);
-            else
-                dyf = 0;
-        }
-    } else {
-        dxf = (int32_t)speedx << 16;
-        if (dx < 0) dxf = -dxf;
-        if (dx != 0)
-            dyf = (int32_t)((int64_t)dxf * dy / dx);
-        else
-            dyf = 0;
-    }
-
-    a->delta_x = dxf;
-    a->delta_y = dyf;
-    a->xfrac = 0;
-    a->yfrac = 0;
-
-    // Update target_facing — 4-direction
-    if (abs_dy * 2 < abs_dx) a->target_facing = (dx > 0) ? 90 : 270;
-    else                     a->target_facing = (dy > 0) ? 180 : 0;
-
-    a->moving |= MOVE_IN_LEG;
-    return true;
-}
-
-// One step: advance fractional accumulator, write integer pos. Returns
-// true when the leg has been completed (we've reached a->next_x/y).
-static bool step_leg(Actor *a) {
-    int dx_target = (int)a->next_x - (int)a->x;
-    int dy_target = (int)a->next_y - (int)a->y;
-    if (dx_target == 0 && dy_target == 0) return true;
-
-    // Scale by actor's scale: ScummVM uses (delta >> 8) * scale, which
-    // simplifies to (delta * scale) / 256.
-    int sx = a->scalex ? a->scalex : 0xFF;
-    int sy = a->scaley ? a->scaley : 0xFF;
-
-    int32_t step_x = (int32_t)(((int64_t)a->delta_x * sx) >> 8);
-    int32_t step_y = (int32_t)(((int64_t)a->delta_y * sy) >> 8);
-
-    int64_t tmp_x = ((int64_t)a->x << 16) + a->xfrac + step_x;
-    int64_t tmp_y = ((int64_t)a->y << 16) + a->yfrac + step_y;
-
-    a->xfrac = (int32_t)(tmp_x & 0xFFFF);
-    a->yfrac = (int32_t)(tmp_y & 0xFFFF);
-    a->x = clip16((int)(tmp_x >> 16));
-    a->y = clip16((int)(tmp_y >> 16));
-
-    // Clip to target if we overshot
-    if ((dx_target > 0 && a->x > a->next_x) ||
-        (dx_target < 0 && a->x < a->next_x)) a->x = a->next_x;
-    if ((dy_target > 0 && a->y > a->next_y) ||
-        (dy_target < 0 && a->y < a->next_y)) a->y = a->next_y;
-
-    return (a->x == a->next_x && a->y == a->next_y);
-}
-
-// Mirrors Actor::startWalkAnim (actor.cpp:919-943). cmd 1 = start walk
-// (startAnimActor(walkFrame)); cmd 3 = stop walk (startAnimActor(standFrame)).
+// Mirrors Actor::startWalkAnim (scummvm-upstream/actor.cpp:919-943).
+//   cmd 1 = start walk  (setDirection + startAnimActor(walkFrame))
+//   cmd 3 = stop walk   (turnToDirection + startAnimActor(standFrame))
+// We're v4 ≤ 6, so always setDirection (not turnToDirection) for cmd != 3.
 static void start_walk_anim(Actor *a, int cmd, int angle) {
+    if (angle == -1) angle = (int)a->facing;
+
     if (a->walk_script) {
-        // Mirrors Actor::startWalkAnim (actor.cpp:920-928): when an
-        // actor has a custom walk script set via SO_WALK_ANIMATION,
-        // dispatch it with (number, cmd, angle) and return — the
-        // script is responsible for choosing frames itself.
         int32_t args[3] = { (int32_t)a->number, (int32_t)cmd, (int32_t)angle };
         vm_start_script(&g_vm, a->walk_script, args, 3, false, false);
         return;
     }
-    if (cmd == 3 || cmd == 1) {
-        actor_set_facing((int)a->number, angle == -1 ? a->facing : angle);
+    if (cmd == 3) {
+        // turnToDirection — for our 4-direction encoding, just set facing.
+        actor_set_facing((int)a->number, angle);
+    } else {
+        actor_set_facing((int)a->number, angle);
     }
     if (cmd == 1)      actor_start_anim((int)a->number, a->walk_frame);
     else if (cmd == 3) actor_start_anim((int)a->number, a->stand_frame);
 }
 
-// Advance the walk state for one actor.
-static void tick_walk(Actor *a, const WalkboxGraph *wbg) {
-    if (!(a->moving & (MOVE_NEW_LEG | MOVE_IN_LEG))) return;
+// Mirrors Actor::updateActorDirection (scummvm-upstream/actor.cpp:1544).
+// For v4-6 with 4-direction encoding the result is just the requested
+// target direction — there's no costume-direction-count remap step.
+static int update_actor_direction(Actor *a, bool /*is_walking*/) {
+    return (int)a->target_facing;
+}
 
-    // Find current box if unknown.
-    if (wbg && wbg->valid && a->cur_box == INVALID_BOX) {
-        a->cur_box = walkbox_at(wbg, a->x, a->y);
+// Direct port of Actor::calcMovementFactor (scummvm-upstream/actor.cpp:520-576).
+// Returns the result of actorWalkStep() so the first step happens in the
+// same call (mirrors scummvm).
+static int actor_walk_step(Actor *a);
+static int actor_calc_movement_factor(Actor *a, int next_x, int next_y) {
+    int diffX, diffY;
+    int32_t deltaXFactor, deltaYFactor;
+
+    if (a->x == next_x && a->y == next_y)
+        return 0;
+
+    diffX = next_x - a->x;
+    diffY = next_y - a->y;
+
+    deltaYFactor = (int32_t)a->speedy << 16;
+    if (diffY < 0) deltaYFactor = -deltaYFactor;
+
+    deltaXFactor = deltaYFactor * diffX;
+    if (diffY != 0) {
+        deltaXFactor /= diffY;
+    } else {
+        deltaYFactor = 0;
     }
 
-    if (a->moving & MOVE_NEW_LEG) {
-        bool was_idle = !(a->moving & MOVE_IN_LEG);
-        a->moving &= ~MOVE_NEW_LEG;
-        // Pick next waypoint.
-        int target_x = a->dest_x;
-        int target_y = a->dest_y;
+    // For SCUMM4-6: the disasm divides by 0x10000 (not abs(>>16)).
+    int absDX = (deltaXFactor / 0x10000); if (absDX < 0) absDX = -absDX;
+    if ((unsigned)absDX > a->speedx) {
+        deltaXFactor = (int32_t)a->speedx << 16;
+        if (diffX < 0) deltaXFactor = -deltaXFactor;
+        deltaYFactor = deltaXFactor * diffY;
+        if (diffX != 0) deltaYFactor /= diffX;
+        else            deltaXFactor = 0;
+    }
 
-        if (wbg && wbg->valid) {
-            // Find dest box; if not in any box, snap to closest box.
-            uint8_t db = walkbox_at(wbg, target_x, target_y);
-            if (db == INVALID_BOX && wbg->num_boxes > 0) {
-                // Pick box whose closest point is nearest the destination.
-                int best_d = 0x7FFFFFFF;
-                int best_bx = 0;
-                int best_x = target_x, best_y = target_y;
-                for (int i = 0; i < wbg->num_boxes; i++) {
-                    if (wbg->boxes[i].flags & BOX_FLAG_INVISIBLE) continue;
-                    int cx, cy;
-                    walkbox_closest_pt(&wbg->boxes[i], target_x, target_y, &cx, &cy);
-                    int d = (cx - target_x) * (cx - target_x) +
-                            (cy - target_y) * (cy - target_y);
-                    if (d < best_d) {
-                        best_d = d; best_bx = i;
-                        best_x = cx; best_y = cy;
-                    }
-                }
-                target_x = best_x; target_y = best_y;
-                db = (uint8_t)best_bx;
-            }
-            a->dest_box = db;
+    a->xfrac = 0;
+    a->yfrac = 0;
+    a->cur_x = a->x; a->cur_y = a->y;
+    a->next_x = (int16_t)next_x; a->next_y = (int16_t)next_y;
+    a->delta_x = deltaXFactor;
+    a->delta_y = deltaYFactor;
 
-            uint8_t next_box = walkbox_next(wbg, a->cur_box, a->dest_box);
-            int nx = target_x, ny = target_y;
-            if (next_box == INVALID_BOX || next_box == a->dest_box ||
-                next_box == a->cur_box) {
-                a->moving |= MOVE_LAST_LEG;
-            } else {
-                // Compute gate point: closest point on the boundary of
-                // next_box to the destination.
-                walkbox_closest_pt(&wbg->boxes[next_box], target_x, target_y,
-                                   &nx, &ny);
+    // v4-6: _targetFacing = (ABS(diffY)*3 > ABS(diffX)) ? (deltaYFactor>0?180:0) : (deltaXFactor>0?90:270)
+    int absDiffX = diffX < 0 ? -diffX : diffX;
+    int absDiffY = diffY < 0 ? -diffY : diffY;
+    a->target_facing = (uint16_t)((absDiffY * 3 > absDiffX)
+        ? (deltaYFactor > 0 ? 180 : 0)
+        : (deltaXFactor > 0 ? 90 : 270));
+
+    return actor_walk_step(a);
+}
+
+// Direct port of Actor::actorWalkStep (scummvm-upstream/actor.cpp:633-682).
+static int actor_walk_step(Actor *a) {
+    // _needRedraw = true (we redraw every frame anyway).
+
+    // v4-6 path: updateActorDirection(true) → setDirection if changed +
+    // startWalkAnim(1, nextFacing) on first transition into MF_IN_LEG.
+    int nextFacing = update_actor_direction(a, true);
+    if ((a->walk_frame != a->frame && !(a->moving & MOVE_IN_LEG)) ||
+        (int)a->facing != nextFacing) {
+        start_walk_anim(a, 1, nextFacing);
+    }
+    a->moving |= MOVE_IN_LEG;
+
+    WalkboxGraph *wbg = engine_active_walkbox_graph();
+    if (a->walkbox != a->cur_box && wbg && wbg->valid &&
+        a->cur_box != INVALID_BOX &&
+        walkbox_xy_in_box(wbg, a->cur_box, a->x, a->y)) {
+        actor_set_box(a, a->cur_box);
+    }
+
+    int distX = a->next_x - a->cur_x; if (distX < 0) distX = -distX;
+    int distY = a->next_y - a->cur_y; if (distY < 0) distY = -distY;
+
+    int absPosCurX = a->x - a->cur_x; if (absPosCurX < 0) absPosCurX = -absPosCurX;
+    int absPosCurY = a->y - a->cur_y; if (absPosCurY < 0) absPosCurY = -absPosCurY;
+    if (absPosCurX >= distX && absPosCurY >= distY) {
+        a->moving &= ~MOVE_IN_LEG;
+        return 0;
+    }
+
+    // v4-6 fixed-point step:
+    //   tmpX = pos.x * 0x10000 + xfrac + (deltaXFactor >> 8) * scalex
+    //   xfrac = (uint16) tmpX
+    //   pos.x = tmpX >> 16
+    int32_t tmpX = (int32_t)(a->x * 0x10000) + (int32_t)a->xfrac +
+                   (int32_t)((a->delta_x >> 8) * a->scalex);
+    a->xfrac = (uint16_t)tmpX;
+    a->x = (int16_t)(tmpX >> 16);
+
+    int32_t tmpY = (int32_t)(a->y * 0x10000) + (int32_t)a->yfrac +
+                   (int32_t)((a->delta_y >> 8) * a->scaley);
+    a->yfrac = (uint16_t)tmpY;
+    a->y = (int16_t)(tmpY >> 16);
+
+    int absPosCurX2 = a->x - a->cur_x; if (absPosCurX2 < 0) absPosCurX2 = -absPosCurX2;
+    int absPosCurY2 = a->y - a->cur_y; if (absPosCurY2 < 0) absPosCurY2 = -absPosCurY2;
+    if (absPosCurX2 > distX) a->x = a->next_x;
+    if (absPosCurY2 > distY) a->y = a->next_y;
+
+    if (a->x == a->next_x && a->y == a->next_y) {
+        a->moving &= ~MOVE_IN_LEG;
+        return 0;
+    }
+
+    return 1;
+}
+
+// Direct port of Actor::walkActor (scummvm-upstream/actor.cpp:945-1015).
+// One-shot per-frame dispatcher: handles MF_TURN, MF_LAST_LEG, MF_NEW_LEG,
+// runs the box-routing loop, finally calls calcMovementFactor for the next
+// leg's gate.
+static void walk_actor(Actor *a, const WalkboxGraph *wbg) {
+    if (!a->moving) return;
+
+    if (!(a->moving & MOVE_NEW_LEG)) {
+        if ((a->moving & MOVE_IN_LEG) && actor_walk_step(a))
+            return;
+
+        if (a->moving & MOVE_LAST_LEG) {
+            a->moving = 0;
+            actor_set_box(a, a->dest_box);
+            // v4-6: startAnimActor(_standFrame) + turnToDirection(_walkdata.destdir)
+            actor_start_anim((int)a->number, a->stand_frame);
+            if (a->walk_dest_dir != -1 &&
+                (int)a->target_facing != (int)a->walk_dest_dir) {
+                a->target_facing = (uint16_t)a->walk_dest_dir;
+                actor_set_facing((int)a->number, (int)a->walk_dest_dir);
             }
-            if (!start_leg(a, nx, ny)) {
+            return;
+        }
+
+        if (a->moving & MOVE_TURN) {
+            // v4-6: setDirection(updateActorDirection(false)) or moving=0.
+            int new_dir = update_actor_direction(a, false);
+            if ((int)a->facing != new_dir)
+                actor_set_facing((int)a->number, new_dir);
+            else
                 a->moving = 0;
-            }
-        } else {
-            // No walkbox graph — walk straight to destination.
+            return;
+        }
+
+        actor_set_box(a, a->cur_box);
+        a->moving &= MOVE_IN_LEG;
+    }
+
+    a->moving &= ~MOVE_NEW_LEG;
+    int found_x = 0, found_y = 0;
+    do {
+        if (a->walkbox == INVALID_BOX) {
+            actor_set_box(a, a->dest_box);
+            a->cur_box = a->dest_box;
+            break;
+        }
+
+        if (a->walkbox == a->dest_box) break;
+
+        if (!wbg || !wbg->valid) break;
+
+        uint8_t next_box = walkbox_next(wbg, a->walkbox, a->dest_box);
+        if (next_box == INVALID_BOX) {
+            a->dest_box = a->walkbox;
             a->moving |= MOVE_LAST_LEG;
-            if (!start_leg(a, target_x, target_y)) {
-                a->moving = 0;
-            }
+            return;
         }
-        // Trigger walk-frame on idle->moving transition. Mirrors
-        // ScummEngine::Actor::walkActor which calls startWalkAnim(1)
-        // when MF_NEW_LEG initiates motion.
-        if (was_idle && (a->moving & MOVE_IN_LEG)) {
-            start_walk_anim(a, 1, a->target_facing);
-        }
-        return;
-    }
 
-    if (a->moving & MOVE_IN_LEG) {
-        bool reached = step_leg(a);
-        if (reached) {
-            a->moving &= ~MOVE_IN_LEG;
-            // Update current box.
-            if (wbg && wbg->valid)
-                a->cur_box = walkbox_at(wbg, a->x, a->y);
-            if (a->moving & MOVE_LAST_LEG) {
-                a->moving = 0;
-                // Stop-walk anim. Mirrors actor.cpp:957-963 — when
-                // MF_LAST_LEG completes, startAnimActor(_standFrame)
-                // and turnToDirection(_walkdata.destdir).
-                start_walk_anim(a, 3, a->target_facing);
-            } else {
-                // Plan next leg.
-                a->moving |= MOVE_NEW_LEG;
-            }
-        }
-    }
+        a->cur_box = next_box;
+
+        if (walkbox_find_path_towards(wbg, a->walkbox, next_box, a->dest_box,
+                                      a->x, a->y, a->dest_x, a->dest_y,
+                                      &found_x, &found_y))
+            break;     // pass-through to dest
+
+        if (actor_calc_movement_factor(a, found_x, found_y))
+            return;
+
+        actor_set_box(a, a->cur_box);
+    } while (true);
+
+    a->moving |= MOVE_LAST_LEG;
+    actor_calc_movement_factor(a, a->dest_x, a->dest_y);
 }
 
 // Mirrors ScummEngine::Actor::setupActorScale (actor.cpp:451-474).
@@ -709,7 +857,7 @@ void actor_tick_all(const WalkboxGraph *wbg) {
         }
         setup_actor_scale(&a, wbg);
         bool was_moving = (a.moving != 0);
-        tick_walk(&a, wbg);
+        walk_actor(&a, wbg);
         tick_anim(&a);
         // Re-evaluate walkbox ONLY if the actor was walking. ScummVM
         // updates _walkbox in walkActor when a step crosses a box

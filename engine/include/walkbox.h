@@ -96,4 +96,35 @@ void walkbox_set_scale(int box_id, uint16_t scale);
 // Recompute the itinerary matrix — mirrors createBoxMatrix.
 void walkbox_recompute_matrix();
 
+// Mirror of Actor::adjustXYToBeInBox (scummvm-upstream/actor.cpp:1983).
+// Walks every box at three threshold passes (30, 80, 0); returns the
+// closest point inside any box, plus the matching box id.  v4 specifics:
+// firstValidBox = 0 (GF_SMALL_HEADER), invisible boxes are skipped, the
+// caller treats kInvalidBox as "no box found".  Out_x/out_y are clamped to
+// the closest point on the closest box (or the input if it lies inside
+// any box).  Returns INVALID_BOX if no walkable box exists at all.
+uint8_t walkbox_adjust_xy(const WalkboxGraph *g, int dst_x, int dst_y,
+                          int *out_x, int *out_y);
+
+// Test whether a point lies inside a specific box (sub-helper for
+// adjustXYToBeInBox). Mirrors checkXYInBoxBounds (boxes.cpp:520).
+bool walkbox_xy_in_box(const WalkboxGraph *g, int box_id, int x, int y);
+
+// Direct port of Actor::findPathTowards (scummvm-upstream/boxes.cpp:815).
+// Given two adjacent boxes (box1, box2) and the eventual destination box
+// (box3), locates the gate point on the shared edge of box1 and box2 to
+// pass through. Returns:
+//   true  → use the actor's current position straight to dest (no
+//           detour needed; foundPath is unset).
+//   false → write the gate point to foundPath_x/y; calcMovementFactor
+//           should target it.
+// The (cur_x, cur_y) and (dest_x, dest_y) inputs are the actor's current
+// position and the final destination — they are needed because the gate
+// solver uses them to pick the correct point on overlapping edges.
+bool walkbox_find_path_towards(const WalkboxGraph *g, int box1, int box2,
+                               int box3,
+                               int cur_x, int cur_y,
+                               int dest_x, int dest_y,
+                               int *foundPath_x, int *foundPath_y);
+
 }  // namespace tsb

@@ -329,6 +329,205 @@ void walkbox_recompute_matrix() {
     }
 }
 
+// Mirror of ScummEngine::checkXYInBoxBounds (boxes.cpp:520) — defers to
+// our point-in-quad test once box id is bounds-checked.
+bool walkbox_xy_in_box(const WalkboxGraph *g, int box_id, int x, int y) {
+    if (!g || !g->valid) return false;
+    if (box_id < 0 || box_id >= g->num_boxes) return false;
+    return point_in_box(&g->boxes[box_id], x, y);
+}
+
+// Direct port of Actor::adjustXYToBeInBox (scummvm-upstream/actor.cpp:1983-2088).
+// We omit the v4-specific _lastValidX/Y carry-over (an undefined-behaviour
+// quirk used to recover from a single odd MI1 case in scummvm); for our
+// MI1 VGA Floppy target this only affects bug #2377-style edge cases.
+uint8_t walkbox_adjust_xy(const WalkboxGraph *g, int dst_x, int dst_y,
+                          int *out_x, int *out_y) {
+    if (!g || !g->valid || g->num_boxes == 0) {
+        *out_x = dst_x; *out_y = dst_y;
+        return INVALID_BOX;
+    }
+
+    static const int threshold_table[] = { 30, 80, 0 };
+    int abr_x = dst_x, abr_y = dst_y;
+    uint8_t abr_box = INVALID_BOX;
+
+    for (int t_idx = 0; t_idx < 3; t_idx++) {
+        int threshold = threshold_table[t_idx];
+        int num_boxes = g->num_boxes - 1;
+        int best_dist = 0xFFFF;     // v4-6: 16-bit init
+        uint8_t best_box = INVALID_BOX;
+
+        // Iterate backwards over all boxes, smallest distance wins.
+        for (int box = num_boxes; box >= 0; box--) {
+            const WalkBox &b = g->boxes[box];
+            if (b.flags & BOX_FLAG_INVISIBLE) continue;
+            // (kBoxPlayerOnly skipped — v4 MI1 doesn't flip player-only.)
+
+            // Quick reject: skip if (x,y) is more than `threshold` pixels
+            // from the box's bounding rect on either axis. Mirrors
+            // boxes.cpp `inBoxQuickReject`.
+            if (threshold > 0) {
+                int min_x = b.ulx, max_x = b.ulx;
+                if (b.urx < min_x) min_x = b.urx; else if (b.urx > max_x) max_x = b.urx;
+                if (b.lrx < min_x) min_x = b.lrx; else if (b.lrx > max_x) max_x = b.lrx;
+                if (b.llx < min_x) min_x = b.llx; else if (b.llx > max_x) max_x = b.llx;
+                int min_y = b.uly, max_y = b.uly;
+                if (b.ury < min_y) min_y = b.ury; else if (b.ury > max_y) max_y = b.ury;
+                if (b.lry < min_y) min_y = b.lry; else if (b.lry > max_y) max_y = b.lry;
+                if (b.lly < min_y) min_y = b.lly; else if (b.lly > max_y) max_y = b.lly;
+                if (dst_x < min_x - threshold || dst_x > max_x + threshold) continue;
+                if (dst_y < min_y - threshold || dst_y > max_y + threshold) continue;
+            }
+
+            // Inside? Done — exact match short-circuits the loop.
+            if (point_in_box(&b, dst_x, dst_y)) {
+                *out_x = dst_x; *out_y = dst_y;
+                return (uint8_t)box;
+            }
+
+            int cx, cy;
+            walkbox_closest_pt(&b, dst_x, dst_y, &cx, &cy);
+            int dx = dst_x - cx, dy = dst_y - cy;
+            int tmp_dist = dx * dx + dy * dy;
+
+            if (tmp_dist < best_dist) {
+                abr_x = cx; abr_y = cy;
+                if (tmp_dist == 0) {
+                    *out_x = abr_x; *out_y = abr_y;
+                    return (uint8_t)box;
+                }
+                best_dist = tmp_dist;
+                best_box = (uint8_t)box;
+            }
+        }
+
+        if (threshold == 0 || threshold * threshold >= best_dist) {
+            abr_box = best_box;
+            *out_x = abr_x; *out_y = abr_y;
+            return abr_box;
+        }
+    }
+
+    *out_x = abr_x; *out_y = abr_y;
+    return abr_box;
+}
+
+// Direct port of Actor::findPathTowards (scummvm-upstream/boxes.cpp:815-944).
+// We work on local copies of the four corner points so we can rotate them
+// in place — the algorithm tries all 4×4 combinations of rotated boxes,
+// looking for a shared horizontal or vertical edge.
+bool walkbox_find_path_towards(const WalkboxGraph *g, int box1nr, int box2nr,
+                               int box3nr,
+                               int cur_x, int cur_y,
+                               int dest_x, int dest_y,
+                               int *foundPath_x, int *foundPath_y) {
+    if (!g || !g->valid) return false;
+    if (box1nr < 0 || box1nr >= g->num_boxes) return false;
+    if (box2nr < 0 || box2nr >= g->num_boxes) return false;
+
+    // BoxCoords mirrors scummvm's BoxCoords (ul, ur, lr, ll). We rotate
+    // these by overwriting each iteration.
+    struct Pt { int x, y; };
+    Pt b1ul = { g->boxes[box1nr].ulx, g->boxes[box1nr].uly };
+    Pt b1ur = { g->boxes[box1nr].urx, g->boxes[box1nr].ury };
+    Pt b1lr = { g->boxes[box1nr].lrx, g->boxes[box1nr].lry };
+    Pt b1ll = { g->boxes[box1nr].llx, g->boxes[box1nr].lly };
+    Pt b2ul = { g->boxes[box2nr].ulx, g->boxes[box2nr].uly };
+    Pt b2ur = { g->boxes[box2nr].urx, g->boxes[box2nr].ury };
+    Pt b2lr = { g->boxes[box2nr].lrx, g->boxes[box2nr].lry };
+    Pt b2ll = { g->boxes[box2nr].llx, g->boxes[box2nr].lly };
+
+    auto SWAP_INT = [](int &a, int &b) { int t = a; a = b; b = t; };
+
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            // Vertical-edge case
+            if (b1ul.x == b1ur.x && b1ul.x == b2ul.x && b1ul.x == b2ur.x) {
+                int flag = 0;
+                if (b1ul.y > b1ur.y) { SWAP_INT(b1ul.y, b1ur.y); flag |= 1; }
+                if (b2ul.y > b2ur.y) { SWAP_INT(b2ul.y, b2ur.y); flag |= 2; }
+
+                if (b1ul.y > b2ur.y || b2ul.y > b1ur.y ||
+                    ((b1ur.y == b2ul.y || b2ur.y == b1ul.y) &&
+                     b1ul.y != b1ur.y && b2ul.y != b2ur.y)) {
+                    if (flag & 1) SWAP_INT(b1ul.y, b1ur.y);
+                    if (flag & 2) SWAP_INT(b2ul.y, b2ur.y);
+                } else {
+                    int pos = cur_y;
+                    if (box2nr == box3nr) {
+                        int diffX = dest_x - cur_x;
+                        int diffY = dest_y - cur_y;
+                        int boxDiffX = b1ul.x - cur_x;
+                        if (diffX != 0) {
+                            int t;
+                            diffY *= boxDiffX;
+                            t = diffY / diffX;
+                            if (t == 0 && (diffY <= 0 || diffX <= 0)
+                                       && (diffY >= 0 || diffX >= 0))
+                                t = -1;
+                            pos = cur_y + t;
+                        }
+                    }
+                    int q = pos;
+                    if (q < b2ul.y) q = b2ul.y;
+                    if (q > b2ur.y) q = b2ur.y;
+                    if (q < b1ul.y) q = b1ul.y;
+                    if (q > b1ur.y) q = b1ur.y;
+                    if (q == pos && box2nr == box3nr) return true;
+                    *foundPath_x = b1ul.x;
+                    *foundPath_y = q;
+                    return false;
+                }
+            }
+
+            // Horizontal-edge case
+            if (b1ul.y == b1ur.y && b1ul.y == b2ul.y && b1ul.y == b2ur.y) {
+                int flag = 0;
+                if (b1ul.x > b1ur.x) { SWAP_INT(b1ul.x, b1ur.x); flag |= 1; }
+                if (b2ul.x > b2ur.x) { SWAP_INT(b2ul.x, b2ur.x); flag |= 2; }
+
+                if (b1ul.x > b2ur.x || b2ul.x > b1ur.x ||
+                    ((b1ur.x == b2ul.x || b2ur.x == b1ul.x) &&
+                     b1ul.x != b1ur.x && b2ul.x != b2ur.x)) {
+                    if (flag & 1) SWAP_INT(b1ul.x, b1ur.x);
+                    if (flag & 2) SWAP_INT(b2ul.x, b2ur.x);
+                } else {
+                    int pos;
+                    if (box2nr == box3nr) {
+                        int diffX = dest_x - cur_x;
+                        int diffY = dest_y - cur_y;
+                        int boxDiffY = b1ul.y - cur_y;
+                        pos = cur_x;
+                        if (diffY != 0) {
+                            pos += diffX * boxDiffY / diffY;
+                        }
+                    } else {
+                        pos = cur_x;
+                    }
+                    int q = pos;
+                    if (q < b2ul.x) q = b2ul.x;
+                    if (q > b2ur.x) q = b2ur.x;
+                    if (q < b1ul.x) q = b1ul.x;
+                    if (q > b1ur.x) q = b1ur.x;
+                    if (q == pos && box2nr == box3nr) return true;
+                    *foundPath_x = q;
+                    *foundPath_y = b1ul.y;
+                    return false;
+                }
+            }
+
+            // Rotate box1 corners (CW): ul → ur → lr → ll → ul.
+            Pt tmp = b1ul;
+            b1ul = b1ur; b1ur = b1lr; b1lr = b1ll; b1ll = tmp;
+        }
+        // Rotate box2 corners
+        Pt tmp = b2ul;
+        b2ul = b2ur; b2ur = b2lr; b2lr = b2ll; b2ll = tmp;
+    }
+    return false;
+}
+
 void walkbox_closest_pt(const WalkBox *box, int px, int py,
                         int *out_x, int *out_y) {
     int best_x = box->ulx, best_y = box->uly;

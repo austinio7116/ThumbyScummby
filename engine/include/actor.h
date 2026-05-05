@@ -78,14 +78,16 @@ struct Actor {
     uint16_t walk_script;
     uint16_t talk_script;
 
-    // Walk destination & current-leg waypoint
-    int16_t  dest_x, dest_y;
-    uint8_t  dest_box;
-    uint8_t  cur_box;       // box the next-leg starts in
-
-    int16_t  next_x, next_y;     // waypoint for current leg
-    int32_t  delta_x, delta_y;   // 16.16 per-frame increments (fixed point)
-    int32_t  xfrac, yfrac;       // 16.16 sub-pixel accumulator
+    // Walk-data — mirrors ScummVM Actor::_walkdata (actor.h:138-156).
+    int16_t  dest_x, dest_y;     // walkdata.dest
+    uint8_t  dest_box;           // walkdata.destbox
+    uint8_t  cur_box;            // walkdata.curbox (box current leg starts in)
+    int16_t  cur_x, cur_y;       // walkdata.cur (position at start of leg)
+    int16_t  next_x, next_y;     // walkdata.next (end of current leg)
+    int32_t  delta_x, delta_y;   // walkdata.deltaXFactor / deltaYFactor (16.16)
+    uint16_t xfrac, yfrac;       // walkdata.xfrac / yfrac (16-bit sub-pixel)
+    int16_t  point3_x;           // walkdata.point3.x — 32000 sentinel ("no findPath result")
+    int16_t  walk_dest_dir;      // walkdata.destdir — facing at final stop
 
     // Costume per-limb animation
     ActorCostumeAnim cost;
@@ -107,6 +109,12 @@ void   actor_hide(int actor_num);
 void   actor_hide_all();
 void   actor_show_in_current_room(int current_room);
 
+// Direct port of Actor::adjustActorPos (scummvm-upstream/actor.cpp:2090).
+// Snaps the actor onto the closest walkbox, then sets walkdata.destbox /
+// walkbox / kicks off setupActorScale via setBox.  Called from putActor
+// (visible-in-current branch) and showActor.
+void   actor_adjust_pos(Actor *a);
+
 // Mirrors scummvm `_egoPositioned`. Set true by actor_put_at when the
 // actor being placed IS the ego (VAR_EGO). loadRoomWithEgo clears it
 // before running ENCD; if ENCD positions the ego, the flag becomes
@@ -117,6 +125,11 @@ bool   actor_ego_positioned_get();
 void   actor_ego_positioned_set(bool v);
 void   actor_set_costume(int actor_num, int costume_id);
 void   actor_walk_to(int actor_num, int x, int y);
+
+// Direct port of Actor::startWalkActor (scummvm-upstream/actor.cpp:850).
+// dir == -1 means "no preferred final facing"; non-negative dir is in
+// degrees (the engine's 4-direction encoding).
+void   actor_start_walk(int actor_num, int dst_x, int dst_y, int dir);
 void   actor_animate(int actor_num, int anim);
 void   actor_face_object(int actor_num, int object);
 void   actor_set_facing(int actor_num, int direction);  // setDirection
