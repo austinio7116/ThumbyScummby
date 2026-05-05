@@ -62,6 +62,10 @@ add_library(thumbyscummby_engine STATIC
     # charset.cpp + string.cpp transcribed but not built — bodies use
     # Graphics::Font / ConfMan / Mac GUI etc.  charset_legacy.cpp +
     # string_legacy.cpp drive runtime text rendering.
+    #
+    # verbs.cpp transcribed but not built — depends on charset / gfx /
+    # script_v5 transcribed bodies.  No legacy fallback (verbs are stub
+    # in our existing op_verbOps); panel won't render until enabled.
 )
 
 target_include_directories(thumbyscummby_engine PUBLIC include)
