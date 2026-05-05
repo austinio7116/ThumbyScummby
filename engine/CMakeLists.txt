@@ -80,7 +80,8 @@ add_library(thumbyscummby_engine STATIC
     # src/saveload.cpp       # out of MVP
 
     # ---- Bridge implementations (will shrink as pivot completes) ----
-    # OSystem_Thumby + audio_shim land here in Phase 4 / Phase 7.
+    src/osystem_thumby.cpp
+    # audio_shim.cpp lands here in Phase 7.
 )
 
 target_include_directories(thumbyscummby_engine PUBLIC include)
