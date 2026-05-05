@@ -7,7 +7,7 @@ add_library(thumbyscummby_engine STATIC
     src/chunk.cpp
     src/small_chunk.cpp
     src/master_index.cpp
-    src/room.cpp
+    src/room_legacy.cpp
     src/smap.cpp
     src/resource.cpp
     src/vm.cpp

@@ -9,7 +9,7 @@
 #include "chunk.h"
 #include "small_chunk.h"
 #include "master_index.h"
-#include "room.h"
+#include "room_legacy.h"
 #include "vm.h"
 #include "resource.h"
 #include "object_legacy.h"

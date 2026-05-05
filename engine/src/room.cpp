@@ -1,306 +1,878 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// ThumbyScummby — SCUMM v4/v5 interpreter port for Thumby Color.
-// Derived from / inspired by ScummVM (https://www.scummvm.org/).
-// See LICENSE for full GPL-3.0-or-later terms.
-//
-#include "room.h"
-#include "small_chunk.h"
-#include "smap.h"
-#include "platform.h"
+/* ScummVM - Graphic Adventure Engine
+ *
+ * ScummVM is the legal property of its developers, whose names
+ * are too numerous to list here. Please refer to the COPYRIGHT
+ * file distributed with this source distribution.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
 
-#include <string.h>
 
-namespace tsb {
+// ThumbyScummby: replaces scummvm-private headers.
+#include "scummvm_compat.h"
+#include "actor.h"
+#include "object.h"
 
-// ---------------------------------------------------------------------------
-// Locate a room within a DISK0n.LEC file.
-// LEC layout (small_header):
-//   LECF wrapper { LE size + "LE" } encloses the entire file
-//   LOFF { LE size + "FO" } maps room_id -> offset_within_lec
-//   LFLF { LE size + "LF" } per room — wraps the actual ROOM small-chunk
-//
-// readRoomsOffsets() in ScummVM seeks to offset 12 (skips LECF+LOFF
-// 6-byte headers) then reads LOFF entries directly.
-// ---------------------------------------------------------------------------
+namespace Scumm {
 
-bool room_load(int room_id, const MasterIndex &master, Room *out) {
-    memset(out, 0, sizeof(*out));
-    out->id = room_id;
+/**
+ * Start a 'scene' by loading the specified room with the given main actor.
+ * The actor is placed next to the object indicated by objectNr.
+ */
+void ScummEngine::startScene(int room, Actor *a, int objectNr) {
+	int i, where;
 
-    if (room_id < 1 || room_id >= master.num_rooms) {
-        platform::log("room_load: id %d out of range\n", room_id);
-        return false;
-    }
-    auto &entry = master.rooms[room_id];
-    if (entry.disk == 0) {
-        platform::log("room_load: room %d not on any disk\n", room_id);
-        return false;
-    }
-    Span disk = platform::data_disk(entry.disk);
-    if (disk.empty()) {
-        platform::log("room_load: disk %d not loaded\n", entry.disk);
-        return false;
-    }
+	debugC(DEBUG_GENERAL, "Loading room %d", room);
 
-    // entry.offset points at the LFLF wrapper (small chunk: 6-byte header
-    // then ROOM small-chunk inside).
-    if (entry.offset + 6 > disk.size) {
-        platform::log("room_load: room %d offset %u out of bounds\n",
-                      room_id, entry.offset);
-        return false;
-    }
+#ifdef ENABLE_SCUMM_7_8
+	if (_game.version >= 7) {
+		((ScummEngine_v7 *)this)->removeBlastTexts();
+	}
+#endif
 
-    SmallChunk lflf{};
-    if (!small_read(disk.sub(entry.offset), &lflf)) {
-        platform::log("room_load: room %d bad LFLF header at offset %u\n",
-                      room_id, entry.offset);
-        return false;
-    }
-    platform::log("room_load: room %d at disk %u offs 0x%X tag=0x%04X size=%u\n",
-                  room_id, entry.disk, entry.offset, lflf.tag, lflf.size);
-    // First few payload bytes for diagnostics
-    platform::log("  payload[0..15]:");
-    for (size_t i = 0; i < 16 && i < lflf.payload.size; i++)
-        platform::log(" %02x", lflf.payload.data[i]);
-    platform::log("\n");
-    if (lflf.tag != stag::LF) {
-        platform::log("room_load: room %d expected 'LF' got 0x%04X (LFLF wrapper)\n",
-                      room_id, lflf.tag);
-        // Some games store the ROOM directly; try anyway.
-    }
+	stopTalk();
 
-    // LFLF payload starts with `uint16 LE room_id` then the ROOM small-chunk.
-    Span body_after_id = lflf.payload.sub(2);
-    SmallChunk room_chunk{};
-    if (!small_read(body_after_id, &room_chunk) ||
-        room_chunk.tag != stag::RO) {
-        platform::log("room_load: room %d ROOM chunk missing/bad (tag=0x%04X)\n",
-                      room_id, room_chunk.tag);
-        return false;
-    }
-    out->room_chunk = room_chunk.payload;
+	fadeOut(_switchRoomEffect2);
+	_newEffect = _switchRoomEffect;
 
-    // Dump all sub-chunks for diagnostic
-    {
-        size_t cur = 0;
-        SmallChunk c2{};
-        platform::log("room %d sub-chunks:", room_id);
-        while (small_next(room_chunk.payload, &cur, &c2)) {
-            char a = (char)(c2.tag & 0xFF);
-            char b = (char)((c2.tag >> 8) & 0xFF);
-            platform::log(" %c%c(%u)", a, b, c2.size);
-        }
-        platform::log("\n");
-    }
+	if (_currentScript != 0xFF) {
+		ScriptSlot *ss = &vm.slot[_currentScript];
+		if (ss->where == WIO_ROOM || ss->where == WIO_FLOBJECT) {
+			if (ss->cutsceneOverride && _game.version >= 5)
+				error("Object %d stopped with active cutscene/override in exit", ss->number);
 
-    // Find sub-chunks
-    SmallChunk c{};
-    if (small_find(room_chunk.payload, stag::HD, &c)) {
-        // RMHD: uint16 width, height, numObjects (LE)
-        if (c.payload.size >= 6) {
-            out->rmhd_payload = c.payload;
-            out->width        = read_le16(c.payload.data);
-            out->height       = read_le16(c.payload.data + 2);
-            out->num_objects  = read_le16(c.payload.data + 4);
-        }
-    }
+			nukeArrays(_currentScript);
+			_currentScript = 0xFF;
+		} else if (ss->where == WIO_LOCAL) {
+			if (ss->cutsceneOverride && _game.version >= 5)
+				error("Script %d stopped with active cutscene/override in exit", ss->number);
 
-    if (small_find(room_chunk.payload, stag::TR, &c)) {
-        if (c.payload.size >= 1) out->transparent_color = c.payload.data[0];
-    }
+			nukeArrays(_currentScript);
+			_currentScript = 0xFF;
+		}
+	}
 
-    if (small_find(room_chunk.payload, stag::PA, &c) ||
-        small_find(room_chunk.payload, stag::SL, &c) ||
-        small_find(room_chunk.payload, small_tag('C','L'), &c)) {
-        out->palette_payload = c.payload;
-    }
+	if (VAR_NEW_ROOM != 0xFF)
+		VAR(VAR_NEW_ROOM) = room;
 
-    if (small_find(room_chunk.payload, stag::BM, &c) ||
-        small_find(room_chunk.payload, small_tag('R','M'), &c)) {
-        out->rmim_payload = c.payload;
-        // SMAP body inside (different tag in v4: 'SP' for strip data?)
-        // Actually in v4, the room-image chunk is 'BM' and contains the
-        // strips directly without an inner SMAP wrapper. We'll handle
-        // both layouts in the SMAP decoder.
-        out->bm_smap_payload = c.payload;
+	runExitScript();
 
-        // Walk the chained z-plane offset list. Mirrors ScummVM
-        // gfx.cpp:1041-1055 (GF_SMALL_HEADER):
-        //   off = LE32 at BM[0]
-        //   while (off && count < 4): plane = base + off; off = LE16 at plane.
-        out->num_zplanes = 0;
-        const uint8_t *bm_base = c.payload.data;
-        size_t bm_size         = c.payload.size;
-        if (bm_size >= 4) {
-            uint32_t off = read_le32(bm_base);
-            const uint8_t *plane = bm_base;
-            while (off && out->num_zplanes < MAX_ZPLANES) {
-                plane += off;
-                if (plane < bm_base ||
-                    (size_t)(plane - bm_base) + 2 > bm_size) break;
-                size_t plane_off = (size_t)(plane - bm_base);
-                size_t plane_avail = bm_size - plane_off;
-                uint16_t next_off = read_le16(plane);
-                size_t plane_len = next_off ? next_off : plane_avail;
-                if (plane_len > plane_avail) plane_len = plane_avail;
-                out->zplane_payload[out->num_zplanes] =
-                    Span{plane, plane_len};
-                out->num_zplanes++;
-                off = next_off;
-            }
-        }
-    }
+	killScriptsAndResources();
+	if (_game.version >= 4 && _game.heversion <= 62)
+		stopCycle(0);
 
-    // Walkbox data: 'BX' = BOXD (vertices). The matrix ('BM' inside SCRP)
-    // is normally absent in v4; we compute it ourselves at room load time.
-    if (small_find(room_chunk.payload, stag::BX, &c)) {
-        out->boxd_payload = c.payload;
-    }
+	if (_game.heversion > 0 && _game.heversion <= 70)
+		_palManipCounter = 0;
 
-    // Scale slot table — 'SA' = SCAL. v4-7 stores per slot (LE16 s1, y1, s2, y2);
-    // ScummEngine::setupRoomSubBlocks (room.cpp:606-628) iterates these into
-    // _scaleSlots and getScale interpolates by Y. Empty if no SCAL chunk.
-    out->scal_payload = Span{nullptr, 0};
-    if (small_find(room_chunk.payload, stag::SA, &c)) {
-        out->scal_payload = c.payload;
-    }
+	if (_game.id == GID_SAMNMAX) {
+		// WORKAROUND bug #1132 SAM: Overlapping music at Bigfoot convention
+		// Added sound queue processing between execution of exit
+		// script and entry script. In the case of this bug, the
+		// entry script required that the iMuse state be fully up
+		// to date, including last-moment changes from the previous
+		// exit script.
+		_sound->processSound();
+	}
 
-    // CYCL ('CC' in v4) — palette cycle table. Mirrors
-    // ScummEngine::initCycl, GF_SMALL_HEADER branch (palette.cpp:605-620):
-    // 16 entries, each (BE16 delay, u8 start, u8 end). counter is set to
-    // `start` if delay != 0 && delay != 0x0AAA.
-    memset(out->color_cycle, 0, sizeof(out->color_cycle));
-    if (small_find(room_chunk.payload, small_tag('C','C'), &c) &&
-        c.payload.size >= 16 * 4) {
-        const uint8_t *p = c.payload.data;
-        for (int i = 0; i < 16; i++, p += 4) {
-            uint16_t delay = (uint16_t)((p[0] << 8) | p[1]);   // BE
-            out->color_cycle[i].delay   = delay;
-            out->color_cycle[i].start   = p[2];
-            out->color_cycle[i].end     = p[3];
-            out->color_cycle[i].counter = 0;
-            if (delay && delay != 0x0AAA)
-                out->color_cycle[i].counter = p[2];
-        }
-    }
+	clearDrawQueues();
 
-    // Room entry / exit code (ENCD / EXCD). The offset is relative to the
-    // ROOM resource base — we use room_chunk.full (which starts at the
-    // 6-byte small-chunk header) so it matches ScummVM's roomResPtr from
-    // getResourceAddress(rtRoom, X).
-    out->room_resource = room_chunk.full;
-    if (small_find(room_chunk.payload, stag::EN, &c)) {
-        out->encd_payload = c.payload;
-        out->encd_offset = (uint32_t)(c.payload.data - room_chunk.full.data);
-    }
-    if (small_find(room_chunk.payload, stag::EX, &c)) {
-        out->excd_payload = c.payload;
-        out->excd_offset = (uint32_t)(c.payload.data - room_chunk.full.data);
-    }
+	// For HE80+ games
+	for (i = 0; i < _numRoomVariables; i++)
+		_roomVars[i] = 0;
+	nukeArrays(0xFF);
 
-    // Local scripts: walk every LS sibling. Each LSCR's body starts with a
-    // 1-byte ID, then the bytecode (matches resource.cpp:459: ptr+1).
-    for (int i = 0; i < Room::MAX_LOCAL_SCRIPTS; i++) {
-        out->lscr_payload[i] = Span{nullptr, 0};
-        out->lscr_offset[i] = 0;
-    }
-    {
-        size_t cur2 = 0;
-        SmallChunk lscr{};
-        while (small_next(room_chunk.payload, &cur2, &lscr)) {
-            if (lscr.tag != stag::LS) continue;
-            if (lscr.payload.size < 2) continue;
-            int id = lscr.payload.data[0];
-            // Per resource.cpp:459: _localScriptOffsets[id - 200] = ptr + 1.
-            int idx = id - 200;
-            if (idx < 0 || idx >= Room::MAX_LOCAL_SCRIPTS) continue;
-            out->lscr_payload[idx] = lscr.payload.sub(1);
-            out->lscr_offset[idx] =
-                (uint32_t)(lscr.payload.data + 1 - room_chunk.full.data);
-        }
-    }
+	// I don't know if this also belongs into v0, so I limit it to v1/2.
+	// I do suspect that v0 should have it, since the other use cases in
+	// o_loadRoomWithEgo/o2_loadRoomWithEgo and o_cutscene/o2_cutscene
+	// are also the same.
+	if (_game.version >= 1 && _game.version <= 2)
+		resetSentence();
 
-    platform::log("room %d: %dx%d, %d objects, palette=%zu B, image=%zu B\n",
-                  room_id, out->width, out->height, out->num_objects,
-                  out->palette_payload.size, out->bm_smap_payload.size);
-    return true;
+	for (i = 1; i < _numActors; i++) {
+		_actors[i]->hideActor();
+	}
+
+	if (_game.version >= 7) {
+		// Set the shadow palette(s) to all black. This fixes
+		// bug #1196, and actually makes some sense (after all,
+		// shadows tend to be rather black, don't they? ;-)
+		memset(_shadowPalette, 0, NUM_SHADOW_PALETTE * 256);
+	} else {
+		for (i = 0; i < 256; i++) {
+			_roomPalette[i] = i;
+			if (_shadowPalette)
+				_shadowPalette[i] = i;
+		}
+		if (_game.features & GF_SMALL_HEADER)
+			setDirtyColors(0, 255);
+	}
+
+	// WORKAROUND: In the CD version of MI1 a certain palette slot (47)
+	// points to a dark blue color in room 36 (the Marley Mansion outside view).
+	// The same palette slot points to white in the Floppy VGA version.
+	//
+	// This is believed to be an oversight in the scripts/datafiles, as it affects:
+	// - The "Important Notice" sign about how the dogs are only sleeping.
+	// - The color of some of the stars in the sky.
+	//
+	// It has been noted that the Mac version apparently fixes that on the fly
+	// within the interpreter, so we do that as well even if kEnhVisualChanges
+	// is not active.
+	//
+	// The SEGA CD version points to the correct color, and the FM Towns
+	// version makes the text more readable by giving it a black outline.
+	// The Ultimate Talkie version already takes care of that within the data files.
+
+	if (haveToApplyMonkey1PaletteFix() && room == 36)
+		_roomPalette[47] = 15;
+
+	VAR(VAR_ROOM) = room;
+	_fullRedraw = true;
+
+	_res->increaseResourceCounters();
+
+	_currentRoom = room;
+	VAR(VAR_ROOM) = room;
+
+#ifdef USE_TTS
+	if (_game.id == GID_PASS && _roomResource == 2 && room != _roomResource) {
+		for (uint index = 0; index < ARRAYSIZE(_passHelpButtons); ++index) {
+			_passHelpButtons[index].clear();
+		}
+		_voicePassHelpButtons = false;
+	}
+#endif
+
+	if (room >= 0x80 && _game.version < 7 && _game.heversion <= 71)
+		_roomResource = _resourceMapper[room & 0x7F];
+	else
+		_roomResource = room;
+
+	if (VAR_ROOM_RESOURCE != 0xFF)
+		VAR(VAR_ROOM_RESOURCE) = _roomResource;
+
+	if (room != 0)
+		ensureResourceLoaded(rtRoom, room);
+
+	clearRoomObjects();
+
+	if (_currentRoom == 0) {
+		_ENCD_offs = _EXCD_offs = 0;
+		_numObjectsInRoom = 0;
+		return;
+	} else if (_game.id == GID_LOOM && _game.version == 4) {
+		// This is specific for LOOM VGA Talkie. It forces a
+		// redraw of the verbs screen. The original interpreter
+		// does this here...
+		VAR(66) = 1;
+	}
+
+	setupRoomSubBlocks();
+	resetRoomSubBlocks();
+
+	initBGBuffers(_roomHeight);
+
+	resetRoomObjects();
+
+	if (VAR_ROOM_WIDTH != 0xFF && VAR_ROOM_HEIGHT != 0xFF) {
+		VAR(VAR_ROOM_WIDTH) = _roomWidth;
+		VAR(VAR_ROOM_HEIGHT) = _roomHeight;
+	}
+
+	if (VAR_CAMERA_MIN_X != 0xFF)
+		VAR(VAR_CAMERA_MIN_X) = _screenWidth / 2;
+	if (VAR_CAMERA_MAX_X != 0xFF)
+		VAR(VAR_CAMERA_MAX_X) = _roomWidth - (_screenWidth / 2);
+
+	if (_game.version >= 7) {
+		VAR(VAR_CAMERA_MIN_Y) = _screenHeight / 2;
+		VAR(VAR_CAMERA_MAX_Y) = _roomHeight - (_screenHeight / 2);
+		setCameraAt(_screenWidth / 2, _screenHeight / 2);
+	} else {
+		camera._mode = kNormalCameraMode;
+		if (_game.version > 2)
+			camera._cur.x = camera._dest.x = _screenWidth / 2;
+		camera._cur.y = camera._dest.y = _screenHeight / 2;
+	}
+
+	if (_roomResource == 0)
+		return;
+
+	memset(gfxUsageBits, 0, sizeof(gfxUsageBits));
+
+	if (_game.version >= 5 && a) {
+		where = whereIsObject(objectNr);
+		if (where != WIO_ROOM && where != WIO_FLOBJECT)
+			error("startScene: Object %d is not in room %d", objectNr,
+					_currentRoom);
+		int x, y, dir;
+		getObjectXYPos(objectNr, x, y, dir);
+		a->putActor(x, y, _currentRoom);
+		a->setDirection(dir + 180);
+		a->stopActorMoving();
+		if (_game.id == GID_SAMNMAX) {
+			camera._cur.x = camera._dest.x = a->getPos().x;
+			setCameraAt(a->getPos().x, a->getPos().y);
+		}
+	}
+
+	// WORKAROUND for bug #16111
+	// Due to a faulty box flag, ZAK FM-TOWNS will freeze when trying to load a game saved in
+	// room 138, but also when pressing F5 while in that room and then clicking the PLAY button
+	// in the save menu. The latter case is the reason why I put the workaround in here, and
+	// not just in ScummEngine_v3::scummLoop_handleSaveLoad() where it would be less visible.
+	if (_game.id == GID_ZAK && _game.platform == Common::kPlatformFMTowns && a == nullptr && room == 138)
+		setBoxFlags(4, 0);
+
+	showActors();
+
+	_egoPositioned = false;
+
+#ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
+	towns_resetPalCycleFields();
+#endif
+	runEntryScript();
+	if (_game.version >= 1 && _game.version <= 2) {
+		runScript(5, 0, 0, nullptr);
+	} else if (_game.version >= 5 && _game.version <= 6) {
+		if (a && !_egoPositioned) {
+			int x, y;
+			getObjectXYPos(objectNr, x, y);
+			a->putActor(x, y, _currentRoom);
+			a->_moving = 0;
+		}
+	} else if (_game.version >= 7) {
+		if (camera._follows) {
+			a = derefActor(camera._follows, "startScene: follows");
+			setCameraAt(a->getPos().x, a->getPos().y);
+		}
+	}
+
+	_doEffect = true;
+
+	// Hint the backend about the virtual keyboard during copy protection screens
+	if (_game.id == GID_MONKEY2) {
+		bool hasCopyProtectionScreen = true;
+
+		// The Macintosh version skips the copy protection screen with
+		// a boot param, unless you ask it not to.
+		if (_game.platform == Common::kPlatformMacintosh && _bootParam == -7873)
+			hasCopyProtectionScreen = false;
+
+		// The unofficial talkie never shows any copy protection screen.
+		if (_game.features & GF_ULTIMATE_TALKIE)
+			hasCopyProtectionScreen = false;
+
+		if (hasCopyProtectionScreen) {
+			if (_system->getFeatureState(OSystem::kFeatureVirtualKeyboard)) {
+				if (room != 108)
+					_system->setFeatureState(OSystem::kFeatureVirtualKeyboard, false);
+			} else if (room == 108)
+				_system->setFeatureState(OSystem::kFeatureVirtualKeyboard, true);
+		}
+	} else if (_game.id == GID_MONKEY_EGA) {	// this is my estimation that the room code is 90 (untested)
+		if (_system->getFeatureState(OSystem::kFeatureVirtualKeyboard)) {
+			if (room != 90)
+				_system->setFeatureState(OSystem::kFeatureVirtualKeyboard, false);
+		} else if (room == 90)
+			_system->setFeatureState(OSystem::kFeatureVirtualKeyboard, true);
+	}
+
 }
 
-bool room_load_palette(const Room &room, uint8_t *out_palette) {
-    // Default palette = grayscale ramp (visible if real palette missing)
-    for (int i = 0; i < 256; i++) {
-        out_palette[i*3 + 0] = (uint8_t)i;
-        out_palette[i*3 + 1] = (uint8_t)i;
-        out_palette[i*3 + 2] = (uint8_t)i;
-    }
+/**
+ * Init some static room data after a room has been loaded.
+ * E.g. the room dimension, the offset to the graphics data, the room scripts,
+ * the offset to the room palette and other things which won't be changed
+ * late on.
+ * So it is possible to call this after loading a savegame.
+ */
+void ScummEngine::setupRoomSubBlocks() {
+	int i;
+	const byte *ptr;
+	byte *roomptr, *searchptr, *roomResPtr = nullptr;
+	const RoomHeader *rmhd;
 
-    if (room.palette_payload.empty()) {
-        platform::log("room: no palette data; using grayscale\n");
-        return false;
-    }
+	_ENCD_offs = 0;
+	_EXCD_offs = 0;
+	_EPAL_offs = 0;
+	_CLUT_offs = 0;
+	_PALS_offs = 0;
 
-    // V4 small-header 'PA' chunk:
-    //   uint16 LE   numcolor * 3       (size prefix)
-    //   uint8[]     RGB triplets       (0..255 directly, NOT 6-bit)
-    if (room.palette_payload.size < 2) return false;
-    uint16_t size_field = read_le16(room.palette_payload.data);
-    int n_colors = size_field / 3;
-    if (n_colors > 256) n_colors = 256;
-    if (room.palette_payload.size < (size_t)2 + (size_t)n_colors * 3) {
-        platform::log("room: palette truncated (size_field=%u, payload=%zu)\n",
-                      size_field, room.palette_payload.size);
-        return false;
-    }
-    const uint8_t *p = room.palette_payload.data + 2;
-    for (int i = 0; i < n_colors; i++) {
-        out_palette[i*3 + 0] = p[i*3 + 0];
-        out_palette[i*3 + 1] = p[i*3 + 1];
-        out_palette[i*3 + 2] = p[i*3 + 2];
-    }
-    return true;
+	// Determine the room and room script base address
+	roomResPtr = roomptr = getResourceAddress(rtRoom, _roomResource);
+	if (_game.version == 8)
+		roomResPtr = getResourceAddress(rtRoomScripts, _roomResource);
+	if (!roomptr || !roomResPtr)
+		error("Room %d: data not found (" __FILE__  ":%d)", _roomResource, __LINE__);
+
+	//
+	// Determine the room dimensions (width/height)
+	//
+	rmhd = (const RoomHeader *)findResourceData(MKTAG('R','M','H','D'), roomptr);
+
+	if (_game.version == 8) {
+		_roomWidth = READ_LE_UINT32(&(rmhd->v8.width));
+		_roomHeight = READ_LE_UINT32(&(rmhd->v8.height));
+		_numObjectsInRoom = (byte)READ_LE_UINT32(&(rmhd->v8.numObjects));
+	} else if (_game.version == 7) {
+		_roomWidth = READ_LE_UINT16(&(rmhd->v7.width));
+		_roomHeight = READ_LE_UINT16(&(rmhd->v7.height));
+		_numObjectsInRoom = (byte)READ_LE_UINT16(&(rmhd->v7.numObjects));
+	} else {
+		_roomWidth = READ_LE_UINT16(&(rmhd->old.width));
+		_roomHeight = READ_LE_UINT16(&(rmhd->old.height));
+		_numObjectsInRoom = (byte)READ_LE_UINT16(&(rmhd->old.numObjects));
+	}
+
+	//
+	// Find the room image data
+	//
+	if (_game.version == 8) {
+		_IM00_offs = getObjectImage(roomptr, 1) - roomptr;
+	} else if (_game.features & GF_SMALL_HEADER) {
+		_IM00_offs = findResourceData(MKTAG('I','M','0','0'), roomptr) - roomptr;
+	} else if (_game.heversion >= 70) {
+		byte *roomImagePtr = getResourceAddress(rtRoomImage, _roomResource);
+		_IM00_offs = findResource(MKTAG('I','M','0','0'), roomImagePtr) - roomImagePtr;
+	} else {
+		_IM00_offs = findResource(MKTAG('I','M','0','0'), findResource(MKTAG('R','M','I','M'), roomptr)) - roomptr;
+	}
+
+	//
+	// Look for an exit script
+	//
+	ptr = findResourceData(MKTAG('E','X','C','D'), roomResPtr);
+	if (ptr)
+		_EXCD_offs = ptr - roomResPtr;
+	if (_dumpScripts && _EXCD_offs)
+		dumpResource("exit-", _roomResource, roomResPtr + _EXCD_offs - _resourceHeaderSize, -1);
+
+	//
+	// Look for an entry script
+	//
+	ptr = findResourceData(MKTAG('E','N','C','D'), roomResPtr);
+	if (ptr)
+		_ENCD_offs = ptr - roomResPtr;
+	if (_dumpScripts && _ENCD_offs)
+		dumpResource("entry-", _roomResource, roomResPtr + _ENCD_offs - _resourceHeaderSize, -1);
+
+	//
+	// Setup local scripts
+	//
+
+	// Determine the room script base address
+	roomResPtr = roomptr = getResourceAddress(rtRoom, _roomResource);
+	if (_game.version == 8)
+		roomResPtr = getResourceAddress(rtRoomScripts, _roomResource);
+	searchptr = roomResPtr;
+
+	memset(_localScriptOffsets, 0, sizeof(_localScriptOffsets));
+
+	if (_game.features & GF_SMALL_HEADER) {
+		ResourceIterator localScriptIterator(searchptr, true);
+		while ((ptr = localScriptIterator.findNext(MKTAG('L','S','C','R'))) != nullptr) {
+			int id = 0;
+			ptr += _resourceHeaderSize;	/* skip tag & size */
+			id = ptr[0];
+
+			if (_dumpScripts) {
+				char buf[32];
+				Common::sprintf_s(buf, "room-%d-", _roomResource);
+				dumpResource(buf, id, ptr - _resourceHeaderSize);
+			}
+
+			_localScriptOffsets[id - _numGlobalScripts] = ptr + 1 - roomptr;
+		}
+	} else if (_game.heversion >= 90) {
+		ResourceIterator localScriptIterator2(searchptr, false);
+		while ((ptr = localScriptIterator2.findNext(MKTAG('L','S','C','2'))) != nullptr) {
+			int id = 0;
+
+			ptr += _resourceHeaderSize;	/* skip tag & size */
+
+			id = READ_LE_UINT32(ptr);
+
+			assertRange(_numGlobalScripts, id, _numLocalScripts + _numGlobalScripts, "local script");
+			_localScriptOffsets[id - _numGlobalScripts] = ptr + 4 - roomResPtr;
+
+			if (_dumpScripts) {
+				char buf[32];
+				Common::sprintf_s(buf, "room-%d-", _roomResource);
+				dumpResource(buf, id, ptr - _resourceHeaderSize);
+			}
+		}
+
+		ResourceIterator localScriptIterator(searchptr, false);
+		while ((ptr = localScriptIterator.findNext(MKTAG('L','S','C','R'))) != nullptr) {
+			int id = 0;
+
+			ptr += _resourceHeaderSize;	/* skip tag & size */
+
+			id = ptr[0];
+			_localScriptOffsets[id - _numGlobalScripts] = ptr + 1 - roomResPtr;
+
+			if (_dumpScripts) {
+				char buf[32];
+				Common::sprintf_s(buf, "room-%d-", _roomResource);
+				dumpResource(buf, id, ptr - _resourceHeaderSize);
+			}
+		}
+
+	} else {
+		ResourceIterator localScriptIterator(searchptr, false);
+		while ((ptr = localScriptIterator.findNext(MKTAG('L','S','C','R'))) != nullptr) {
+			int id = 0;
+
+			ptr += _resourceHeaderSize;	/* skip tag & size */
+
+			if (_game.version == 8) {
+				id = READ_LE_UINT32(ptr);
+				assertRange(_numGlobalScripts, id, _numLocalScripts + _numGlobalScripts, "local script");
+				_localScriptOffsets[id - _numGlobalScripts] = ptr + 4 - roomResPtr;
+			} else if (_game.version == 7) {
+				id = READ_LE_UINT16(ptr);
+				assertRange(_numGlobalScripts, id, _numLocalScripts + _numGlobalScripts, "local script");
+				_localScriptOffsets[id - _numGlobalScripts] = ptr + 2 - roomResPtr;
+			} else {
+				id = ptr[0];
+				_localScriptOffsets[id - _numGlobalScripts] = ptr + 1 - roomResPtr;
+			}
+
+			if (_dumpScripts) {
+				char buf[32];
+				Common::sprintf_s(buf, "room-%d-", _roomResource);
+				dumpResource(buf, id, ptr - _resourceHeaderSize);
+			}
+		}
+	}
+
+	// Locate the EGA palette (currently unused).
+	ptr = findResourceData(MKTAG('E','P','A','L'), roomptr);
+	if (ptr)
+		_EPAL_offs = ptr - roomptr;
+
+	// Locate the standard room palette (for V3-V5 games).
+	ptr = findResourceData(MKTAG('C','L','U','T'), roomptr);
+	if (ptr)
+		_CLUT_offs = ptr - roomptr;
+
+	// Locate the standard room palettes (for V6+ games).
+	if (_game.version >= 6) {
+		ptr = findResource(MKTAG('P','A','L','S'), roomptr);
+		if (ptr) {
+			_PALS_offs = ptr - roomptr;
+		}
+	}
+
+	// Transparent color
+	byte trans;
+	if (_game.version == 8)
+		trans = (byte)READ_LE_UINT32(&(rmhd->v8.transparency));
+	else {
+		ptr = findResourceData(MKTAG('T','R','N','S'), roomptr);
+		if (ptr)
+			trans = ptr[0];
+		else
+			trans = 255;
+	}
+
+	// Actor Palette in HE 70 games
+	if (_game.heversion == 70) {
+		ptr = findResourceData(MKTAG('R','E','M','P'), roomptr);
+		if (ptr) {
+			for (i = 0; i < 256; i++)
+				_HEV7ActorPalette[i] = *ptr++;
+		} else {
+			for (i = 0; i < 256; i++)
+				_HEV7ActorPalette[i] = i;
+		}
+	}
+
+
+	// WORKAROUND bug #1831: The dreaded DOTT "Can't get teeth" bug
+	// makes it impossible to go on playing w/o cheating in some way.
+	// Before the GDC17 conference where Oliver Franzke gave more
+	// background about this, it wasn't quite clear what caused this issue,
+	// but the effect is that object 182, the teeth, are still in class 32
+	// (kObjectClassUntouchable), when they shouldn't be. Luckily, bitvar69
+	// (teeth-caught) is set to 1 if and only if the teeth are trapped and
+	// have not yet been taken by the player. So we can make use of that
+	// fact to fix the object class of obj 182. This should match what the
+	// 2016 remaster did.
+	//
+	// Using `kEnhGameBreakingBugFixes`, since leaving the room too quickly
+	// would just make this puzzle impossible to complete.
+	if (_game.id == GID_TENTACLE && _roomResource == 26 && readVar(ROOM_VAL(69))
+			&& getClass(182, kObjectClassUntouchable)
+			&& enhancementEnabled(kEnhGameBreakingBugFixes)) {
+		putClass(182, kObjectClassUntouchable, 0);
+	}
+
+	_gdi->roomChanged(roomptr);
+	_gdi->setTransparentColor(trans);
 }
 
-// ---------------------------------------------------------------------------
-// Palette cycle tick. Mirrors the v4 (GF_SMALL_HEADER) branch of
-// ScummEngine::cyclePalette (palette.cpp:741-768). Rotates the
-// _shadowPalette[start..end] indirection table by one step per call;
-// the next room->screen blit picks up the new mapping. The actual
-// _currentPalette RGB stays fixed.
-// ---------------------------------------------------------------------------
-void palette_cycle_tick(ColorCycle cycles[16], uint8_t *shadow_palette) {
-    for (int i = 0; i < 16; i++) {
-        ColorCycle &c = cycles[i];
-        if (!c.counter) continue;
-        c.counter++;
-        if (c.counter > c.end) c.counter = c.start;
-        if (c.start > c.end) continue;
+/**
+ * Init some dynamic room data after a room has been loaded.
+ * E.g. the initial box data is loaded, the initial palette is set etc.
+ * All of the things setup in here can be modified later on by scripts.
+ * So it is not appropriate to call it after loading a savegame.
+ */
+void ScummEngine::resetRoomSubBlocks() {
+	ResId i;
+	const byte *ptr;
+	byte *roomptr;
 
-        // palette.cpp:754-760 verbatim algorithm.
-        uint8_t cycle_val = (uint8_t)c.counter;
-        for (int j = c.start; j <= c.end; j++) {
-            shadow_palette[j] = cycle_val--;
-            if (cycle_val < c.start) cycle_val = (uint8_t)c.end;
-        }
-    }
+	// Determine the room and room script base address
+	roomptr = getResourceAddress(rtRoom, _roomResource);
+	if (!roomptr)
+		error("Room %d: data not found (" __FILE__  ":%d)", _roomResource, __LINE__);
+
+	//
+	// Load box data
+	//
+	memset(_extraBoxFlags, 0, sizeof(_extraBoxFlags));
+
+	_res->nukeResource(rtMatrix, 1);
+	_res->nukeResource(rtMatrix, 2);
+	if (_game.features & GF_SMALL_HEADER) {
+		ptr = findResourceData(MKTAG('B','O','X','D'), roomptr);
+		if (ptr) {
+			byte numOfBoxes = *ptr;
+			int size;
+			if (_game.version == 3)
+				size = numOfBoxes * SIZEOF_BOX_V3 + 1;
+			else
+				size = numOfBoxes * SIZEOF_BOX + 1;
+
+			_res->createResource(rtMatrix, 2, size);
+			memcpy(getResourceAddress(rtMatrix, 2), ptr, size);
+			ptr += size;
+
+			size = getResourceDataSize(ptr - size - _resourceHeaderSize) - size;
+			if (size > 0) {					// do this :)
+				_res->createResource(rtMatrix, 1, size);
+				memcpy(getResourceAddress(rtMatrix, 1), ptr, size);
+			}
+
+		}
+	} else {
+		ptr = findResourceData(MKTAG('B','O','X','D'), roomptr);
+		if (ptr) {
+			int size = getResourceDataSize(ptr);
+			_res->createResource(rtMatrix, 2, size);
+			roomptr = getResourceAddress(rtRoom, _roomResource);
+			ptr = findResourceData(MKTAG('B','O','X','D'), roomptr);
+			memcpy(getResourceAddress(rtMatrix, 2), ptr, size);
+		}
+
+		ptr = findResourceData(MKTAG('B','O','X','M'), roomptr);
+		if (ptr) {
+			int size = getResourceDataSize(ptr);
+			_res->createResource(rtMatrix, 1, size);
+			roomptr = getResourceAddress(rtRoom, _roomResource);
+			ptr = findResourceData(MKTAG('B','O','X','M'), roomptr);
+			memcpy(getResourceAddress(rtMatrix, 1), ptr, size);
+		}
+	}
+
+	//
+	// Load scale data
+	//
+	for (i = 1; i < _res->_types[rtScaleTable].size(); i++)
+		_res->nukeResource(rtScaleTable, i);
+
+	ptr = findResourceData(MKTAG('S','C','A','L'), roomptr);
+	if (ptr) {
+		int s1, s2, y1, y2;
+		if (_game.version == 8) {
+			for (i = 1; i < _res->_types[rtScaleTable].size(); i++, ptr += 16) {
+				s1 = READ_LE_UINT32(ptr);
+				y1 = READ_LE_UINT32(ptr + 4);
+				s2 = READ_LE_UINT32(ptr + 8);
+				y2 = READ_LE_UINT32(ptr + 12);
+				setScaleSlot(i, 0, y1, s1, 0, y2, s2);
+			}
+		} else {
+			for (i = 1; i < _res->_types[rtScaleTable].size(); i++, ptr += 8) {
+				s1 = READ_LE_UINT16(ptr);
+				y1 = READ_LE_UINT16(ptr + 2);
+				s2 = READ_LE_UINT16(ptr + 4);
+				y2 = READ_LE_UINT16(ptr + 6);
+				if (s1 || y1 || s2 || y2) {
+					setScaleSlot(i, 0, y1, s1, 0, y2, s2);
+				}
+			}
+		}
+	}
+
+	// We need to setup the current palette before initCycl for Indy4 Amiga.
+	if (_PALS_offs || _CLUT_offs)
+		setCurrentPalette(0);
+
+	// Color cycling
+	// HE 7.0 games load resources but don't use them.
+	if (_game.version >= 4 && _game.heversion <= 62) {
+		ptr = findResourceData(MKTAG('C','Y','C','L'), roomptr);
+		if (ptr) {
+			initCycl(ptr);
+		}
+	}
+
+#ifdef ENABLE_HE
+	// Polygons in HE 80+ games
+	if (_game.heversion >= 80) {
+		ptr = findResourceData(MKTAG('P','O','L','D'), roomptr);
+		if (ptr) {
+			((ScummEngine_v71he *)this)->_wiz->polygonLoad(ptr);
+		}
+	}
+#endif
 }
 
-// ---------------------------------------------------------------------------
-// Background render — Phase 2 stub. Real SMAP decoder lives in smap.cpp.
-// ---------------------------------------------------------------------------
-bool room_render_background(const Room &room, uint8_t *out_buf, int out_pitch) {
-    // Clear screen
-    for (int y = 0; y < VIRTUAL_SCREEN_H; y++) {
-        memset(out_buf + y * out_pitch, 0, VIRTUAL_SCREEN_W);
-    }
-    if (room.bm_smap_payload.empty()) {
-        platform::log("room: no image data\n");
-        return false;
-    }
-    // The bm_smap_payload spans the entire BM chunk content. Decode it
-    // into the output buffer at (0, 0).
-    return smap_decode_bm(room.bm_smap_payload,
-                          room.width, room.height,
-                          out_buf, out_pitch);
+
+void ScummEngine_v3old::setupRoomSubBlocks() {
+	const byte *ptr;
+	byte *roomptr;
+	const RoomHeader *rmhd;
+
+	_ENCD_offs = 0;
+	_EXCD_offs = 0;
+	_EPAL_offs = 0;
+	_CLUT_offs = 0;
+	_PALS_offs = 0;
+
+	// Determine the room and room script base address
+	roomptr = getResourceAddress(rtRoom, _roomResource);
+	if (!roomptr)
+		error("Room %d: data not found (" __FILE__  ":%d)", _roomResource, __LINE__);
+
+	//
+	// Determine the room dimensions (width/height)
+	//
+	rmhd = (const RoomHeader *)(roomptr + 4);
+
+	if (_game.version <= 1) {
+		if (_game.platform == Common::kPlatformNES) {
+			_roomWidth = READ_LE_UINT16(&(rmhd->old.width)) * 8;
+			_roomHeight = READ_LE_UINT16(&(rmhd->old.height)) * 8;
+
+			// HACK: To let our code work normal with narrow rooms we
+			// adjust width. It will render garbage on right edge but we do
+			// not render it anyway
+			if (_roomWidth < 32 * 8)
+				_roomWidth = 32 * 8;
+		} else {
+			_roomWidth = roomptr[4] * 8;
+			_roomHeight = roomptr[5] * 8;
+		}
+	} else {
+		_roomWidth = READ_LE_UINT16(&(rmhd->old.width));
+
+		// WORKAROUND: Fix bad width value for room 64 (book of maps) in
+		// Indy3. A specific version of this game (DOS/EGA v1.0, according to
+		// scumm-md5.txt) has a wrong width of 1793 stored in the data files,
+		// which causes a strange situation in which the book view may scroll
+		// towards the right depending on Indy's position from the previous room.
+		// Fixes bug #6679.
+		if (_game.id == GID_INDY3 && _roomResource == 64 && _roomWidth == 1793)
+			_roomWidth = 320;
+		_roomHeight = READ_LE_UINT16(&(rmhd->old.height));
+	}
+	_numObjectsInRoom = roomptr[20];
+
+	//
+	// Find the room image data
+	//
+	if (_game.version <= 1) {
+		_IM00_offs = 0;
+	} else {
+		_IM00_offs = READ_LE_UINT16(roomptr + 0x0A);
+	}
+
+	//
+	// Look for an exit script
+	//
+	int EXCD_len = -1;
+	if (_game.version <= 2) {
+		_EXCD_offs = READ_LE_UINT16(roomptr + 0x18);
+		EXCD_len = READ_LE_UINT16(roomptr + 0x1A) - _EXCD_offs + _resourceHeaderSize;	// HACK
+	} else {
+		_EXCD_offs = READ_LE_UINT16(roomptr + 0x19);
+		EXCD_len = READ_LE_UINT16(roomptr + 0x1B) - _EXCD_offs + _resourceHeaderSize;	// HACK
+	}
+	if (_dumpScripts && _EXCD_offs)
+		dumpResource("exit-", _roomResource, roomptr + _EXCD_offs - _resourceHeaderSize, EXCD_len);
+
+	//
+	// Look for an entry script
+	//
+	int ENCD_len = -1;
+	if (_game.version <= 2) {
+		_ENCD_offs = READ_LE_UINT16(roomptr + 0x1A);
+		ENCD_len = READ_LE_UINT16(roomptr) - _ENCD_offs + _resourceHeaderSize; // HACK
+	} else {
+		_ENCD_offs = READ_LE_UINT16(roomptr + 0x1B);
+		// FIXME - the following is a hack which assumes that immediately after
+		// the entry script the first local script follows.
+		int num_objects = *(roomptr + 20);
+		int num_sounds = *(roomptr + 23);
+		int num_scripts = *(roomptr + 24);
+		ptr = roomptr + 29 + num_objects * 4 + num_sounds + num_scripts;
+		ENCD_len = READ_LE_UINT16(ptr + 1) - _ENCD_offs + _resourceHeaderSize; // HACK
+	}
+	if (_dumpScripts && _ENCD_offs)
+		dumpResource("entry-", _roomResource, roomptr + _ENCD_offs - _resourceHeaderSize, ENCD_len);
+
+	//
+	// Setup local scripts
+	//
+
+	// Determine the room script base address
+	roomptr = getResourceAddress(rtRoom, _roomResource);
+
+	memset(_localScriptOffsets, 0, sizeof(_localScriptOffsets));
+
+	int num_objects = *(roomptr + 20);
+	int num_sounds;
+	int num_scripts;
+
+	if (_game.version <= 2) {
+		num_sounds = *(roomptr + 22);
+		num_scripts = *(roomptr + 23);
+		ptr = roomptr + 28 + num_objects * 4;
+		while (num_sounds--)
+			loadResource(rtSound, *ptr++);
+		while (num_scripts--)
+			loadResource(rtScript, *ptr++);
+	} else /* if (_game.version == 3) */ {
+		num_sounds = *(roomptr + 23);
+		num_scripts = *(roomptr + 24);
+		ptr = roomptr + 29 + num_objects * 4 + num_sounds + num_scripts;
+		while (*ptr) {
+			int id = *ptr;
+
+			_localScriptOffsets[id - _numGlobalScripts] = READ_LE_UINT16(ptr + 1);
+			ptr += 3;
+
+			if (_dumpScripts) {
+				char buf[32];
+				Common::sprintf_s(buf, "room-%d-", _roomResource);
+
+				// HACK: to determine the sizes of the local scripts, we assume that
+				// a) their order in the data file is the same as in the index
+				// b) the last script at the same time is the last item in the room "header"
+				int len = - (int)_localScriptOffsets[id - _numGlobalScripts] + _resourceHeaderSize;
+				if (*ptr)
+					len += READ_LE_UINT16(ptr + 1);
+				else
+					len += READ_LE_UINT16(roomptr);
+				dumpResource(buf, id, roomptr + _localScriptOffsets[id - _numGlobalScripts] - _resourceHeaderSize, len);
+			}
+		}
+	}
+
+	_gdi->roomChanged(roomptr);
 }
 
-}  // namespace tsb
+void ScummEngine_v3old::resetRoomSubBlocks() {
+	const byte *ptr;
+	byte *roomptr;
+
+	// Determine the room and room script base address
+	roomptr = getResourceAddress(rtRoom, _roomResource);
+	if (!roomptr)
+		error("Room %d: data not found (" __FILE__  ":%d)", _roomResource, __LINE__);
+
+	// Reset room color for V1 zak
+	if (_game.version <= 1)
+		_roomPalette[0] = 0;
+
+	//
+	// Load box data
+	//
+	_res->nukeResource(rtMatrix, 1);
+	_res->nukeResource(rtMatrix, 2);
+
+	if (_game.version <= 2)
+		ptr = roomptr + *(roomptr + 0x15);
+	else
+		ptr = roomptr + READ_LE_UINT16(roomptr + 0x15);
+	if (ptr) {
+		byte numOfBoxes = 0;
+		int size;
+
+		if (_game.version == 0) {
+			// Count number of boxes
+			while (*ptr != 0xFF) {
+				numOfBoxes++;
+				ptr += 5;
+			}
+
+			ptr = roomptr + *(roomptr + 0x15);
+			size = numOfBoxes * SIZEOF_BOX_V0 + 1;
+
+			_res->createResource(rtMatrix, 2, size + 1);
+			getResourceAddress(rtMatrix, 2)[0] = numOfBoxes;
+			memcpy(getResourceAddress(rtMatrix, 2) + 1, ptr, size);
+		} else {
+			numOfBoxes = *ptr;
+			if (_game.version <= 2)
+				size = numOfBoxes * SIZEOF_BOX_V2 + 1;
+			else
+				size = numOfBoxes * SIZEOF_BOX_V3 + 1;
+
+			_res->createResource(rtMatrix, 2, size);
+			memcpy(getResourceAddress(rtMatrix, 2), ptr, size);
+		}
+
+		ptr += size;
+		if (_game.version == 0) {
+			const byte *tmp = ptr;
+			size = 0;
+
+			// Compute matrix size
+			for (int i = 0; i < numOfBoxes; i++) {
+				while (*tmp != 0xFF) {
+					size++;
+					tmp++;
+				}
+				size++;
+				tmp++;
+			}
+		} else if (_game.version <= 2) {
+			size = numOfBoxes * (numOfBoxes + 1);
+		} else {
+			// FIXME. This is an evil HACK!!!
+			size = (READ_LE_UINT16(roomptr + 0x0A) - READ_LE_UINT16(roomptr + 0x15)) - size;
+		}
+
+		if (size > 0) {					// do this :)
+			_res->createResource(rtMatrix, 1, size);
+			memcpy(getResourceAddress(rtMatrix, 1), ptr, size);
+		}
+
+	}
+
+	//
+	// No scale data in old bundle games
+	//
+	for (ResId id = 1; id < _res->_types[rtScaleTable].size(); id++)
+		_res->nukeResource(rtScaleTable, id);
+
+}
+
+} // End of namespace Scumm
