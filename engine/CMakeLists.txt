@@ -67,7 +67,7 @@ add_library(thumbyscummby_engine STATIC
     # The following pull in heavier deps (SoundHE/DIGI_SND_*/InfoDialog/
     # VerbSlot full def / SaveStateList / Common::EventManager methods).
     # Activated as stubs land.
-    # src/string.cpp         # SoundHE, DIGI_SND_MODE_*, InfoDialog
+    # src/string.cpp         # heavy: GUI::Dialog inheritance, SoundHE methods, checkJongsung Korean
     # src/verbs.cpp          # VerbSlot
     # src/script.cpp         # ScummEngine vm/_localScriptOffsets
     # src/script_v4.cpp      # depends on script.cpp

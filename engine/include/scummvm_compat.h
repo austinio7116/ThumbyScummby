@@ -164,6 +164,7 @@ struct DetectorResult {
 #include "scumm/he/intern_he.h"   // HE subclasses (real headers, bodies never link)
 #include "scumm/bomp.h"           // BompDrawData / drawBomp (referenced by v6+ paths)
 #include "scumm/file.h"           // BaseScummFile / ScummFile (charset.cpp opens fonts)
+#include "scumm/verbs.h"          // VerbSlot (string.cpp / verbs.cpp)
 #include "graphics/font.h"        // Graphics::Font (charset.cpp Mac font path)
 // scumm/sound.h pulls in audio/mididrv.h + scumm/{soundcd,soundse}.h —
 // we replace it with our own minimal Sound class via audio_shim.cpp.
@@ -211,6 +212,20 @@ public:
     virtual const Graphics::Font *getFontByScummId(int) { return nullptr; }
     virtual void printCharToTextArea(int, int, int, int) {}
     virtual void setupCursor(int /*&width*/, int /*&height*/, int /*&hotspotX*/, int /*&hotspotY*/, int /*&animate*/) {}
+    virtual void initTextAreaForActor(int, int) {}
+};
+
+// SoundHE — minimal subclass with playVoice for HE talkie path.
+// SoundHE class is defined further down (after Sound) but methods declared
+// here so MacGui sequence parses.
+
+// scumm/dialogs.h: InfoDialog — shown on save/load failure.  Stub.
+class InfoDialog {
+public:
+    InfoDialog(ScummEngine *, const Common::U32String &) {}
+    InfoDialog(ScummEngine *, const Common::String &) {}
+    InfoDialog(ScummEngine *, int) {}
+    int runModal() { return 0; }
 };
 
 // Sound — bodies in audio_shim.cpp forward to imuse_*.  Methods listed
@@ -240,9 +255,37 @@ public:
                                  int heFreq = 0, int hePan = 0, int heVol = 0) {}
     virtual void addSoundToQueue2(int sound, int heOffset = 0,
                                   int heChannel = 0, int heFlags = 0) {}
+    virtual bool shouldInjectMISEAudio() const { return false; }
+    virtual void startRemasteredSpeech(const char *, byte) {}
+    virtual void playVoice(uint, uint, uint, uint, uint) {}
+    virtual bool isSoundInUse(int) const { return false; }
+    virtual void pollCD() {}
+
+    // Members referenced by transcribed string.cpp / sound.cpp.
+    int _digiSndMode = 0;
+    int _talkChannelHandle = 0;     // really Audio::SoundHandle in scummvm
 
 protected:
     ScummEngine *_vm;
+};
+
+// Sound::DIGI_SND_MODE_* enum values.  scummvm-upstream/scumm/sound.h.
+enum {
+    DIGI_SND_MODE_EMPTY  = 0,
+    DIGI_SND_MODE_TALKIE = 1,
+    DIGI_SND_MODE_SFX    = 2,
+};
+
+// HE-specific sound slot constants — string.cpp references HSND_TALKIE_SLOT
+// which is HE100-only.  Stub at 0; runtime never executes that path.
+enum {
+    HSND_TALKIE_SLOT = 1,
+};
+
+// SoundHE — HE Sound subclass.  We never instantiate it; stub for parse.
+class SoundHE : public Sound {
+public:
+    SoundHE(ScummEngine *vm) : Sound(vm) {}
 };
 
 }  // namespace Scumm (tsb after rewrite)
