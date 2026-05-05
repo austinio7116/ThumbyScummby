@@ -3,6 +3,37 @@
 #define AUDIO_MIDIDRV_H_STUB
 #include "common/scummsys.h"
 
+enum MidiDriverFlags {
+    MDT_NONE         = 0,
+    MDT_PCSPK        = 1 << 0,
+    MDT_CMS          = 1 << 1,
+    MDT_PCJR         = 1 << 2,
+    MDT_ADLIB        = 1 << 3,
+    MDT_C64          = 1 << 4,
+    MDT_AMIGA        = 1 << 5,
+    MDT_APPLEIIGS    = 1 << 6,
+    MDT_TOWNS        = 1 << 7,
+    MDT_PC98         = 1 << 8,
+    MDT_SEGACD       = 1 << 9,
+    MDT_GM           = 1 << 10,
+    MDT_MT32         = 1 << 11,
+    MDT_MIDI         = MDT_GM | MDT_MT32,
+    MDT_MACINTOSH    = 1 << 13,
+    MDT_PREFER_MT32  = 1 << 14,
+    MDT_PREFER_GM    = 1 << 15,
+    MDT_PREFER_FLUID = 1 << 16,
+};
+
+// Audio CD manager stub — Status struct used for save/load.
+class AudioCDManager {
+public:
+    struct Status {
+        bool playing = false;
+        int  track = 0, start = 0, duration = 0, numLoops = 0;
+        int  volume = 0, balance = 0;
+    };
+};
+
 class MidiDriver_BASE {
 public:
     virtual ~MidiDriver_BASE() {}

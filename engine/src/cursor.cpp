@@ -19,6 +19,10 @@
  *
  */
 
+// ThumbyScummby — pull in scummvm_compat.h FIRST so the `#define Scumm tsb`
+// namespace rewrite applies to all subsequent includes.
+#include "scummvm_compat.h"
+
 #include "common/config-manager.h"
 #include "common/system.h"
 #include "common/macresman.h"

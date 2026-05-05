@@ -99,7 +99,8 @@ class EventManager;
 class TimerManager;
 }
 
-namespace Audio { class Mixer; }
+// Audio::Mixer / SoundHandle come from scummvm-upstream/audio/mixer.h.
+#include "audio/mixer.h"
 
 // engines/engine.h provides Engine + PauseToken — we use it as-is.
 #include "engines/engine.h"
@@ -163,11 +164,15 @@ struct DetectorResult {
 #include "scumm/scumm_v8.h"   // stub
 #include "scumm/he/intern_he.h"   // HE subclasses (real headers, bodies never link)
 #include "scumm/bomp.h"           // BompDrawData / drawBomp (referenced by v6+ paths)
+#include "scumm/he/resource_he.h" // ResExtractor (cursor.cpp HE path)
 #include "scumm/file.h"           // BaseScummFile / ScummFile (charset.cpp opens fonts)
+#include "scumm/sound.h"          // Scumm::Sound (real class; stub bodies in scummvm_stubs.cpp)
+#include "audio/mixer.h"          // Audio::Mixer / SoundHandle
 // scumm/sound.h is NOT included — it pulls audio/mididrv (with MDT_*),
 // scumm/soundcd.h methods, AudioCDManager — all things vars.cpp/scumm.cpp
 // would also need.  We provide a Sound STUB class below.  Phase 7
 // audio_shim.cpp subclasses it with bodies that forward to imuse_*.
+#include "scumm/ks_check.h"       // Korean Hangul checkJongsung (string.cpp)
 #include "scumm/verbs.h"          // VerbSlot (string.cpp / verbs.cpp)
 #include "graphics/font.h"        // Graphics::Font (charset.cpp Mac font path)
 // scumm/sound.h pulls in audio/mididrv.h + scumm/{soundcd,soundse}.h —
@@ -223,83 +228,90 @@ public:
     virtual const Graphics::Font *getFontByScummId(int) { return nullptr; }
     virtual void printCharToTextArea(int, int, int, int) {}
     virtual void setupCursor(int /*&width*/, int /*&height*/, int /*&hotspotX*/, int /*&hotspotY*/, int /*&animate*/) {}
-    virtual void initTextAreaForActor(int, int) {}
+    virtual void initTextAreaForActor(Actor *, int) {}
     virtual bool isVerbGuiActive() const { return false; }
+    virtual bool handleEvent(const Common::Event &) { return false; }
+    virtual bool runQuitDialog() { return true; }
+    virtual bool runRestartDialog() { return true; }
+    virtual void runDraftsInventory() {}
 };
 
 // SoundHE — minimal subclass with playVoice for HE talkie path.
 // SoundHE class is defined further down (after Sound) but methods declared
 // here so MacGui sequence parses.
 
-// scumm/dialogs.h: InfoDialog — shown on save/load failure.  Stub.
-class InfoDialog {
+}  // close Scumm namespace momentarily for global GUI::Dialog stub
+
+// scumm/dialogs.h InfoDialog inherits from GUI::Dialog (in
+// scummvm-upstream/gui/dialog.h).  We don't ship the GUI subsystem.
+namespace GUI {
+class Dialog {
+public:
+    virtual ~Dialog() {}
+    virtual int runModal() { return 0; }
+    Common::U32String _backgroundType;     // unused
+};
+class MessageDialog : public Dialog {
+public:
+    MessageDialog(const Common::U32String &) {}
+    MessageDialog(const Common::String &) {}
+    enum Result { kOK = 0, kCancel = 1 };
+};
+}
+
+namespace Scumm {
+
+class ScummDialog : public GUI::Dialog {};
+
+class InfoDialog : public ScummDialog {
 public:
     InfoDialog(ScummEngine *, const Common::U32String &) {}
     InfoDialog(ScummEngine *, const Common::String &) {}
     InfoDialog(ScummEngine *, int) {}
-    int runModal() { return 0; }
 };
 
-// Sound — minimal stub.  audio_shim.cpp (Phase 7) provides a real subclass
-// with bodies that forward to imuse_*.  Methods listed here are the ones
-// transcribed code actively calls.
-class Sound : public Common::Serializable {
+class SubtitleSettingsDialog : public InfoDialog {
 public:
-    Sound(ScummEngine *vm) : _vm(vm) {}
-    virtual ~Sound() {}
-
-    virtual void startSound(int sound, int heOffset = 0,
-                            int heChannel = 0, int heFlags = 0,
-                            int heFreq = 0, int hePan = 0, int heVol = 0) {}
-    virtual void stopSound(int sound) {}
-    virtual void stopAllSounds() {}
-    virtual int  isSoundRunning(int sound) const { return 0; }
-    virtual bool isSoundInUse(int) const { return false; }
-    virtual bool isSoundInQueue(int sound) const { return false; }
-    virtual int  getSoundElapsedTime(int sound) const { return 0; }
-    virtual int  isSoundRunningEgo(int sound, int actor) const { return 0; }
-    virtual void soundKludge(int *list, int num) {}
-    virtual void talkSound(uint32 a, uint32 b, int mode, int channel = 0) {}
-    virtual void processSound() {}
-    virtual void pauseSounds(bool pause) {}
-    virtual void setupSound() {}
-    virtual void modifySound(int sound, int offset, int data, int type) {}
-    virtual void modifySound(int sound, int offset, int frequencyShift, int pan, int volume, int flags) {}
-    virtual void addSoundToQueue(int sound, int heOffset = 0, int heChannel = 0, int heFlags = 0,
-                                 int heFreq = 0, int hePan = 0, int heVol = 0) {}
-    virtual bool shouldInjectMISEAudio() const { return false; }
-    virtual void startRemasteredSpeech(const char *, byte) {}
-    virtual int  pollCD() { return 0; }
-    virtual void setupMISEAudioParams(int, int) {}
-    virtual int  getCurrentCDSound() const { return 0; }
-    virtual void stopCD() {}
-    virtual void playCDTrack(int, int, int, int) {}
-    virtual void updateCD() {}
-    virtual void stopCDTimer() {}
-
-    void saveLoadWithSerializer(Common::Serializer &) override {}
-
-    int _digiSndMode = 0;
-    int _talkChannelHandle = 0;
-    int _musicType = 0;        // MidiDriverFlags
-
-protected:
-    ScummEngine *_vm;
+    SubtitleSettingsDialog(ScummEngine *vm, int) : InfoDialog(vm, 0) {}
+    int getValue() const { return 0; }
 };
 
-enum {
-    DIGI_SND_MODE_EMPTY  = 0,
-    DIGI_SND_MODE_TALKIE = 1,
-    DIGI_SND_MODE_SFX    = 2,
-};
-enum {
-    HSND_TALKIE_SLOT = 1,
+class Indy3IQPointsDialog : public InfoDialog {
+public:
+    Indy3IQPointsDialog(ScummEngine *vm, char *) : InfoDialog(vm, 0) {}
 };
 
+class PauseDialog : public InfoDialog {
+public:
+    PauseDialog(ScummEngine *vm, int) : InfoDialog(vm, 0) {}
+};
+
+class ConfirmDialog : public InfoDialog {
+public:
+    ConfirmDialog(ScummEngine *vm, int) : InfoDialog(vm, 0) {}
+};
+
+class ValueDisplayDialog : public GUI::Dialog {
+public:
+    ValueDisplayDialog(const Common::U32String &, int, int, int, char, char) {}
+    int getValue() const { return 0; }
+    void setValue(int) {}
+};
+
+// Sound — use scummvm-upstream's real class via scumm/sound.h (included
+// at top of file).  Method bodies are no-op stubs in scummvm_stubs.cpp.
+// Phase 7 audio_shim.cpp subclasses with bodies that forward to imuse_*.
+
+// SoundHE — HE Sound subclass.  Stub — never instantiated.
 class SoundHE : public Sound {
 public:
-    SoundHE(ScummEngine *vm) : Sound(vm) {}
+    SoundHE(ScummEngine *vm) : Sound(vm, nullptr, false) {}
     void playVoice(uint32, uint32) {}
+};
+
+// scumm/sound_he.h: HSND_TALKIE_SLOT.
+enum {
+    HSND_TALKIE_SLOT = 1,
 };
 
 }  // namespace Scumm (tsb after rewrite)

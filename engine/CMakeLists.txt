@@ -67,16 +67,17 @@ add_library(thumbyscummby_engine STATIC
     # The following pull in heavier deps (SoundHE/DIGI_SND_*/InfoDialog/
     # VerbSlot full def / SaveStateList / Common::EventManager methods).
     # Activated as stubs land.
-    # src/string.cpp         # heavy: GUI::Dialog inheritance, SoundHE methods, checkJongsung Korean
+    src/string.cpp         # _string[6] / decodeParseString
+    src/ks_check.cpp       # Korean Hangul Jongsung checker
     src/verbs.cpp          # verb panel
     src/script.cpp         # VM core
     src/script_v4.cpp      # v4 saveLoadVars
     src/script_v5.cpp      # ~80 v5 opcodes
     # src/scumm.cpp          # huge dep cone: clickteam, macresman, md5,
                               # keymapper, gui/message, akos, file_nes
-    # src/vars.cpp           # vars.cpp directly #includes scumm/sound.h which defines real Sound class — conflicts with our stub
-    # src/input.cpp          # depends on Common::Keymap / Keymapper
-    # src/cursor.cpp         # ScummEngine_v70he cursor methods + ConfigManager link
+    src/vars.cpp           # setupScummVars / resetScummVars
+    src/input.cpp          # event handling
+    src/cursor.cpp         # mouse cursor
     # OLD lines below
     # src/charset.cpp.old    # needs Graphics::Font + MacGui::getFontByScummId
     # src/string.cpp         # depends on charset
