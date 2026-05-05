@@ -84,3 +84,13 @@ target_compile_options(thumbyscummby_engine PRIVATE
     -fno-exceptions -fno-rtti
     -ffunction-sections -fdata-sections
 )
+
+# scummvm-upstream/common/forbidden.h blocks libc symbols (printf/FILE/etc.)
+# to push engines into using the scummvm APIs.  Our boundary code (platform/,
+# audio_mix.cpp, chunk readers) needs the real libc symbols, so disable the
+# block engine-wide.  Each transcribed scummvm cpp is unaffected as long as
+# it doesn't try to use forbidden symbols (and they don't, by design).
+target_compile_definitions(thumbyscummby_engine PUBLIC
+    FORBIDDEN_SYMBOL_ALLOW_ALL=1
+    HAVE_CONFIG_H=1
+)
