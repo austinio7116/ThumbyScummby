@@ -4,5 +4,13 @@
 #include "scummvm_compat.h"
 namespace GUI {
 inline int InfoMsgID(const char *) { return 0; }
+enum {
+    kMessageOK = 0,
+    kMessageCancel = 1,
+};
+class TimedMessageDialog : public MessageDialog {
+public:
+    TimedMessageDialog(const Common::U32String &m, uint /*ms*/) : MessageDialog(m) {}
+};
 }
 #endif

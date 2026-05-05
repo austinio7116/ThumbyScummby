@@ -104,6 +104,8 @@ class TimerManager;
 
 // engines/engine.h provides Engine + PauseToken — we use it as-is.
 #include "engines/engine.h"
+#include "engines/savestate.h"   // SaveStateDescriptor / SaveStateList
+#include "engines/metaengine.h"  // MetaEngine — full def for getMetaEngine() use
 
 // engines/metaengine.h: DetectorResult.  scumm.h's ScummEngine ctor takes
 // `(OSystem *, const DetectorResult &)`.  Real scummvm fills DetectorResult
@@ -200,20 +202,59 @@ struct DetectorResult {
 
 namespace Scumm {        // == namespace tsb after rewrite
 
+// audio/musicplugin.h MusicEngine — abstract base.  Stubbed for parse only.
+class MusicEngine {
+public:
+    virtual ~MusicEngine() {}
+    virtual void setMusicVolume(int) {}
+    virtual void setSfxVolume(int) {}
+    virtual void startSound(int) {}
+    virtual void stopSound(int) {}
+    virtual void stopAllSounds() {}
+    virtual int  getSoundStatus(int) const { return 0; }
+    virtual int  getMusicTimer() { return 0; }
+    virtual void terminate() {}
+    virtual int  getQueueSize() { return 0; }
+    virtual void setQuality(int) {}
+    virtual void toggleMusic(bool) {}
+    virtual void toggleSoundEffects(bool) {}
+    virtual void restoreAfterLoad() {}
+};
+
 // scummvm-upstream/scumm/imuse/imuse.h.  Replaced by our imuse.cpp;
-// `_imuse` member stays nullptr.
-class IMuse { public: virtual ~IMuse() {} };
+// `_imuse` member stays nullptr.  Inherits MusicEngine because v6+
+// scumm.cpp assigns `_musicEngine = imuse`.
+class IMuse : public MusicEngine {
+public:
+    virtual ~IMuse() {}
+    static IMuse *create(ScummEngine *, MidiDriver *, MidiDriver *, MidiDriverFlags, bool) { return nullptr; }
+    void addSysexHandler(byte, void (*)(MidiDriver_BASE *, const byte *, uint16)) {}
+
+    enum {
+        PROP_TEMPO_BASE = 1,
+        PROP_NATIVE_MT32 = 2,
+        PROP_GS = 3,
+        PROP_LIMIT_PLAYERS = 4,
+        PROP_RECYCLE_PLAYERS = 5,
+        PROP_GAME_ID = 6,
+        PROP_RHYTHM_CHANNEL = 7,
+        PROP_DIRECT_PASSTHROUGH = 8,
+    };
+    uint32 property(int, uint32) { return 0; }
+};
+
+// Sysex handlers for SCUMM games (used as function pointers).
+inline void sysexHandler_Scumm(MidiDriver_BASE *, const byte *, uint16) {}
+inline void sysexHandler_SamNMax(MidiDriver_BASE *, const byte *, uint16) {}
 
 // FT/DIG/COMI digital iMUSE — disabled.
 class IMuseDigital { public: virtual ~IMuseDigital() {} };
 
-// audio/musicplugin.h MusicEngine — disabled.
-class MusicEngine { public: virtual ~MusicEngine() {} };
-
-// FM-Towns specific — disabled.  Methods stubbed for parse-only.
-class Player_Towns {
+// FM-Towns specific — disabled.  Inherits MusicEngine so v6+ assignment works.
+class Player_Towns : public MusicEngine {
 public:
     virtual ~Player_Towns() {}
+    virtual bool init() { return false; }
     virtual void setVolumeCD(int, int) {}
     virtual void setSoundVolume(int, int, int) {}
     virtual void setSoundNote(int, int) {}
@@ -229,11 +270,22 @@ public:
     virtual void printCharToTextArea(int, int, int, int) {}
     virtual void setupCursor(int /*&width*/, int /*&height*/, int /*&hotspotX*/, int /*&hotspotY*/, int /*&animate*/) {}
     virtual void initTextAreaForActor(Actor *, int) {}
+    virtual void update(int /*delta*/) {}
+    virtual void updateWindowManager() {}
     virtual bool isVerbGuiActive() const { return false; }
     virtual bool handleEvent(const Common::Event &) { return false; }
     virtual bool runQuitDialog() { return true; }
     virtual bool runRestartDialog() { return true; }
     virtual void runDraftsInventory() {}
+
+    // ctors used by transcribed scumm.cpp
+    MacGui() = default;
+    MacGui(ScummEngine *) {}
+    MacGui(ScummEngine *, const Common::Path &) {}
+
+    virtual bool initialize() { return true; }
+    virtual void clearTextArea() {}
+    virtual void reset() {}
 };
 
 // SoundHE — minimal subclass with playVoice for HE talkie path.
@@ -255,6 +307,10 @@ class MessageDialog : public Dialog {
 public:
     MessageDialog(const Common::U32String &) {}
     MessageDialog(const Common::String &) {}
+    MessageDialog(const Common::U32String &, const Common::U32String &) {}
+    MessageDialog(const Common::U32String &, const Common::U32String &, const Common::U32String &) {}
+    MessageDialog(const Common::String &, const Common::String &, const Common::String &) {}
+    MessageDialog(const char *, const Common::U32String &, const Common::U32String &) {}
     enum Result { kOK = 0, kCancel = 1 };
 };
 }
@@ -268,6 +324,7 @@ public:
     InfoDialog(ScummEngine *, const Common::U32String &) {}
     InfoDialog(ScummEngine *, const Common::String &) {}
     InfoDialog(ScummEngine *, int) {}
+    void setInfoText(const Common::U32String &) {}
 };
 
 class SubtitleSettingsDialog : public InfoDialog {
@@ -306,7 +363,11 @@ public:
 class SoundHE : public Sound {
 public:
     SoundHE(ScummEngine *vm) : Sound(vm, nullptr, false) {}
+    SoundHE(ScummEngine *vm, Audio::Mixer *m, Common::Mutex *)
+        : Sound(vm, m, false) {}
     void playVoice(uint32, uint32) {}
+    void feedMixer() {}
+    void handleSoundFrame() {}
 };
 
 // scumm/sound_he.h: HSND_TALKIE_SLOT.

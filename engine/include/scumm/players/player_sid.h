@@ -1,5 +1,5 @@
-#ifndef SCUMM_PLAYERS_PLAYER_SID_H_STUB
-#define SCUMM_PLAYERS_PLAYER_SID_H_STUB
+#ifndef SCUMM_PLAYERS_SID_H_STUB
+#define SCUMM_PLAYERS_SID_H_STUB
 #include "scummvm_compat.h"
-namespace Scumm { class Player_sid {}; }
+namespace Scumm { class Player_SID : public MusicEngine { public: Player_SID(ScummEngine *) {} }; }
 #endif

@@ -1,4 +1,5 @@
-#ifndef SCUMM_STUB_FMTOWNS_H
-#define SCUMM_STUB_FMTOWNS_H
-#include "scummvm_compat.h"
+#ifndef SCUMM_IMUSE_DRIVERS_FMTOWNS_H_STUB
+#define SCUMM_IMUSE_DRIVERS_FMTOWNS_H_STUB
+#include "audio/mididrv.h"
+class IMuseDriver_FMTowns : public MidiDriver { public: IMuseDriver_FMTowns(class Audio::Mixer *) {} };
 #endif

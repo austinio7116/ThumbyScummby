@@ -32,6 +32,16 @@ public:
         int  track = 0, start = 0, duration = 0, numLoops = 0;
         int  volume = 0, balance = 0;
     };
+    bool open() { return false; }
+    bool open(const Common::String &) { return false; }
+    void close() {}
+    void play(int, int, int, int, bool = false, bool = false) {}
+    void stop() {}
+    bool isPlaying() { return false; }
+    void setVolume(byte) {}
+    void setBalance(int8) {}
+    void update() {}
+    Status getStatus() { return Status(); }
 };
 
 class MidiDriver_BASE {
@@ -42,17 +52,56 @@ public:
     virtual void metaEvent(byte type, byte *data, uint16 length) {}
 };
 
+// MusicType — return type of MidiDriver::getMusicType().  Distinct from
+// MidiDriverFlags (which is a bitmask of devices to try).
+enum MusicType {
+    MT_INVALID  = -1,
+    MT_AUTO     = 0,
+    MT_NULL     = 1,
+    MT_PCSPK    = 2,
+    MT_PCJR     = 3,
+    MT_CMS      = 4,
+    MT_ADLIB    = 5,
+    MT_C64      = 6,
+    MT_AMIGA    = 7,
+    MT_APPLEIIGS = 8,
+    MT_TOWNS    = 9,
+    MT_PC98     = 10,
+    MT_SEGACD   = 11,
+    MT_GM       = 12,
+    MT_MT32     = 13,
+    MT_GS       = 14,
+    MT_MAC      = 15,
+    MT_MACINTOSH = MT_MAC,
+};
+
 class MidiDriver : public MidiDriver_BASE {
 public:
     enum { MERR_CANNOT_CONNECT = 1, MERR_DEVICE_NOT_AVAILABLE = 2 };
-    enum DeviceHandle { kDeviceHandleNone = 0 };
-    enum DeviceStringType { kDriverName = 0 };
+    typedef uint32 DeviceHandle;
+    enum DeviceStringType { kDriverName = 0, kDriverId = 1 };
     virtual int open() { return 0; }
     virtual void close() {}
     virtual bool isOpen() const { return false; }
     virtual uint32 getBaseTempo() { return 1000000 / 60; }
     virtual class MidiChannel *allocateChannel() { return nullptr; }
     virtual class MidiChannel *getPercussionChannel() { return nullptr; }
+
+    static DeviceHandle detectDevice(int /*flags*/) { return 0; }
+    static MusicType getMusicType(DeviceHandle /*handle*/) { return MT_NULL; }
+    static Common::String getDeviceString(DeviceHandle, DeviceStringType) {
+        return Common::String();
+    }
+    static MidiDriver *createMidi(DeviceHandle) { return nullptr; }
+
+    enum {
+        PROP_OLD_ADLIB           = 1,
+        PROP_SCUMM_OPL3          = 2,
+        PROP_CHANNEL_MASK        = 3,
+        PROP_TIMER               = 4,
+        PROP_USER_VOLUME_SCALING = 5,
+    };
+    virtual uint32 property(int /*prop*/, uint32 /*value*/) { return 0; }
 };
 
 class MidiChannel {
