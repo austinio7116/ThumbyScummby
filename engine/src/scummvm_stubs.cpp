@@ -9,10 +9,8 @@
 
 #include "scummvm_compat.h"
 
-namespace Common {
-ConfigManager  g_confMan_instance;
-ConfigManager *_confMan = &g_confMan_instance;
-}
+// ConfigManager singleton lives inline in scummvm_compat.h via
+// `static ConfigManager s; return s;`.  No global instance needed here.
 
 namespace Graphics {
 const byte macGammaCorrectionLookUp[256] = {

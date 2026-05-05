@@ -206,6 +206,7 @@ public:
     virtual void setPaletteDirty() {}
     virtual void *getFontByScummId(int) { return nullptr; }
     virtual void printCharToTextArea(int, int, int, int) {}
+    virtual void setupCursor(int /*&width*/, int /*&height*/, int /*&hotspotX*/, int /*&hotspotY*/, int /*&animate*/) {}
 };
 
 // Sound — bodies in audio_shim.cpp forward to imuse_*.  Methods listed
@@ -247,26 +248,11 @@ protected:
 //      code references but we don't fully provide.
 // ---------------------------------------------------------------------------
 
-// scummvm-upstream/common/config-manager.h — global ConfigManager singleton.
-// Real ConfMan reads ~/.config/scummvm.ini; we provide a no-op accessor.
-namespace Common {
-class ConfigManager {
-public:
-    bool getBool(const Common::String &) const   { return false; }
-    int  getInt(const Common::String &) const    { return 0; }
-    Common::String get(const Common::String &) const { return Common::String(); }
-    bool hasKey(const Common::String &) const    { return false; }
-    void setBool(const Common::String &, bool)   {}
-    void setInt(const Common::String &, int)     {}
-    void set(const Common::String &, const Common::String &) {}
-    void flushToDisk() {}
-    void registerDefault(const Common::String &, const Common::String &) {}
-    void registerDefault(const Common::String &, bool) {}
-    void registerDefault(const Common::String &, int)  {}
-};
-extern ConfigManager *_confMan;
-}
-#define ConfMan (*::Common::_confMan)
+// scummvm's common/config-manager.h is the real ConfigManager.  We
+// don't compile config-manager.cpp (it pulls fs.h / file.h / system.h),
+// so transcribed code that uses ConfMan.getBool(...) etc. will hit
+// link errors.  scummvm_stubs.cpp provides empty bodies.
+#include "common/config-manager.h"
 
 // scummvm-upstream/graphics/macega.h — Mac gamma table.  We don't render
 // for Mac, so a 256-byte identity table is fine.

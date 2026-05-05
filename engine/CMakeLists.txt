@@ -68,12 +68,12 @@ add_library(thumbyscummby_engine STATIC
     # src/object.cpp         # needs full ObjectData ctor + many ScummEngine methods
     # src/room.cpp           # needs initBGBuffers + setupRoomSubBlocks
     src/palette.cpp        # ColorCycle / palManip storage on ScummEngine
-    # src/gfx.cpp            # needs Gdi class real def + virtscr alloc
+    src/gfx.cpp            # Gdi / virtscr / drawStripToScreen
     # src/sound.cpp          # replaced by audio_shim.cpp
     # src/verbs.cpp          # depends on charset + script_v5
     # src/vars.cpp           # full setupScummVars body
     # src/input.cpp          # depends on Common::EventManager wiring
-    # src/cursor.cpp         # needs cursor.h impl
+    # src/cursor.cpp         # depends on real he/intern_he.h v70he class + bomp.h forward decls
     # src/script.cpp         # vm.slot[] + ScriptSlot etc.
     # src/script_v4.cpp      # depends on script.cpp
     # src/script_v5.cpp      # ~80 v5 opcodes
