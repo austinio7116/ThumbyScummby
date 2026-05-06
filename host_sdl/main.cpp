@@ -95,7 +95,13 @@ int main(int argc, char **argv) {
     // (v5 is the dominant SCUMM5 variant; our MI1 floppy works in v5
     // codepath via DetectorResult.version=4 + DetectorResult.platform).
     tsb::DetectorResult dr;
-    dr.game.id           = (int)tsb::GID_MONKEY;
+    // GID_MONKEY_VGA is the floppy v4 (with copy-protection screen).
+    // GID_MONKEY is the v5 CD release.  Setting v4=GID_MONKEY made
+    // scummvm-upstream's copy-protection bypass workaround
+    // (script_v5.cpp:2964 — `if (_game.id == GID_MONKEY_VGA && script == 152) return;`)
+    // not fire, so script 152 ran and the boot got stuck waiting for a
+    // dial-code answer the engine has no way to provide.
+    dr.game.id           = (int)tsb::GID_MONKEY_VGA;
     dr.game.version      = 4;
     dr.game.platform     = Common::kPlatformDOS;
     dr.game.features     = tsb::GF_SMALL_HEADER | tsb::GF_USE_KEY;

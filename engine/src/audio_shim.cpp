@@ -23,6 +23,30 @@
 
 namespace tsb {
 
+// ----- Resource loader for v4 sounds -------------------------------------
+// Upstream scummvm has scumm/sound.cpp:readSoundResourceSmallHeader() that
+// runs convertADResource() to wrap raw AD payloads in a synthesized ADL
+// chunk for the upstream iMUSE engine.  We don't link upstream sound.cpp
+// (we bypass scummvm's iMUSE in favour of our DOSBox-OPL2 stack), so when
+// scumm/resource.cpp:695 calls readSoundResourceSmallHeader for an
+// rtSound load, the symbol resolves to this minimal version: read the
+// entire SO chunk verbatim into the rtSound buffer.  imuse_start_sound
+// (imuse.cpp:autodetect) finds the inner AD/WA/SO/RO/MThd payload by
+// scanning, so we don't need to pre-slice it.
+int ScummEngine::readSoundResourceSmallHeader(ResId idx) {
+    // ScummEngine::loadResource has already done seek(+8) over the LFLF
+    // wrapper and a peek-then-rewind of the SO chunk's size+tag.  The
+    // file pointer is now at the start of the SO chunk header.  Re-read
+    // size, rewind, and slurp the full `size` bytes.
+    int64 pos = _fileHandle->pos();
+    uint32 size = _fileHandle->readUint32LE();
+    _fileHandle->seek(pos, SEEK_SET);
+    byte *dst = _res->createResource(rtSound, idx, size);
+    if (dst)
+        _fileHandle->read(dst, size);
+    return 1;
+}
+
 // ----- Sound ctor / dtor -------------------------------------------------
 Sound::Sound(ScummEngine *parent, Audio::Mixer * /*mixer*/, bool /*useReplacementAudioTracks*/)
     : _vm(parent),
@@ -41,6 +65,10 @@ void Sound::startSound(int sound, int /*heOffset*/, int /*heChannel*/,
                        int /*heVol*/) {
     // Resolve the SOUN resource and hand its full chunk (with header) to imuse.
     if (!_vm || sound <= 0) return;
+    // Mirror upstream Sound::startSound (sound.cpp:120-126): set VAR_LAST_SOUND
+    // so scripts polling that var see the active sound id.
+    if (_vm->VAR_LAST_SOUND != 0xFF)
+        _vm->VAR(_vm->VAR_LAST_SOUND) = sound;
     const byte *ptr = _vm->getResourceAddress(rtSound, sound);
     if (!ptr) return;
     // Resource size is opaque in our shim; imuse_start_sound autodetects format.

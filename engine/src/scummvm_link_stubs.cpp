@@ -628,7 +628,7 @@ Common::Path ScummEngine::generateFilename(int room) const {
     return Common::Path(result, Common::Path::kNoSeparator);
 }
 int  ScummEngine::readSoundResource(uint16) { return 0; }
-int  ScummEngine::readSoundResourceSmallHeader(uint16) { return 0; }
+// readSoundResourceSmallHeader is implemented in audio_shim.cpp.
 // verifyMI2MacBootScript lives in resource.cpp.
 
 // Playback (debug demo recording).
