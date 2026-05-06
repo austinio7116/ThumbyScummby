@@ -430,11 +430,31 @@ bool SaveStateDescriptor::isAutosave() const { return false; }
 bool SaveStateDescriptor::isValid() const { return false; }
 
 // ============================================================================
-// Graphics::CursorManager / Primitives — runtime path doesn't reach.
+// Graphics::CursorManager — forward to OSystem so OSystem_Thumby's
+// captured cursor sprite + visibility flag drive the on-screen pointer.
+// scummvm's real CursorManager keeps a stack of pushed cursors; the SCUMM
+// v4/v5 engine only ever uses replaceCursor (cursor.cpp:439-1258), so we
+// can collapse it into a single forward.
+//
+// Without this delegation, replaceCursor and showMouse were no-ops,
+// _cursorVisible stayed false in OSystem_Thumby, and the device showed
+// no on-screen pointer — even though MOUSEMOVE events were flowing and
+// the game was responding to clicks.
 // ============================================================================
 namespace Graphics {
-void CursorManager::replaceCursor(const void *, uint, uint, int, int, uint32, bool, const PixelFormat *, const byte *) {}
-bool CursorManager::showMouse(bool) { return false; }
+void CursorManager::replaceCursor(const void *buf, uint w, uint h,
+                                  int hotspotX, int hotspotY, uint32 keycolor,
+                                  bool dontScale, const PixelFormat *format,
+                                  const byte *mask) {
+    if (g_system) {
+        g_system->setMouseCursor(buf, w, h, hotspotX, hotspotY, keycolor,
+                                 dontScale, format, mask);
+    }
+}
+bool CursorManager::showMouse(bool visible) {
+    if (g_system) return g_system->showMouse(visible);
+    return false;
+}
 CursorManager::~CursorManager() {}
 }
 template<> Graphics::CursorManager *Common::Singleton<Graphics::CursorManager>::_singleton = nullptr;
