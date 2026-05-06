@@ -540,7 +540,7 @@ void PauseToken::operator=(const PauseToken &) {}
 // we don't link.
 // ============================================================================
 namespace tsb {
-void Actor::runActorTalkScript(int) {}
+// runActorTalkScript: real impl now lives in actor.cpp (talk pipeline).
 void Actor_v0::limbFrameCheck(int) {}
 ActorHE::ActorHE(ScummEngine *vm, int id) : Actor(vm, id) {}
 }
@@ -608,8 +608,7 @@ void ScummEngine::mac_undrawIndy3TextBox() {}
 void ScummEngine::playNESTitleScreens() {}
 
 // Misc.
-void ScummEngine::actorTalk(const byte *) {}
-void ScummEngine::resetV1ActorTalkColor() {}
+// actorTalk / resetV1ActorTalkColor are defined in actor.cpp now.
 // processActors / resetActorBgs / setActorRedrawFlags / redrawAllActors
 // have real implementations in actor.cpp now (enabled along with
 // drawActorCostume + prepareDrawActorCostume to bring sparkles, clouds,
@@ -646,9 +645,7 @@ bool ScummEngine::Playback::tryLoadPlayback(ScummEngine *, const Common::Path &)
 // ============================================================================
 namespace tsb {
 // v0 / v2 / v3old / v6 / v60he / v70he method bodies
-void ScummEngine::stopTalk() {}
-void ScummEngine::setTalkingActor(int) {}
-int  ScummEngine::getTalkingActor() { return 0; }
+// stopTalk / setTalkingActor / getTalkingActor: real impls in actor.cpp.
 
 // ScummEngine_v5::canSaveGameStateCurrently is non-virtual override in v5.h
 

@@ -3266,6 +3266,7 @@ void ScummEngine_v70he::resetActorBgs() {
 		_actors[i]->_needBgReset = false;
 	}
 }
+#endif  // ThumbyScummby: closes the v70he::resetActorBgs variant #if 0
 
 #ifdef ENABLE_HE
 bool ScummEngine_v95he::prepareForActorErase() {
@@ -3770,8 +3771,6 @@ void ActorHE::setActorCostume(int c) {
 	}
 }
 #endif
-
-#endif  // tail #if 0 — bring back setActorCostume + classChanged + ...
 
 void Actor::setActorCostume(int c) {
 	int i;
