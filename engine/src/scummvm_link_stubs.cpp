@@ -138,7 +138,6 @@ File::~File() { delete _handle; }
 
 bool File::open(const Path &p) {
     String name = p.baseName();
-    tsb::platform::log("File::open trying name='%s'\n", name.c_str());
     tsb::Span s{};
     if (name.equalsIgnoreCase("000.LFL"))      s = tsb::platform::data_master_index();
     else if (name.equalsIgnoreCase("DISK01.LEC")) s = tsb::platform::data_disk(1);
@@ -170,6 +169,7 @@ int64 File::size() const  { return _handle ? _handle->size() : 0; }
 bool File::seek(int64 offs, int whence) { return _handle ? _handle->seek(offs, whence) : false; }
 bool File::eos() const    { return _handle ? _handle->eos() : true; }
 uint32 File::read(void *buf, uint32 sz) { return _handle ? _handle->read(buf, sz) : 0; }
+const void *File::getRawPointer(uint32 sz) { return _handle ? _handle->getRawPointer(sz) : nullptr; }
 void File::clearErr() { if (_handle) _handle->clearErr(); }
 bool File::err() const { return _handle ? _handle->err() : false; }
 
@@ -371,7 +371,23 @@ Engine::Engine(OSystem *syst) : _system(syst),
     _eventMan(syst ? syst->getEventManager() : nullptr),
     _saveFileMan(nullptr),
     _metaEngine(&s_stub_metaengine),
-    _timer(nullptr) {}
+    _timer(nullptr) {
+    // engine.h has plain-pointer + scalar members with no in-class
+    // default; on host the heap happened to give us zeroed memory but
+    // device RP2350 hands back whatever was last in that arena.
+    // setDebugger() asserts !_debugger and panicked on the device with
+    // an "olive" splash.  Hit every uninitialised Engine field here.
+    _debugger             = nullptr;
+    _mainMenuDialog       = nullptr;
+    _pauseLevel           = 0;
+    _pauseStartTime       = 0;
+    _pauseScreenChangeID  = 0;
+    _engineStartTime      = 0;
+    _autosaveInterval     = 0;
+    _lastAutosaveTime     = 0;
+    _saveSlotToLoad       = -1;
+    _autoSaving           = false;
+}
 Engine::~Engine() {}
 bool Engine::canLoadGameStateCurrently(Common::U32String *) { return false; }
 bool Engine::canSaveGameStateCurrently(Common::U32String *) { return false; }

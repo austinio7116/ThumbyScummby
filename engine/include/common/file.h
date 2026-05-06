@@ -133,6 +133,7 @@ public:
 	int64 size() const override; /*!< Implement abstract SeekableReadStream method. */
 	bool seek(int64 offs, int whence = SEEK_SET) override;	/*!< Implement abstract SeekableReadStream method. */
 	uint32 read(void *dataPtr, uint32 dataSize) override;	/*!< Implement abstract SeekableReadStream method. */
+	const void *getRawPointer(uint32 size) override;
 };
 
 

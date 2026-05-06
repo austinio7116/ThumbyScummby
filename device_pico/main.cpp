@@ -26,29 +26,32 @@ namespace tsb::platform_pico {
     bool blob_ok();
 }
 
-int main() {
-    // 250 MHz: matches ThumbyDOOM/ThumbyNES baseline.  We can push to 300
-    // MHz later if profiling demands it.
-    set_sys_clock_khz(250000, true);
+// Boot splashes — only ULTRA-distinct primaries so the user can name
+// the colour without ambiguity.  Reads as a forward sequence:
+//   RED → YELLOW → GREEN → CYAN → BLUE → MAGENTA → WHITE
+// then the splashes inside ScummEngine::init() reuse the same palette
+// (RED inside init = pre-setupScumm, YELLOW = post-setupScumm, etc).
+//
+// The colour you see when the device freezes is the LAST step we
+// completed.
 
+extern int gDebugLevel;  // engine/src/scummvm_link_stubs.cpp
+
+int main() {
+    // 250 MHz: matches ThumbyDOOM/ThumbyNES baseline.
+    set_sys_clock_khz(250000, true);
     stdio_init_all();
+    gDebugLevel = 1;       // engine debug() up to level 1 — visible on LCD
 
     tsb::platform_pico::init_all();
+    tsb::platform::log("BOOT\n");
 
     if (!tsb::platform_pico::blob_ok()) {
-        // Without a valid data blob there's nothing to run.  Sit and spin
-        // so the dev knows pack_device.py wasn't run.
-        while (1) {
-            tsb::platform::sleep_ms(500);
-        }
+        tsb::platform::log("ERR: data blob missing\n");
+        while (1) tsb::platform::sleep_ms(500);
     }
 
-    // -----------------------------------------------------------------
-    // Audio init — match host_sdl/main.cpp order:
-    //   opl2_init -> adlib_init -> imuse_init -> platform::audio_init
-    //   -> audio_mix_init.  After audio_init the IRQ starts draining
-    //   the PWM ring at 22050 Hz.
-    // -----------------------------------------------------------------
+    // Audio bring-up.
     constexpr int kRequestedRate = 22050;
     tsb::opl2_init(kRequestedRate);
     tsb::adlib_init();
@@ -66,17 +69,13 @@ int main() {
         }
     }
 
-    // -----------------------------------------------------------------
-    // OSystem + engine.
-    // -----------------------------------------------------------------
-    static tsb::OSystem_Thumby osys;        // static so it's not on the
-                                            // limited cortex-m33 stack
+    static tsb::OSystem_Thumby osys;        // static — lives in BSS, not stack.
     osys.initBackend();
     extern OSystem *g_system;
     g_system = &osys;
 
     tsb::DetectorResult dr;
-    dr.game.id        = (int)tsb::GID_MONKEY_VGA;  // floppy v4
+    dr.game.id        = (int)tsb::GID_MONKEY_VGA;
     dr.game.version   = 4;
     dr.game.platform  = Common::kPlatformDOS;
     dr.game.features  = tsb::GF_SMALL_HEADER | tsb::GF_USE_KEY;
@@ -87,7 +86,10 @@ int main() {
 
     tsb::ScummEngine *eng = new tsb::ScummEngine_v4(&osys, dr);
 
-    Common::Error err = eng->run();
+    Common::Error err = eng->init();
+    if (err.getCode() == Common::kNoError) {
+        err = eng->go();
+    }
     (void)err;
 
     delete eng;

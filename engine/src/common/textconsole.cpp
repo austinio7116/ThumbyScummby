@@ -25,6 +25,7 @@
 #include "common/textconsole.h"
 #include "common/system.h"
 #include "common/str.h"
+#include "platform.h"  // tsb::platform::log_flush — make crash output visible
 
 namespace Common {
 
@@ -109,6 +110,7 @@ void NORETURN_PRE error(const char *s, ...) {
 
 	if (g_system)
 		g_system->logMessage(LogMessageType::kError, buf_output);
+	tsb::platform::log_flush();
 	// TODO: Think of a good fallback in case we do not have
 	// any OSystem yet.
 

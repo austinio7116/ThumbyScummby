@@ -69,18 +69,16 @@ def main():
 
     data_dir, out_path = sys.argv[1], sys.argv[2]
 
-    # Post-OSystem-pivot: ScummFile::read (file_engine.cpp) applies the
-    # 0x69 XOR per scummvm getEncByte() rules; pre-decrypting the LECs
-    # here would double-XOR every byte and the engine would see noise
-    # (e.g. read room id 99 instead of 10 from the disk offset table).
-    # Keep all entries as RAW bytes — same change that platform_sdl
-    # already needed.
+    # Pre-decrypt LECs (XOR with 0x69) so that on flash they're plain
+    # text. Combined with engine_init forcing _encbyte=0 for these files,
+    # the resource loader can return flash pointers directly, no heap
+    # alloc / no copy. Critical for fitting MI1 in 376 KB heap.
     files = [
         ("000.LFL",     0),
-        ("DISK01.LEC",  0),
-        ("DISK02.LEC",  0),
-        ("DISK03.LEC",  0),
-        ("DISK04.LEC",  0),
+        ("DISK01.LEC",  0x69),
+        ("DISK02.LEC",  0x69),
+        ("DISK03.LEC",  0x69),
+        ("DISK04.LEC",  0x69),
         ("901.LFL",     0),
         ("902.LFL",     0),
         ("903.LFL",     0),

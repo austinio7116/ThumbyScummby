@@ -21,6 +21,7 @@
 
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
+#include "platform.h"
 #include "scumm/actor.h"
 #include "scumm/resource.h"
 #include "scumm/gfx.h"
@@ -1017,6 +1018,7 @@ void ScummEngine::initBGBuffers(int height) {
 	int size, itemsize, i;
 	byte *room;
 
+	tsb::platform::log("ibg:start h=%d\n", height);
 	if (_game.version >= 7) {
 		// Resize main virtual screen in V7 games. This is necessary
 		// because in V7, rooms may be higher than one screen, so we have
@@ -1034,18 +1036,21 @@ void ScummEngine::initBGBuffers(int height) {
 	} else if (_game.features & GF_SMALL_HEADER) {
 		int off;
 		ptr = findResourceData(MKTAG('S','M','A','P'), room);
+		tsb::platform::log("ibg:SMAP=%p\n", (void*)ptr);
 		_gdi->_numZBuffer = 0;
 
 		if (_game.features & GF_16COLOR)
 			off = READ_LE_UINT16(ptr);
 		else
 			off = READ_LE_UINT32(ptr);
+		tsb::platform::log("ibg:off=%d\n", off);
 
 		while (off && _gdi->_numZBuffer < 4) {
 			_gdi->_numZBuffer++;
 			ptr += off;
 			off = READ_LE_UINT16(ptr);
 		}
+		tsb::platform::log("ibg:zb=%d\n", _gdi->_numZBuffer);
 	} else if (_game.version == 8) {
 		// in V8 there is no RMIH and num z buffers is in RMHD
 		ptr = findResource(MKTAG('R','M','H','D'), room);
@@ -1066,7 +1071,11 @@ void ScummEngine::initBGBuffers(int height) {
 
 
 	size = itemsize * _gdi->_numZBuffer;
-	memset(_res->createResource(rtBuffer, 9, size), 0, size);
+	tsb::platform::log("ibg:bufSz=%d\n", size);
+	byte *bufPtr = _res->createResource(rtBuffer, 9, size);
+	tsb::platform::log("ibg:cr=%p\n", (void*)bufPtr);
+	memset(bufPtr, 0, size);
+	tsb::platform::log("ibg:done\n");
 
 	for (i = 0; i < (int)ARRAYSIZE(_gdi->_imgBufOffs); i++) {
 		if (i < _gdi->_numZBuffer)

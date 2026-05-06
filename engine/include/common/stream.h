@@ -752,6 +752,13 @@ public:
 	 */
 	virtual int64 pos() const = 0;
 
+	// THUMBY-PORT: Returns a borrowed pointer to `size` bytes at the
+	// current stream position, advancing the stream. Default returns
+	// nullptr (caller falls back to read+copy). Memory-backed streams
+	// override to return their underlying buffer pointer (in flash on
+	// device). Used to skip the heap copy for read-only resources.
+	virtual const void *getRawPointer(uint32 /*size*/) { return nullptr; }
+
 	/**
 	 * Obtain the total size of the stream, measured in bytes.
 	 * If this value is unknown or cannot be computed, -1 is returned.

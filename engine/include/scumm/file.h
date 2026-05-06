@@ -41,7 +41,26 @@ protected:
 
 public:
 	BaseScummFile() : _encbyte(0) {}
+	// THUMBY-PORT: device build's pack_device.py pre-decrypts LFL/LEC
+	// files into flash so we can serve them as direct pointers without
+	// re-XORing on read. Force enc=0 unconditionally.
+#ifdef THUMBY_DEVICE
+	void setEnc(byte /*value*/) { _encbyte = 0; }
+#else
 	void setEnc(byte value) { _encbyte = value; }
+#endif
+
+	// THUMBY-PORT: borrow `size` bytes from the underlying flash-resident
+	// stream. Returns nullptr if the stream isn't a memory-backed source
+	// (or if XOR encryption is active — encrypted bytes can't be served
+	// raw). On success, advances the stream by `size`. Used by
+	// loadResource to skip the malloc+copy+decrypt for read-only data
+	// that already lives in flash. Calls the virtual SeekableReadStream
+	// hook (default = nullptr; MemoryReadStream returns its _ptr).
+	const void *getRawPointer(uint32 size) override {
+		if (_encbyte != 0) return nullptr;
+		return _baseStream ? _baseStream->getRawPointer(size) : nullptr;
+	}
 
 	virtual bool open(const Common::Path &filename) = 0;
 	virtual bool openSubFile(const Common::Path &filename) = 0;

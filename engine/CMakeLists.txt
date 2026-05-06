@@ -134,4 +134,7 @@ target_compile_definitions(thumbyscummby_engine PUBLIC
     FORBIDDEN_SYMBOL_ALLOW_ALL=1
     HAVE_CONFIG_H=1
     ENABLE_SCUMM=1            # turns on scumm/file.h's ScummFile class
+    REDUCE_MEMORY_USAGE=1     # zero in-class HashMap node pools — saves
+                              # ~48 KB on ConfigManager alone (DomainMap
+                              # pre-allocates 10 Domain-sized chunks inline)
 )

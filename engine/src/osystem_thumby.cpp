@@ -169,6 +169,12 @@ void OSystem_Thumby::updateScreen() {
     // wired up; for now we always show the whole frame.
     platform::present(_staging, nullptr, _palette,
                       platform::ScaleMode::Fit, 0, 0);
+    // Top up the audio ring once per frame. On device this synthesises
+    // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
+    // buffer; without this the sound timer never advances and SCUMM
+    // scripts that wait on music events stall (e.g. MI1 boot is
+    // stuck on room 0 until the LucasFilm cue finishes).
+    platform::audio_pump();
 }
 
 // Capture the 8bpp cursor sprite scummvm v4 cursor.cpp uploads via

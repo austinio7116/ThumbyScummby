@@ -22,6 +22,7 @@
 
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
+#include "platform.h"
 #include "scumm/actor.h"
 #include "scumm/resource.h"
 #include "scumm/object.h"
@@ -33,9 +34,11 @@ namespace Scumm {
  * The actor is placed next to the object indicated by objectNr.
  */
 void ScummEngine::startScene(int room, Actor *a, int objectNr) {
+	tsb::platform::log("startScene %d\n", room);
 	int i, where;
 
 	debugC(DEBUG_GENERAL, "Loading room %d", room);
+	#define SS_LOG(s) tsb::platform::log("ss:" s "\n")
 
 #ifdef ENABLE_SCUMM_7_8
 	if (_game.version >= 7) {
@@ -43,8 +46,10 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 	}
 #endif
 
+	SS_LOG("preStop");
 	stopTalk();
 
+	SS_LOG("preFade");
 	fadeOut(_switchRoomEffect2);
 	_newEffect = _switchRoomEffect;
 
@@ -68,8 +73,10 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 	if (VAR_NEW_ROOM != 0xFF)
 		VAR(VAR_NEW_ROOM) = room;
 
+	SS_LOG("preExitScript");
 	runExitScript();
 
+	SS_LOG("preKillScripts");
 	killScriptsAndResources();
 	if (_game.version >= 4 && _game.heversion <= 62)
 		stopCycle(0);
@@ -164,9 +171,11 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 	if (VAR_ROOM_RESOURCE != 0xFF)
 		VAR(VAR_ROOM_RESOURCE) = _roomResource;
 
+	SS_LOG("preEnsureRoom");
 	if (room != 0)
 		ensureResourceLoaded(rtRoom, room);
 
+	SS_LOG("preClearRoomObj");
 	clearRoomObjects();
 
 	if (_currentRoom == 0) {
@@ -180,11 +189,15 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 		VAR(66) = 1;
 	}
 
+	SS_LOG("preSetupSubBlocks");
 	setupRoomSubBlocks();
+	SS_LOG("preResetSubBlocks");
 	resetRoomSubBlocks();
 
+	SS_LOG("preInitBG");
 	initBGBuffers(_roomHeight);
 
+	SS_LOG("preResetObjs");
 	resetRoomObjects();
 
 	if (VAR_ROOM_WIDTH != 0xFF && VAR_ROOM_HEIGHT != 0xFF) {
@@ -237,6 +250,7 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 	if (_game.id == GID_ZAK && _game.platform == Common::kPlatformFMTowns && a == nullptr && room == 138)
 		setBoxFlags(4, 0);
 
+	SS_LOG("preShowActors");
 	showActors();
 
 	_egoPositioned = false;
@@ -244,7 +258,9 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 #ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
 	towns_resetPalCycleFields();
 #endif
+	SS_LOG("preEntryScript");
 	runEntryScript();
+	SS_LOG("postEntryScript");
 	if (_game.version >= 1 && _game.version <= 2) {
 		runScript(5, 0, 0, nullptr);
 	} else if (_game.version >= 5 && _game.version <= 6) {
@@ -536,8 +552,10 @@ void ScummEngine::resetRoomSubBlocks() {
 	const byte *ptr;
 	byte *roomptr;
 
+	tsb::platform::log("rrsb:start\n");
 	// Determine the room and room script base address
 	roomptr = getResourceAddress(rtRoom, _roomResource);
+	tsb::platform::log("rrsb:roomptr=%p\n", (void*)roomptr);
 	if (!roomptr)
 		error("Room %d: data not found (" __FILE__  ":%d)", _roomResource, __LINE__);
 
@@ -548,24 +566,33 @@ void ScummEngine::resetRoomSubBlocks() {
 
 	_res->nukeResource(rtMatrix, 1);
 	_res->nukeResource(rtMatrix, 2);
+	tsb::platform::log("rrsb:preBOXD\n");
 	if (_game.features & GF_SMALL_HEADER) {
 		ptr = findResourceData(MKTAG('B','O','X','D'), roomptr);
+		tsb::platform::log("rrsb:BOXD=%p\n", (void*)ptr);
 		if (ptr) {
 			byte numOfBoxes = *ptr;
+			tsb::platform::log("rrsb:nBox=%u\n", (unsigned)numOfBoxes);
 			int size;
 			if (_game.version == 3)
 				size = numOfBoxes * SIZEOF_BOX_V3 + 1;
 			else
 				size = numOfBoxes * SIZEOF_BOX + 1;
+			tsb::platform::log("rrsb:boxSz=%d\n", size);
 
 			_res->createResource(rtMatrix, 2, size);
+			tsb::platform::log("rrsb:m2alloc\n");
 			memcpy(getResourceAddress(rtMatrix, 2), ptr, size);
+			tsb::platform::log("rrsb:m2copied\n");
 			ptr += size;
 
 			size = getResourceDataSize(ptr - size - _resourceHeaderSize) - size;
+			tsb::platform::log("rrsb:m1sz=%d\n", size);
 			if (size > 0) {					// do this :)
 				_res->createResource(rtMatrix, 1, size);
+				tsb::platform::log("rrsb:m1alloc\n");
 				memcpy(getResourceAddress(rtMatrix, 1), ptr, size);
+				tsb::platform::log("rrsb:m1copied\n");
 			}
 
 		}

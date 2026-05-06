@@ -89,6 +89,19 @@ public:
 	bool eos() const { return _eos; }
 	void clearErr() { _eos = false; }
 
+	// THUMBY-PORT: borrow `size` bytes as a raw pointer into the underlying
+	// buffer (which lives in flash on device). Caller must NOT modify or
+	// hold past the underlying stream's lifetime. Returns nullptr if the
+	// stream cannot serve a contiguous pointer (e.g., end-of-stream).
+	// NOTE: _ptr is the base of the buffer — current read offset is _pos.
+	// (See MemoryReadStream::read which uses memcpy(_ptr + _pos, ...).)
+	const void *getRawPointer(uint32 size) override {
+		if (_pos + size > _size) { _eos = true; return nullptr; }
+		const void *p = _ptr + _pos;
+		_pos += size;
+		return p;
+	}
+
 	int64 pos() const { return _pos; }
 	int64 size() const { return _size; }
 

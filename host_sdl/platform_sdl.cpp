@@ -13,6 +13,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -470,6 +473,7 @@ void log(const char *fmt, ...) {
     vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
+void log_flush() { fflush(stderr); }
 
 [[noreturn]] void panic(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -486,6 +490,27 @@ void log(const char *fmt, ...) {
 // only debug aid.
 void debug_splash(uint16_t rgb565) {
     fprintf(stderr, "[debug_splash] color=0x%04X\n", rgb565);
+}
+
+// Heap-tracked boot checkpoint.  On host we ignore the colour and just
+// log `label` plus the current heap-in-use figure from mallinfo2() so we
+// can see exactly which engine init step blows the RP2350's heap.
+void checkpoint(const char *label, uint16_t /*color*/) {
+#if defined(__GLIBC__)
+    struct mallinfo2 mi = mallinfo2();
+    // Total = uordblks (arena, in-use) + hblkhd (mmap'd large allocs).
+    // Big >128 KB allocations go via mmap and DON'T show up in uordblks.
+    size_t total = (size_t)mi.uordblks + (size_t)mi.hblkhd;
+    fprintf(stderr,
+            "[ckpt] %-32s total=%6zu KB  uord=%6zu KB  mmap=%6zu KB  arena=%6zu KB\n",
+            label,
+            total              / 1024,
+            (size_t)mi.uordblks / 1024,
+            (size_t)mi.hblkhd  / 1024,
+            (size_t)mi.arena   / 1024);
+#else
+    fprintf(stderr, "[ckpt] %s\n", label);
+#endif
 }
 
 // SDL audio is driven by SDL's own thread via the registered callback;

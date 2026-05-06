@@ -99,6 +99,15 @@ target_include_directories(thumbyscummby PRIVATE
 
 target_compile_definitions(thumbyscummby PRIVATE
     THUMBY_DEVICE=1
+    # Pico-SDK defaults to PICO_HEAP_SIZE=0x800 (2KB) — way too small
+    # for scummvm.  The very first calloc in allocateArrays (1000
+    # bytes for _objectOwnerTable) blows past it (LIME splash hung).
+    # RP2350 has 520 KB SRAM; our static + .bss is ~140 KB.  Give the
+    # engine 320 KB of heap.  Stack stays at the default 4 KB
+    # SCRATCH_X allocation — scummvm doesn't recurse deep enough to
+    # overflow that, and growing it would push us into general SRAM
+    # (a separate fix if it bites).
+    PICO_HEAP_SIZE=0x50000   # 320 KB
 )
 
 target_compile_options(thumbyscummby PRIVATE
@@ -133,10 +142,10 @@ pico_set_double_implementation(thumbyscummby pico)
 # stdio: BOTH off. The Thumby Color's default UART TX is GP0 — which
 # is the LEFT button pin (set as GPIO_IN by buttons_init). Enabling
 # UART stdio means vprintf fills the TX FIFO, then blocks forever
-# because the FIFO can't drain through a pin we've reconfigured as
-# input. ThumbyDOOM disables both for the same reason. log() / panic()
-# become no-ops; if we want device logs in future, route them to an
-# on-screen DOS-style boot panel like DOOM does (boot_stdio_driver).
+# Both stdio backends disabled — UART pin is repurposed (LCD), and USB CDC
+# enumeration was unreliable at 250 MHz with our config. Instead, the
+# platform::log() implementation renders an on-screen text overlay (last
+# few log lines on the bottom of the LCD). See platform_pico.cpp.
 pico_enable_stdio_usb(thumbyscummby 0)
 pico_enable_stdio_uart(thumbyscummby 0)
 

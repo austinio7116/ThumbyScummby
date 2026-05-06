@@ -24,6 +24,8 @@
 // scumm/resource.h pre-empts scumm.h's ResType declaration via the
 // header-guard cycle.
 #include "scummvm_compat.h"
+#include "platform.h"
+#include "osystem_thumby.h"   // for THUMBY-PORT _compositeBuf aliasing
 #include "scumm/actor.h"
 #include "scumm/resource.h"
 
@@ -435,10 +437,12 @@ ScummEngine::ScummEngine(OSystem *syst, const DetectorResult &dr)
 #endif
 #endif
 
-	// Allocate gfx compositing buffer (not needed for V7/V8 games).
-	if (_game.version < 7)
-		_compositeBuf = (byte *)malloc(_screenWidth * _screenHeight * sizeMult);
-	else
+	// THUMBY-PORT: alias OSystem's 320x200 staging buffer instead of
+	// malloc'ing 64 KB; saves a duplicate framebuffer.
+	if (_game.version < 7) {
+		tsb::OSystem_Thumby *thumbyOsys = static_cast<tsb::OSystem_Thumby *>(_system);
+		_compositeBuf = thumbyOsys->getStagingPtr();
+	} else
 		_compositeBuf = nullptr;
 
 	if (_renderMode == Common::kRenderHercA || _renderMode == Common::kRenderHercG)
@@ -525,7 +529,8 @@ ScummEngine::~ScummEngine() {
 	free(_classData);
 	free(_arraySlot);
 
-	free(_compositeBuf);
+	// THUMBY-PORT: _compositeBuf aliases OSystem's staging buffer (see
+	// setupScumm); we don't own it, so don't free.
 	free(_hercCGAScaleBuf);
 	free(_16BitPalette);
 
@@ -1509,19 +1514,30 @@ Common::Error ScummEngine::init() {
 
 	_outputPixelFormat = _system->getScreenFormat();
 
+	tsb::platform::checkpoint("init pre-setupScumm",     0xF800);
 	setupScumm(macResourceFile);
+	tsb::platform::checkpoint("init post-setupScumm",    0xFFE0);
 
 	readIndexFile();
 
-	// Create the debugger now that _numVariables has been set
-	setDebugger(new ScummDebugger(this));
-
-	// ThumbyScummby: skip Keymapper wiring — we use platform::poll_input
-	// directly.  scummvm Keymapper backend not present.
+	// ThumbyScummby: skip the in-engine REPL debugger and Keymapper —
+	// see resetScumm() comment.  Both saved heap on device and dodged
+	// uninit-pointer asserts.
 	_insaneKeymap = nullptr;
 
 	resetScumm();
+	tsb::platform::checkpoint("init post-resetScumm",    0x001F);
+
 	resetScummVars();
+	tsb::platform::checkpoint("init post-resetScummVars", 0xFFFF);
+#ifdef THUMBY_DEVICE
+	tsb::platform::debug_splash(0xFB60);    // CORAL: resetScumm done
+#endif
+
+	resetScummVars();
+#ifdef THUMBY_DEVICE
+	tsb::platform::debug_splash(0x041F);    // TEAL: resetScummVars done
+#endif
 
 	if (!_copyProtection && _game.id == GID_TENTACLE) {
 		VAR(124) = 1;
@@ -1768,14 +1784,35 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 		maxHeapThreshold = 550000;
 	}
 
+	// THUMBY-PORT: device has 376 KB total heap, ~330 KB used by engine init.
+	// Original scummvm wants 400-550 KB resource cache; with our budget,
+	// shrink to ~32-48 KB so resources are evicted aggressively to fit.
+	// Host build keeps the original numbers.
+#ifdef THUMBY_DEVICE
+	// 64 KB low / 96 KB high — gives the engine breathing room to keep a
+	// small room+scripts+costumes set live. With 376 KB total heap and
+	// ~330 KB engine init footprint, ~46 KB is the absolute minimum so
+	// these numbers push the threshold above eviction-thrash territory.
+	// If we OOM at 96 KB, lower it; if game thrashes (frequent reloads),
+	// raise it.
+	_res->setHeapThreshold(64 * 1024, 96 * 1024);
+#else
 	_res->setHeapThreshold(400000, maxHeapThreshold);
+#endif
 #else
 	// RAM is cheap, disk I/O isn't... helps with retaining the resources in COMI and similar
 	_res->setHeapThreshold(16 * 1024 * 1024, 32 * 1024 * 1024);
 #endif
 
-	free(_compositeBuf);
-	_compositeBuf = (byte *)malloc(_screenWidth * _textSurfaceMultiplier * _screenHeight * _textSurfaceMultiplier * _outputPixelFormat.bytesPerPixel);
+	// THUMBY-PORT: alias the OSystem's 320x200 staging buffer instead of
+	// malloc'ing a separate 64 KB. Both hold the same composed CLUT8 frame
+	// at different points; sharing them saves the duplicate buffer.
+	// Requires _screenWidth*_screenHeight*bytesPerPixel == staging size
+	// (320*200*1 for DOS v4/v5).
+	{
+		tsb::OSystem_Thumby *thumbyOsys = static_cast<tsb::OSystem_Thumby *>(_system);
+		_compositeBuf = thumbyOsys->getStagingPtr();
+	}
 
 	// MI2 NI DOS Demo, load demo.rec playback file if present
 	if ((_game.id == GID_MONKEY2) && (_game.features & GF_DEMO) && (_game.platform == Common::kPlatformDOS) && !ConfMan.getBool("disable_mi2_ni_demo"))
@@ -1923,6 +1960,7 @@ void ScummEngine::resetScumm() {
 	int i;
 
 	debug(9, "resetScumm");
+	tsb::platform::checkpoint("resetScumm entry", 0xFFFF);
 
 #ifdef USE_RGB_COLOR
 	if (_game.features & GF_16BIT_COLOR
@@ -1970,6 +2008,7 @@ void ScummEngine::resetScumm() {
 	} else {
 		initScreens(16, 144);
 	}
+	tsb::platform::checkpoint("resetScumm post-initScreens", 0xFC60);
 
 	_palManipCounter = 0;
 
@@ -1977,6 +2016,7 @@ void ScummEngine::resetScumm() {
 		_roomPalette[i] = i;
 
 	resetPalette(true);
+	tsb::platform::checkpoint("resetScumm post-resetPalette", 0xAFE5);
 	if (_game.version == 1) {
 	} else if (_game.features & GF_16COLOR) {
 		for (i = 0; i < 16; i++)
@@ -1988,6 +2028,7 @@ void ScummEngine::resetScumm() {
 
 	if (_game.features & GF_OLD_BUNDLE)
 		loadCharset(0);
+	tsb::platform::checkpoint("resetScumm post-loadCharset", 0x07F0);
 
 	setShake(0);
 	_cursor.animate = 1;
@@ -2015,6 +2056,7 @@ void ScummEngine::resetScumm() {
 			_actors[i]->setActorCostume(i);
 	}
 
+	tsb::platform::checkpoint("resetScumm post-actorAlloc", 0xF810);
 	if (_game.id == GID_MANIAC && _game.version <= 1) {
 		resetV1ActorTalkColor();
 	} else if (_game.id == GID_MANIAC && _game.version == 2 && (_game.features & GF_DEMO)) {
@@ -2626,6 +2668,7 @@ int ScummEngine::getTalkSpeed() {
 #pragma mark -
 
 Common::Error ScummEngine::go() {
+	tsb::platform::log("[go] entry\n");
 	setTotalPlayTime();
 
 	_lastWaitTime = _system->getMillis();
@@ -2636,7 +2679,9 @@ Common::Error ScummEngine::go() {
 		if (_game.platform == Common::kPlatformNES && _game.id == GID_MANIAC && !(_game.features & GF_DEMO)) {
 			playNESTitleScreens();
 		}
+		tsb::platform::log("[go] runBootscript()\n");
 		runBootscript();
+		tsb::platform::log("[go] runBootscript returned\n");
 	} else {
 		_loadFromLauncher = true; // The only purpose of this is triggering the IQ points update for INDY3/4
 		_saveLoadFlag = 0;
@@ -2985,6 +3030,7 @@ void ScummEngine_v0::scummLoop(int delta) {
 }
 
 void ScummEngine::scummLoop(int delta) {
+	#define LOOP_CKPT(label, color) ((void)0)
 	// Notify the script about how much time has passed, in jiffies
 	if (VAR_TIMER != 0xFF)
 		VAR(VAR_TIMER) = delta;
@@ -3053,7 +3099,9 @@ void ScummEngine::scummLoop(int delta) {
 	// to allow one frame time to pass between checkExecVerbs() and runAllScripts().
 	// Several time-based effects (e.g. shaking) depend on this...
 	if (_game.version != 7 || isFTDOSDemo) {
+		LOOP_CKPT("scummLoop pre-processInput",   0xFFE0);  // yellow
 		processInput();
+		LOOP_CKPT("scummLoop post-processInput",  0xAFE5);  // lime
 
 		// Additionally, v8 runs checkExecVerbs() at the end of processInput()...
 		if (_game.version == 8) {
@@ -3074,9 +3122,12 @@ void ScummEngine::scummLoop(int delta) {
 #endif
 	}
 
+	LOOP_CKPT("scummLoop pre-updateScummVars",    0x07FF);  // cyan
 	scummLoop_updateScummVars();
+	LOOP_CKPT("scummLoop pre-updateMusicTimer",   0x83F0);  // olive
 
 	_sound->updateMusicTimer();
+	LOOP_CKPT("scummLoop post-updateMusicTimer",  0xFC00);  // dark red
 
 	// Another v8 quirk: runAllScripts() is called here; after that we can
 	// finally restore the blastTexts/blastObject rects...
@@ -3107,8 +3158,11 @@ load_game:
 	}
 
 	if (_game.version < 7 || isFTDOSDemo) {
+		LOOP_CKPT("scummLoop pre-runAllScripts",  0xF81F);  // magenta
 		runAllScripts();
+		LOOP_CKPT("scummLoop pre-checkExecVerbs", 0xFFFF);  // white
 		checkExecVerbs();
+		LOOP_CKPT("scummLoop post-checkExecVerbs",0x07F0);  // teal
 	}
 
 	// It's verified from FT and DIG disasms that this is where
@@ -3154,20 +3208,27 @@ load_game:
 	}
 #endif
 
+	LOOP_CKPT("scummLoop pre-room",               0x780F);  // purple
 	if (_currentRoom == 0) {
 		if (_game.version > 3)
 			displayDialog();
 		drawDirtyScreenParts();
 	} else {
+		LOOP_CKPT("scummLoop pre-walkActors",     0x07E0);  // green
 		walkActors();
+		LOOP_CKPT("scummLoop pre-moveCamera",     0x001F);  // blue
 		moveCamera();
+		LOOP_CKPT("scummLoop pre-updateObjects",  0xFD20);  // orange
 		updateObjectStates();
 		if (_game.version > 3)
 			displayDialog();
+		LOOP_CKPT("scummLoop pre-handleDrawing",  0xF800);  // red
 
 		scummLoop_handleDrawing();
+		LOOP_CKPT("scummLoop post-handleDrawing", 0xFFE0);  // yellow
 
 		scummLoop_handleActors();
+		LOOP_CKPT("scummLoop post-handleActors",  0xAFE5);  // lime
 
 		_fullRedraw = false;
 
@@ -3181,8 +3242,11 @@ load_game:
 		handleMouseOver(oldEgo != VAR(VAR_EGO));
 
 		// Render everything to the screen.
+		LOOP_CKPT("scummLoop pre-updatePalette",  0x07FF);  // cyan
 		updatePalette();
+		LOOP_CKPT("scummLoop pre-drawDirty",      0xFFFF);  // white
 		drawDirtyScreenParts();
+		LOOP_CKPT("scummLoop post-drawDirty",     0x07F0);  // teal
 
 		// FIXME / TODO: Try to move the following to scummLoop_handleSound or
 		// scummLoop_handleActors (but watch out for regressions!)
@@ -3210,6 +3274,7 @@ load_game:
 
 	/* show or hide mouse */
 	CursorMan.showMouse(_cursor.state > 0);
+	#undef LOOP_CKPT
 }
 
 #ifdef ENABLE_HE

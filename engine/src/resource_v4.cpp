@@ -21,6 +21,7 @@
 
 #include "common/md5.h"
 #include "common/memstream.h"
+#include "platform.h"
 
 #include "scumm/scumm_v4.h"
 #include "scumm/file.h"
@@ -82,8 +83,10 @@ void ScummEngine_v4::readIndexFile() {
 
 	debug(9, "readIndexFile()");
 
+	tsb::platform::checkpoint("readIndexFile entry",     0x801F);
 	closeRoom();
 	openRoom(0);
+	tsb::platform::checkpoint("readIndexFile post-openRoom", 0xFC00);
 
 	while (true) {
 		// Figure out the sizes of various resources
@@ -123,8 +126,11 @@ void ScummEngine_v4::readIndexFile() {
 
 	_fileHandle->seek(0, SEEK_SET);
 
+	tsb::platform::checkpoint("readIndexFile first-scan-done", 0xFC60);
 	readMAXS(0);
+	tsb::platform::checkpoint("readIndexFile post-readMAXS",   0xAFE5);
 	allocateArrays();
+	tsb::platform::checkpoint("readIndexFile post-allocArrays", 0x07F0);
 
 	while (true) {
 		/*itemsize = */_fileHandle->readUint32LE();
@@ -173,6 +179,7 @@ void ScummEngine_v4::readIndexFile() {
 		}
 	}
 	closeRoom();
+	tsb::platform::checkpoint("readIndexFile done", 0xF810);
 }
 
 void ScummEngine_v4::loadCharset(int no) {
@@ -194,8 +201,25 @@ void ScummEngine_v4::loadCharset(int no) {
 	}
 
 	size = file.readUint32LE() + 11;
-	data = _res->createResource(rtCharset, no, size);
-	file.read(data, size);
+	// THUMBY-PORT: try off-heap. Charset files are pre-decrypted and
+	// flash-resident; reading 4-15 KB into heap per font is wasteful.
+	// Note this duplicates the seek-back-then-borrow pattern used by
+	// loadResource. file pos is currently 4 (after readUint32LE);
+	// rewind 4 to get the full `size` bytes that include the 4-byte
+	// header byte that the engine apparently doesn't use? Actually the
+	// canonical code reads `size = data_size + 11` then file.read(data, size)
+	// from pos=4 — so the resource buffer ends up as bytes 4..4+size-1 of
+	// the file. Mirror that by getting the pointer at pos=4.
+	const void *flashPtr = file.getRawPointer(size);
+	if (flashPtr) {
+		_res->_types[rtCharset][no]._address = (byte *)const_cast<void *>(flashPtr);
+		_res->_types[rtCharset][no]._size = size;
+		_res->setOffHeap(rtCharset, no);
+		data = (byte *)flashPtr;
+	} else {
+		data = _res->createResource(rtCharset, no, size);
+		file.read(data, size);
+	}
 
 	// WORKAROUND: The French floppy EGA and VGA versions of Monkey Island 1
 	// don't properly follow CP850 for the \x85 character in the 904.LFL font.

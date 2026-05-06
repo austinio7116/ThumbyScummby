@@ -329,25 +329,193 @@ void sleep_ms(uint32_t ms) {
     ::sleep_ms(ms);
 }
 
+static void logAppendChar(char c);  // forward decl
+static void logRenderToFb();        // forward decl
 void log(const char *fmt, ...) {
+    char buf[128];
     va_list ap; va_start(ap, fmt);
-    vprintf(fmt, ap);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    if (n < 0) return;
+    if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
+    for (int i = 0; i < n; i++) logAppendChar(buf[i]);
 }
+void log_flush() { logRenderToFb(); }
 
 // Boot diagnostic splash — paints a 128×128 solid frame so a hang
 // inside engine_init can be localised by the colour on screen.
 void debug_splash(uint16_t rgb565) {
     using namespace tsb::platform_pico;
-    // Reuse g_fb (the present-time framebuffer) so we don't burn an
-    // extra 32KB BSS for diagnostics.
     for (int i = 0; i < DISPLAY_W * DISPLAY_H; i++) g_fb[i] = rgb565;
     lcd_present(g_fb);
     lcd_wait_idle();
-    // Short hold — only need long enough that human eye registers the
-    // colour change. The LAST splash before a hang stays on screen
-    // forever, so 80ms is fine for sequencing.
     sleep_ms(80);
+}
+
+// ---------------------------------------------------------------------------
+// On-screen 5x7 ASCII font + console-style log overlay
+// ---------------------------------------------------------------------------
+// Public-domain 5x7 font for printable ASCII (0x20..0x7E). Each glyph is
+// 5 bytes; bit i of byte j is the pixel at column j, row i (top-down).
+// Stored in flash via the const qualifier — zero RAM cost.
+static const uint8_t kFont5x7[95][5] = {
+    {0,0,0,0,0},          // 0x20 ' '
+    {0,0,0x5F,0,0},       // !
+    {0,7,0,7,0},          // "
+    {0x14,0x7F,0x14,0x7F,0x14}, // #
+    {0x24,0x2A,0x7F,0x2A,0x12}, // $
+    {0x23,0x13,8,0x64,0x62},    // %
+    {0x36,0x49,0x55,0x22,0x50}, // &
+    {0,5,3,0,0},          // '
+    {0,0x1C,0x22,0x41,0}, // (
+    {0,0x41,0x22,0x1C,0}, // )
+    {0x14,8,0x3E,8,0x14}, // *
+    {8,8,0x3E,8,8},       // +
+    {0,0x50,0x30,0,0},    // ,
+    {8,8,8,8,8},          // -
+    {0,0x60,0x60,0,0},    // .
+    {0x20,0x10,8,4,2},    // /
+    {0x3E,0x51,0x49,0x45,0x3E}, // 0
+    {0,0x42,0x7F,0x40,0}, // 1
+    {0x42,0x61,0x51,0x49,0x46}, // 2
+    {0x21,0x41,0x45,0x4B,0x31}, // 3
+    {0x18,0x14,0x12,0x7F,0x10}, // 4
+    {0x27,0x45,0x45,0x45,0x39}, // 5
+    {0x3C,0x4A,0x49,0x49,0x30}, // 6
+    {1,0x71,9,5,3},       // 7
+    {0x36,0x49,0x49,0x49,0x36}, // 8
+    {6,0x49,0x49,0x29,0x1E}, // 9
+    {0,0x36,0x36,0,0},    // :
+    {0,0x56,0x36,0,0},    // ;
+    {0,8,0x14,0x22,0x41}, // <
+    {0x14,0x14,0x14,0x14,0x14}, // =
+    {0x41,0x22,0x14,8,0}, // >
+    {2,1,0x51,9,6},       // ?
+    {0x32,0x49,0x79,0x41,0x3E}, // @
+    {0x7E,0x11,0x11,0x11,0x7E}, // A
+    {0x7F,0x49,0x49,0x49,0x36}, // B
+    {0x3E,0x41,0x41,0x41,0x22}, // C
+    {0x7F,0x41,0x41,0x22,0x1C}, // D
+    {0x7F,0x49,0x49,0x49,0x41}, // E
+    {0x7F,9,9,1,1},       // F
+    {0x3E,0x41,0x41,0x51,0x32}, // G
+    {0x7F,8,8,8,0x7F},    // H
+    {0,0x41,0x7F,0x41,0}, // I
+    {0x20,0x40,0x41,0x3F,1}, // J
+    {0x7F,8,0x14,0x22,0x41}, // K
+    {0x7F,0x40,0x40,0x40,0x40}, // L
+    {0x7F,2,4,2,0x7F},    // M
+    {0x7F,4,8,0x10,0x7F}, // N
+    {0x3E,0x41,0x41,0x41,0x3E}, // O
+    {0x7F,9,9,9,6},       // P
+    {0x3E,0x41,0x51,0x21,0x5E}, // Q
+    {0x7F,9,0x19,0x29,0x46}, // R
+    {0x46,0x49,0x49,0x49,0x31}, // S
+    {1,1,0x7F,1,1},       // T
+    {0x3F,0x40,0x40,0x40,0x3F}, // U
+    {0x1F,0x20,0x40,0x20,0x1F}, // V
+    {0x7F,0x20,0x18,0x20,0x7F}, // W
+    {0x63,0x14,8,0x14,0x63}, // X
+    {3,4,0x78,4,3},       // Y
+    {0x61,0x51,0x49,0x45,0x43}, // Z
+    {0,0x7F,0x41,0x41,0}, // [
+    {2,4,8,0x10,0x20},    // backslash
+    {0,0x41,0x41,0x7F,0}, // ]
+    {4,2,1,2,4},          // ^
+    {0x40,0x40,0x40,0x40,0x40}, // _
+    {0,1,2,4,0},          // `
+    {0x20,0x54,0x54,0x54,0x78}, // a
+    {0x7F,0x48,0x44,0x44,0x38}, // b
+    {0x38,0x44,0x44,0x44,0x20}, // c
+    {0x38,0x44,0x44,0x48,0x7F}, // d
+    {0x38,0x54,0x54,0x54,0x18}, // e
+    {8,0x7E,9,1,2},       // f
+    {0x08,0x14,0x54,0x54,0x3C}, // g
+    {0x7F,8,4,4,0x78},    // h
+    {0,0x44,0x7D,0x40,0}, // i
+    {0x20,0x40,0x44,0x3D,0}, // j
+    {0x7F,0x10,0x28,0x44,0}, // k
+    {0,0x41,0x7F,0x40,0}, // l
+    {0x7C,4,0x18,4,0x78}, // m
+    {0x7C,8,4,4,0x78},    // n
+    {0x38,0x44,0x44,0x44,0x38}, // o
+    {0x7C,0x14,0x14,0x14,8}, // p
+    {8,0x14,0x14,0x18,0x7C}, // q
+    {0x7C,8,4,4,8},       // r
+    {0x48,0x54,0x54,0x54,0x20}, // s
+    {4,0x3F,0x44,0x40,0x20}, // t
+    {0x3C,0x40,0x40,0x20,0x7C}, // u
+    {0x1C,0x20,0x40,0x20,0x1C}, // v
+    {0x3C,0x40,0x30,0x40,0x3C}, // w
+    {0x44,0x28,0x10,0x28,0x44}, // x
+    {0x0C,0x50,0x50,0x50,0x3C}, // y
+    {0x44,0x64,0x54,0x4C,0x44}, // z
+    {0,8,0x36,0x41,0},    // {
+    {0,0,0x7F,0,0},       // |
+    {0,0x41,0x36,8,0},    // }
+    {8,4,8,0x10,8},       // ~
+};
+
+// 8 lines × 21 chars (uses 6 px per char, fits 128 / 6 = 21).
+static constexpr int kLogLines = 8;
+static constexpr int kLogCols  = 21;
+static char     g_logBuf[kLogLines][kLogCols + 1] = {{0}};
+static int      g_logCursor = 0;  // current line being filled
+static int      g_logColCur = 0;  // current column in current line
+
+static void logRenderToFb() {
+    using namespace tsb::platform_pico;
+    // Clear bottom 8*8=64 px of LCD framebuffer (lines 64..127).
+    const int top = DISPLAY_H - kLogLines * 8;
+    for (int y = top; y < DISPLAY_H; y++)
+        for (int x = 0; x < DISPLAY_W; x++)
+            g_fb[y * DISPLAY_W + x] = 0x0000;  // black bg
+    // Render each log line top-down, oldest line at top.
+    // Buffer is filled circularly: g_logCursor points to NEXT line to write.
+    // Display oldest first: cursor, cursor+1, ..., cursor-1 (mod kLogLines).
+    for (int row = 0; row < kLogLines; row++) {
+        int srcLine = (g_logCursor + row) % kLogLines;
+        const char *txt = g_logBuf[srcLine];
+        int py = top + row * 8;
+        for (int col = 0; col < kLogCols && txt[col]; col++) {
+            char c = txt[col];
+            if (c < 0x20 || c > 0x7E) c = '?';
+            const uint8_t *glyph = kFont5x7[c - 0x20];
+            int px = col * 6;
+            for (int gx = 0; gx < 5; gx++) {
+                uint8_t bits = glyph[gx];
+                for (int gy = 0; gy < 7; gy++) {
+                    if (bits & (1 << gy)) {
+                        g_fb[(py + gy) * DISPLAY_W + (px + gx)] = 0xFFFF;
+                    }
+                }
+            }
+        }
+    }
+    lcd_present(g_fb);
+    lcd_wait_idle();
+}
+
+// Render every newline. Slower (~5-10 ms per LCD frame DMA) but
+// guarantees we see the very last log line before any hang.
+static void logAppendChar(char c) {
+    if (c == '\n') {
+        g_logBuf[g_logCursor][g_logColCur] = '\0';
+        g_logCursor = (g_logCursor + 1) % kLogLines;
+        g_logColCur = 0;
+        memset(g_logBuf[g_logCursor], 0, sizeof(g_logBuf[g_logCursor]));
+        logRenderToFb();
+    } else if (g_logColCur < kLogCols) {
+        g_logBuf[g_logCursor][g_logColCur++] = c;
+    }
+}
+
+void checkpoint(const char *label, uint16_t /*color*/) {
+    // On device, render the label as a log line. Color ignored.
+    if (label) {
+        for (const char *p = label; *p; p++) logAppendChar(*p);
+        logAppendChar('\n');
+    }
 }
 
 [[noreturn]] void panic(const char *fmt, ...) {

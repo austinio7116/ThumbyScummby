@@ -927,7 +927,10 @@ public:
 	int _NESCostumeSet = 0;
 	void NES_loadCostumeSet(int n);
 	byte *_NEScostdesc = nullptr, *_NEScostlens = nullptr, *_NEScostoffs = nullptr, *_NEScostdata = nullptr;
-	byte _NESPatTable[2][4096];
+	// THUMBY-PORT: NES pattern tables (8 KB) only allocated for NES games;
+	// stubbed as null pointers — array indexing _NESPatTable[i] still
+	// returns byte* exactly as before.
+	byte *_NESPatTable[2] = {nullptr, nullptr};
 	byte _NESPalette[2][16];
 	byte _NESBaseTiles = 0;
 
@@ -1387,7 +1390,10 @@ protected:
 	// HACK Double the array size to handle 16-bit images.
 	// this should be dynamically allocated based on game depth instead.
 	byte _grabbedCursor[16384];
-	byte _macGrabbedCursor[16384 * 4]; // Double resolution cursor
+	// THUMBY-PORT: _macGrabbedCursor (64 KB) is unused by any code path
+	// reachable from DOS v4/v5 games. Mac platform paths would need it
+	// allocated; left as a nullptr stub here.
+	byte *_macGrabbedCursor = nullptr;
 	byte _currentCursor = 0;
 
 	byte _newEffect = 0, _switchRoomEffect2 = 0, _switchRoomEffect = 0;
@@ -1680,7 +1686,10 @@ public:
 	Graphics::Surface *_macScreen = nullptr;
 	MacGui *_macGui = nullptr;
 	bool _useMacGraphicsSmoothing = true;
-	byte _completeScreenBuffer[320 * 200];
+	// THUMBY-PORT: _completeScreenBuffer (62 KB) is only memset-cleared
+	// inside the Mac platform branch in setupScumm; never touched on DOS.
+	// Pointer stub avoids the storage cost; Mac path would have to allocate.
+	byte *_completeScreenBuffer = nullptr;
 
 protected:
 	byte _charsetColor = 0;

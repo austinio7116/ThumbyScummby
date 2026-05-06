@@ -134,6 +134,11 @@ void     sleep_ms(uint32_t ms);
 // Printf-style debug output. On host: stderr. On device: UART or no-op.
 void log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+// Force the on-screen log overlay to redraw immediately. Use right
+// before a known-fatal call (error(), exit) so the last log line is
+// guaranteed visible even if a crash follows. Host: no-op.
+void log_flush();
+
 // Fatal error — print and halt. Engine calls this on unrecoverable
 // problems (missing resource, unimplemented opcode in critical path).
 [[noreturn]] void panic(const char *fmt, ...)
@@ -144,5 +149,12 @@ void log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 // 128×128 RGB565 frame and waits for the LCD DMA to drain. Host
 // implementation is a no-op.
 void debug_splash(uint16_t rgb565);
+
+// Combined boot checkpoint.  On device: paints `color`.  On host: logs
+// `label` plus the current heap-in-use figure (from mallinfo2 on Linux).
+// Lets us run the whole init flow once on host and see exactly which
+// step would overflow the RP2350's 376 KB heap, instead of bisecting
+// with flashed splash builds.
+void checkpoint(const char *label, uint16_t color);
 
 }  // namespace tsb::platform
