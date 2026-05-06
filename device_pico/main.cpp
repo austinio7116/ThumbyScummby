@@ -51,10 +51,12 @@ namespace tsb::platform_pico {
 // reach the engine without dropping.
 namespace {
 
-constexpr int kCursorPixelsPerFrame = 3;   // 30fps × 3 = 90 px/s — tuned
-                                           // for fine control on a 320×200
-                                           // game space; user found 5 too
-                                           // twitchy.
+constexpr int kCursorPixelsPerFrame = 2;   // 30fps × 2 = 60 px/s — was 5
+                                           // then 3, both still felt too
+                                           // twitchy in 320×200 space.  At
+                                           // 2 px/frame the screen takes
+                                           // ~3 s to cross — fine but
+                                           // controllable.
 constexpr int kPanPixelsPerFrame    = 4;   // pan can stay snappier
 
 struct DeviceInputState {

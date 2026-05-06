@@ -179,60 +179,76 @@ static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y) {
 }
 
 // Render the cursor sprite onto the LCD framebuffer in pixel space.
-// Sprite is stored in source-coord pixels (8bpp palette indices); we
-// scale + boost to keep it visible across all three scale modes.
 //
-//   Fit mode  — natural mapping is 0.4× (320→128); a 16×16 sprite would
-//               render at ≈6×6 LCD pixels.  Boost ×2 to ≈12 LCD px so
-//               the user can actually see where their cursor is.
-//   Fill mode — natural mapping is 0.64× (200→128 on Y, isotropic);
-//               16×16 sprite renders at ≈10×10 LCD px, readable enough.
-//   Crop mode — 1:1, sprite renders at original size.
+// Sprite is 8bpp palette indices (typical SCUMM cursors are 16×16).  We
+// always UPSCALE the sprite into LCD pixel space — never downsample —
+// and we use a box-filter "any-source-pixel" merge so single-pixel
+// features (cross-hair horizontal arm, arrow tip) survive regardless of
+// the scale ratio.  Naive nearest-neighbour downsampling could drop a
+// 1-row horizontal arm entirely when integer rounding happens to skip
+// the row; that produced the "only vertical lines" report for Fill.
+//
+// Per-mode LCD size:
+//   Fit  — 2× source pixels (a 16×16 cursor renders at 32×32 LCD).  Big
+//          and bold against the 0.4× downsampled scene.
+//   Fill — 1.5× source.
+//   Crop — 1× source (1:1 native).
 static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
                                 const uint8_t *palette,
                                 ScaleMode mode, int crop_x, int crop_y) {
     using namespace tsb::platform_pico;     // for pal_to_565
     if (!c.sprite || c.w <= 0 || c.h <= 0) return;
 
-    // Hotspot's LCD anchor — this is where the user's logical mouse coord
-    // (c.x, c.y) lands on screen.
+    int cw_lcd, ch_lcd;
+    if (mode == ScaleMode::Fit) {
+        cw_lcd = c.w * 2;
+        ch_lcd = c.h * 2;
+    } else if (mode == ScaleMode::Fill) {
+        cw_lcd = c.w * 3 / 2;
+        ch_lcd = c.h * 3 / 2;
+    } else {  // Crop
+        cw_lcd = c.w;
+        ch_lcd = c.h;
+    }
+    if (cw_lcd < 4) cw_lcd = 4;
+    if (ch_lcd < 4) ch_lcd = 4;
+
     const int anchor_lcd_x = src_to_lcd_x(c.x, mode, crop_x);
     const int anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y);
-
-    // LCD-space cursor dimensions: natural mode-scale × per-mode boost.
-    int cw_natural, ch_natural;
-    if (mode == ScaleMode::Fill) {
-        cw_natural = c.w * DISPLAY_H / VIRTUAL_SCREEN_H;
-        ch_natural = c.h * DISPLAY_H / VIRTUAL_SCREEN_H;
-    } else if (mode == ScaleMode::Crop) {
-        cw_natural = c.w;
-        ch_natural = c.h;
-    } else {  // Fit
-        cw_natural = c.w * DISPLAY_W / VIRTUAL_SCREEN_W;
-        ch_natural = c.h * 80         / VIRTUAL_SCREEN_H;
-    }
-    const int boost = (mode == ScaleMode::Fit) ? 2 : 1;
-    int cw_lcd = cw_natural * boost; if (cw_lcd < 4) cw_lcd = 4;
-    int ch_lcd = ch_natural * boost; if (ch_lcd < 4) ch_lcd = 4;
-
-    // Hotspot in the boosted LCD cursor — keeps the click point under the
-    // logical mouse position even as we scale the visual.
-    const int hsx_lcd = (cw_lcd > 0 && c.w > 0) ? c.hotspot_x * cw_lcd / c.w : 0;
-    const int hsy_lcd = (ch_lcd > 0 && c.h > 0) ? c.hotspot_y * ch_lcd / c.h : 0;
+    const int hsx_lcd = c.hotspot_x * cw_lcd / c.w;
+    const int hsy_lcd = c.hotspot_y * ch_lcd / c.h;
     const int origin_x = anchor_lcd_x - hsx_lcd;
     const int origin_y = anchor_lcd_y - hsy_lcd;
 
     for (int ly = 0; ly < ch_lcd; ly++) {
         const int dy = origin_y + ly;
         if (dy < 0 || dy >= DISPLAY_H) continue;
-        const int sy = ly * c.h / ch_lcd;
-        const uint8_t *srow = c.sprite + sy * c.w;
+        // Box-filter source span for this LCD row.  Always covers ≥1 row
+        // (we never downsample), so vertical features can't be skipped.
+        int sy_lo = ly * c.h / ch_lcd;
+        int sy_hi = ((ly + 1) * c.h + ch_lcd - 1) / ch_lcd;
+        if (sy_hi <= sy_lo) sy_hi = sy_lo + 1;
+        if (sy_hi > c.h)    sy_hi = c.h;
+
         uint16_t *drow = fb + dy * DISPLAY_W;
         for (int lx = 0; lx < cw_lcd; lx++) {
             const int dx = origin_x + lx;
             if (dx < 0 || dx >= DISPLAY_W) continue;
-            const int sx = lx * c.w / cw_lcd;
-            const uint8_t v = srow[sx];
+            int sx_lo = lx * c.w / cw_lcd;
+            int sx_hi = ((lx + 1) * c.w + cw_lcd - 1) / cw_lcd;
+            if (sx_hi <= sx_lo) sx_hi = sx_lo + 1;
+            if (sx_hi > c.w)    sx_hi = c.w;
+
+            // Pick the first non-transparent pixel in the source span.
+            // Equivalent to nearest-neighbour at 1:1, but recovers thin
+            // strokes at any upscale ratio.
+            uint8_t v = c.key_color;
+            for (int sy = sy_lo; sy < sy_hi && v == c.key_color; sy++) {
+                const uint8_t *srow = c.sprite + sy * c.w;
+                for (int sx = sx_lo; sx < sx_hi; sx++) {
+                    if (srow[sx] != c.key_color) { v = srow[sx]; break; }
+                }
+            }
             if (v == c.key_color) continue;
             drow[dx] = pal_to_565(palette, v);
         }
