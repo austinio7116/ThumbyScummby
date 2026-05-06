@@ -113,7 +113,24 @@ bool Sound::speechIsPlaying()                           { return false; }
 void Sound::saveLoadWithSerializer(Common::Serializer &) {}
 void Sound::restoreAfterLoad()                          {}
 bool Sound::isAudioDisabled()                           { return false; }
-void Sound::updateMusicTimer()                          {}
+
+// Drives VAR_MUSIC_TIMER from our iMUSE state.  scumm.cpp:3079 calls this
+// from scummLoop, once per frame.  The boot/title scripts wait on this var
+// to time out the Lucasfilm logo / theme tune before the gameplay starts.
+//
+// Mirrors scummvm-upstream sound.cpp:2206 — non-CD branch:
+//   VAR(VAR_MUSIC_TIMER) = _musicEngine->getMusicTimer() * timer_freq / 240
+// We bypass _musicEngine (which is nullptr in our build because IMuse::create
+// returns null — we don't link scummvm's iMUSE) and read straight from our
+// imuse_get_music_timer(), which already uses upstream's
+// `parser_ticks * 2 / PPQN` formula (imuse.cpp:773).
+void Sound::updateMusicTimer() {
+    if (!_vm) return;
+    if (_vm->VAR_MUSIC_TIMER == 0xFF) return;
+    const int t = imuse_get_music_timer();
+    _vm->VAR(_vm->VAR_MUSIC_TIMER) =
+        (int32)((double)t * _vm->getTimerFrequency() / 240.0);
+}
 bool Sound::shouldInjectMISEAudio() const               { return false; }
 void Sound::startRemasteredSpeech(const char *, uint16, uint16, uint16) {}
 
