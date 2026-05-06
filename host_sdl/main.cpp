@@ -21,6 +21,9 @@
 #include "osystem_thumby.h"
 #include "platform.h"
 #include "imuse.h"
+#include "audio_mix.h"
+#include "opl2.h"
+#include "adlib.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,8 +56,32 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // iMUSE / OPL2 stack — driven by audio callback, hooked into platform.
+    // iMUSE / OPL2 stack — driven by SDL audio callback. The pre-pivot
+    // engine.cpp wired this up; after the pivot we wire it here in main
+    // so OPL2 and iMUSE are alive before any sound resource is started
+    // by the engine.
+    // Audio init order matches pre-pivot engine.cpp:1331-1349:
+    //   opl2_init -> adlib_init -> imuse_init -> platform::audio_init
+    // -> audio_mix_init, then re-init opl2/adlib if SDL gave us a
+    // different rate.
+    constexpr int kRequestedRate = 22050;
+    tsb::opl2_init(kRequestedRate);
+    tsb::adlib_init();
     tsb::imuse_init();
+    int actual_rate = tsb::platform::audio_init(kRequestedRate,
+                                                tsb::audio_mix_callback,
+                                                nullptr);
+    if (actual_rate <= 0) {
+        tsb::platform::log("audio: platform::audio_init failed; running silent\n");
+        actual_rate = kRequestedRate;
+    } else {
+        tsb::audio_mix_init(actual_rate);
+        if (actual_rate != kRequestedRate) {
+            tsb::opl2_init(actual_rate);
+            tsb::adlib_init();
+        }
+        tsb::platform::log("audio: %d Hz mono\n", actual_rate);
+    }
 
     // OSystem subclass that bridges to tsb::platform::*.  Lives on the stack
     // for the duration of main(); engine holds a pointer.

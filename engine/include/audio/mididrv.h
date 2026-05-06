@@ -87,12 +87,24 @@ public:
     virtual class MidiChannel *allocateChannel() { return nullptr; }
     virtual class MidiChannel *getPercussionChannel() { return nullptr; }
 
+    // Pretend AdLib is the active device so scummvm's setupMusic() picks
+    // the AdLib code path (-> _sound->_musicType = MDT_ADLIB).  Our
+    // audio_shim.cpp routes Sound::startSound straight to imuse +
+    // dbopl, so the actual MidiDriver isn't used; we just need scummvm
+    // to *believe* a usable AdLib device exists.  Returning MT_NULL
+    // makes setupMusic mark the engine as silent and the boot/title
+    // scripts never start the theme music (audit: 2026-05-06).
     static DeviceHandle detectDevice(int /*flags*/) { return 0; }
-    static MusicType getMusicType(DeviceHandle /*handle*/) { return MT_NULL; }
+    static MusicType getMusicType(DeviceHandle /*handle*/) { return MT_ADLIB; }
     static Common::String getDeviceString(DeviceHandle, DeviceStringType) {
         return Common::String();
     }
-    static MidiDriver *createMidi(DeviceHandle) { return nullptr; }
+    // Return a singleton fake driver whose property() / open() / send()
+    // are all no-ops.  scumm.cpp:setupMusic dereferences this to call
+    // ->property(...), so it must NOT be null.  Our actual audio path
+    // bypasses MidiDriver entirely (audio_shim.cpp routes Sound::startSound
+    // straight into imuse_start_sound + dbopl).
+    static MidiDriver *createMidi(DeviceHandle);
 
     enum {
         PROP_OLD_ADLIB           = 1,

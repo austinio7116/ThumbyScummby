@@ -113,10 +113,12 @@ bool load_data_dir(const char *path) {
     }
     tsb::platform::log("loaded 000.LFL: %zu bytes (unencrypted)\n", g.master.size);
 
-    // DISK01-04.LEC — encrypted with 0x69
+    // DISK01-04.LEC — kept RAW (encrypted). ScummFile::read applies
+    // the 0x69 XOR per scummvm getEncByte() rules; pre-decrypting here
+    // would double-XOR and scramble all bytes.
     for (int i = 1; i <= 4; i++) {
-        if (try_open("%s/DISK%02d.LEC", i, 0x69, &g.disk[i-1].data, &g.disk[i-1].size)) {
-            tsb::platform::log("loaded DISK%02d.LEC: %zu bytes (decrypted)\n", i, g.disk[i-1].size);
+        if (try_open("%s/DISK%02d.LEC", i, 0, &g.disk[i-1].data, &g.disk[i-1].size)) {
+            tsb::platform::log("loaded DISK%02d.LEC: %zu bytes (raw)\n", i, g.disk[i-1].size);
         } else {
             tsb::platform::log("warning: cannot open DISK%02d.LEC\n", i);
         }

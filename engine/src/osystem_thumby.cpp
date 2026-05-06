@@ -62,7 +62,6 @@ void OSystem_Thumby::initBackend() {
     // engine.  Hook event manager so Engine ctor finds it.
     static NullEventManager s_event_mgr;
     _eventManager = &s_event_mgr;
-    platform::log("OSystem_Thumby::initBackend: _eventManager=%p\n", _eventManager);
 }
 
 // ---------------------------------------------------------------------------
@@ -72,8 +71,9 @@ void OSystem_Thumby::initSize(uint width, uint height,
                               const Graphics::PixelFormat *format) {
     _w = (int)width;
     _h = (int)height;
-    // We allocate fixed 320x200 staging at construction; if a game asks for
-    // a different size we just clamp (v4 SCUMM is always 320x200).
+    _stagingSurface.init((int16)width, (int16)height, (int16)width,
+                         _staging,
+                         Graphics::PixelFormat::createFormatCLUT8());
 }
 
 Graphics::PixelFormat OSystem_Thumby::getOverlayFormat() const {
@@ -115,8 +115,6 @@ void OSystem_Thumby::fillScreen(const Common::Rect &r, uint32 col) {
 }
 
 void OSystem_Thumby::updateScreen() {
-    // Push to platform layer.  ScaleMode::Fill is the default;
-    // engine.cpp's existing crop/scale UI will be re-wired in Phase 8.
     platform::present(_staging, nullptr, _palette,
                       platform::ScaleMode::Fill, 0, 0);
 }

@@ -37,6 +37,7 @@
 #include "engines/util.h"
 #include "graphics/cursorman.h"
 #include "audio/timestamp.h"
+#include "audio/mididrv.h"
 
 // Mutex/StackLock bodies live in scummvm_stubs.cpp.
 
@@ -260,29 +261,43 @@ extern const uint16 kWindows1257ConversionTable[128]      = {0};
 // ============================================================================
 // debug() / debugN() / gDebugLevel — text routed to platform::log.
 // ============================================================================
+// gDebugLevel: scummvm convention is "0 = silent for debug(N), printed
+// only if level <= gDebugLevel".  We default to 0 = silent, since the
+// per-opcode / per-readvar / per-writeVar trace is too noisy for normal
+// runs.  Set to 9 to see everything.
 int gDebugLevel = 0;
 void debug(const char *fmt, ...) {
+    if (gDebugLevel < 1) return;
     va_list ap; va_start(ap, fmt); char buf[512]; vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     tsb::platform::log("%s\n", buf);
 }
-void debug(int, const char *fmt, ...) {
+void debug(int level, const char *fmt, ...) {
+    if (level > gDebugLevel) return;
     va_list ap; va_start(ap, fmt); char buf[512]; vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     tsb::platform::log("%s\n", buf);
 }
 void debugN(const char *fmt, ...) {
+    if (gDebugLevel < 1) return;
     va_list ap; va_start(ap, fmt); char buf[512]; vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     tsb::platform::log("%s", buf);
 }
-void debugN(int, const char *fmt, ...) {
+void debugN(int level, const char *fmt, ...) {
+    if (level > gDebugLevel) return;
     va_list ap; va_start(ap, fmt); char buf[512]; vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     tsb::platform::log("%s", buf);
 }
 namespace tsb {
+// debugC: scummvm filters by channel mask (kDebugScripts/Opcodes/Vars/etc).
+// We silence by default — these prints are extremely noisy (per-opcode).
+// Flip kDebugCEnable to true to enable.
+static const bool kDebugCEnable = false;
 void debugC(int, const char *fmt, ...) {
+    if (!kDebugCEnable) return;
     va_list ap; va_start(ap, fmt); char buf[512]; vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     platform::log("%s\n", buf);
 }
 void debugC(int, int, const char *fmt, ...) {
+    if (!kDebugCEnable) return;
     va_list ap; va_start(ap, fmt); char buf[512]; vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
     platform::log("%s\n", buf);
 }
@@ -312,10 +327,50 @@ void OSystem::updateStartSettings(const Common::String &, Common::String &,
 // ============================================================================
 // Engine base
 // ============================================================================
+// Anchor for MetaEngine vtable + bodies for all non-inline non-pure
+// virtuals.  Without these, GCC emits no vtable.
+void MetaEngine::getSavegameThumbnail(Graphics::Surface &) {}
+int MetaEngine::findEmptySaveSlot(const char *) { return -1; }
+void MetaEngine::deleteInstance(Engine *, const DetectedGame &, const void *) {}
+SaveStateList MetaEngine::listSaves(const char *) const { return SaveStateList(); }
+bool MetaEngine::removeSaveState(const char *, int) const { return false; }
+SaveStateDescriptor MetaEngine::querySaveMetaInfos(const char *, int) const { return SaveStateDescriptor(); }
+Common::String MetaEngine::getSavegameFile(int, const char *) const { return Common::String(); }
+Common::Array<Common::Keymap *> MetaEngine::initKeymaps(const char *) const { return Common::Array<Common::Keymap *>(); }
+void MetaEngine::registerDefaultSettings(const Common::String &) const {}
+GUI::OptionsContainerWidget *MetaEngine::buildEngineOptionsWidget(GUI::GuiObject *, const Common::String &, const Common::String &) const { return nullptr; }
+Common::AchievementsPlatform MetaEngine::getAchievementsPlatform(const Common::String &) const { return Common::UNK_ACHIEVEMENTS; }
+const Common::AchievementsInfo MetaEngine::getAchievementsInfo(const Common::String &) const { return Common::AchievementsInfo(); }
+bool MetaEngine::hasFeature(MetaEngineFeature) const { return false; }
+
+// Stub MetaEngine — autosave-rename block in ScummEngine::go() calls
+// querySaveMetaInfos/listSaves; we return empty lists so the block is a no-op.
+namespace {
+class StubMetaEngine : public MetaEngine {
+public:
+    const char *getName() const override { return "thumbyscummby"; }
+    Common::Error createInstance(OSystem *, Engine **, const DetectedGame &, const void *) override { return Common::kNoError; }
+    void getSavegameThumbnail(Graphics::Surface &) override {}
+    void deleteInstance(Engine *, const DetectedGame &, const void *) override {}
+    SaveStateList listSaves(const char *) const override { return SaveStateList(); }
+    bool removeSaveState(const char *, int) const override { return false; }
+    SaveStateDescriptor querySaveMetaInfos(const char *, int) const override { return SaveStateDescriptor(); }
+    Common::String getSavegameFile(int, const char *) const override { return Common::String(); }
+    Common::Array<Common::Keymap *> initKeymaps(const char *) const override { return Common::Array<Common::Keymap *>(); }
+    void registerDefaultSettings(const Common::String &) const override {}
+    GUI::OptionsContainerWidget *buildEngineOptionsWidget(GUI::GuiObject *, const Common::String &, const Common::String &) const override { return nullptr; }
+    Common::AchievementsPlatform getAchievementsPlatform(const Common::String &) const override { return Common::UNK_ACHIEVEMENTS; }
+    const Common::AchievementsInfo getAchievementsInfo(const Common::String &) const override { return Common::AchievementsInfo(); }
+    bool hasFeature(MetaEngineFeature) const override { return false; }
+};
+StubMetaEngine s_stub_metaengine;
+}
+
 Engine::Engine(OSystem *syst) : _system(syst),
     _mixer(syst ? syst->getMixer() : nullptr),
-    _eventMan(nullptr),
+    _eventMan(syst ? syst->getEventManager() : nullptr),
     _saveFileMan(nullptr),
+    _metaEngine(&s_stub_metaengine),
     _timer(nullptr) {}
 Engine::~Engine() {}
 bool Engine::canLoadGameStateCurrently(Common::U32String *) { return false; }
@@ -450,8 +505,6 @@ EventDispatcher::~EventDispatcher() {}
 // Common::MemoryReadStream — vtable anchor.  Provide real `read` body.
 namespace Common {
 uint32 MemoryReadStream::read(void *dataPtr, uint32 dataSize) {
-    tsb::platform::log("MRS::read this=%p dataPtr=%p dataSize=%u _pos=%u _size=%u\n",
-                       this, dataPtr, dataSize, _pos, _size);
     if (_pos + dataSize > _size) {
         dataSize = _size - _pos;
         _eos = true;
@@ -462,8 +515,6 @@ uint32 MemoryReadStream::read(void *dataPtr, uint32 dataSize) {
 }
 // pos / size are inline in memstream.h.
 bool MemoryReadStream::seek(int64 offs, int whence) {
-    tsb::platform::log("MRS::seek this=%p offs=%lld whence=%d _pos=%u _size=%u\n",
-                       this, (long long)offs, whence, _pos, _size);
     switch (whence) {
     case SEEK_SET: _pos = (uint32)offs; break;
     case SEEK_CUR: _pos += (uint32)offs; break;
@@ -621,4 +672,29 @@ void ScummEngine_v5::saveLoadWithSerializer(Common::Serializer &) {}
 // v4 — most bodies in resource_v4.cpp; banner/menu stubs here.
 int  ScummEngine_v4::getBannerColor(int) { return 0; }
 void ScummEngine_v4::setUpMainMenuControls() {}
+}
+
+// ============================================================================
+// MidiDriver — fake driver returned by createMidi().
+// scumm.cpp::setupMusic() dereferences createMidi(...)->property(...), so
+// it must NOT be null.  Our actual audio path bypasses MidiDriver entirely
+// (audio_shim.cpp routes Sound::startSound → imuse_start_sound + dbopl).
+// ============================================================================
+namespace {
+class FakeMidiDriver : public MidiDriver {
+public:
+    int open() override { return 0; }
+    void close() override {}
+    bool isOpen() const override { return true; }
+    uint32 getBaseTempo() override { return 1000000 / 60; }
+    MidiChannel *allocateChannel() override { return nullptr; }
+    MidiChannel *getPercussionChannel() override { return nullptr; }
+    uint32 property(int /*prop*/, uint32 /*value*/) override { return 0; }
+    void send(uint32 /*b*/) override {}
+};
+}
+
+MidiDriver *MidiDriver::createMidi(MidiDriver::DeviceHandle) {
+    static FakeMidiDriver s_fake;
+    return &s_fake;
 }

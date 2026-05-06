@@ -107,7 +107,9 @@ private:
     ThumbyPaletteManager _paletteManager;
 
     Audio::Mixer *_mixer = nullptr;
-    Common::EventManager *_eventManager = nullptr;
+    // _eventManager / _timerManager / _audiocdManager / _savefileManager
+    // / _paletteManager are inherited from OSystem; do NOT redeclare here
+    // (shadowing breaks getEventManager() etc.).
 };
 
 }  // namespace tsb

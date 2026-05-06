@@ -290,7 +290,6 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 		} else if (room == 90)
 			_system->setFeatureState(OSystem::kFeatureVirtualKeyboard, true);
 	}
-
 }
 
 /**
