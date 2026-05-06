@@ -35,19 +35,16 @@ namespace tsb::platform_pico {
 // The colour you see when the device freezes is the LAST step we
 // completed.
 
-extern int gDebugLevel;  // engine/src/scummvm_link_stubs.cpp
-
 int main() {
     // 250 MHz: matches ThumbyDOOM/ThumbyNES baseline.
     set_sys_clock_khz(250000, true);
     stdio_init_all();
-    gDebugLevel = 1;       // engine debug() up to level 1 — visible on LCD
 
     tsb::platform_pico::init_all();
-    tsb::platform::log("BOOT\n");
 
     if (!tsb::platform_pico::blob_ok()) {
-        tsb::platform::log("ERR: data blob missing\n");
+        // No game data on flash — splash dark red and halt.
+        tsb::platform::debug_splash(0x8000);
         while (1) tsb::platform::sleep_ms(500);
     }
 

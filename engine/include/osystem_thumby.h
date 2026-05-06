@@ -88,11 +88,6 @@ public:
 
     // ---- Misc ----
     void quit() override { _quitting = true; }
-
-    // THUMBY-PORT: Lend the engine our 320x200 8bpp staging buffer so its
-    // _compositeBuf can alias us instead of malloc'ing its own 64KB.
-    // Same memory, no copy on copyRectToScreen when ptr == _staging.
-    uint8_t *getStagingPtr() { return _staging; }
     void logMessage(LogMessageType::Type type, const char *message) override;
     void setWindowCaption(const Common::U32String &caption) override {}
     void displayMessageOnOSD(const Common::U32String &) override {}

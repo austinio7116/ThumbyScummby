@@ -726,8 +726,6 @@ int ScummEngine::loadResource(ResType type, ResId idx) {
 	// _address with the OFFHEAP flag set so nukeResource won't free it
 	// and expireResources won't evict it. Falls back to the canonical
 	// alloc+read+decrypt for anything not flash-pointer-eligible.
-	tsb::platform::log("ld %s %d sz %u\n",
-		nameOfResType(type), (int)idx, (unsigned)size);
 	const void *rawPtr = _fileHandle->getRawPointer(size);
 	if (rawPtr) {
 		_res->_types[type][idx]._address = const_cast<byte *>((const byte *)rawPtr);
@@ -862,7 +860,7 @@ byte ResourceManager::Resource::getResourceCounter() const {
 }
 
 byte *ResourceManager::createResource(ResType type, ResId idx, uint32 size) {
-	tsb::platform::log("cR %s %d sz %u\n", nameOfResType(type), (int)idx, (unsigned)size);
+	debugC(DEBUG_RESOURCE, "_res->createResource(%s,%d,%d)", nameOfResType(type), idx, size);
 
 	_vm->_insideCreateResource++; // For the HE sound engine
 
@@ -901,27 +899,18 @@ byte *ResourceManager::createResource(ResType type, ResId idx, uint32 size) {
 		nukeResource(type, idx);
 	}
 
-	tsb::platform::log("cR:exp\n");
 	expireResources(size);
-	tsb::platform::log("cR:expDone\n");
 
-	// THUMBY-PORT: replace `new[size]()` with malloc+memset. The
-	// new[]-with-value-init form on -fno-exceptions/-fno-rtti newlib
-	// hangs in OPS allocation for some sizes; calloc-style is safer.
+	// THUMBY-PORT: malloc + memset instead of new[size](). The
+	// new[]-with-value-init form was paired with delete[] in nuke();
+	// switching to malloc/free keeps the alloc/dealloc primitives
+	// matched (delete[] of a malloc'd block corrupts the heap).
 	byte *ptr = (byte *)malloc(size + SAFETY_AREA);
-	tsb::platform::log("cR:mlc=%p\n", (void*)ptr);
-	if (ptr) {
-		memset(ptr, 0, size + SAFETY_AREA);
-		tsb::platform::log("cR:mset done\n");
-	}
 	if (ptr == nullptr) {
-		tsb::platform::log("OOM %s %d sz %u use %u\n",
-			nameOfResType(type), (int)idx,
-			(unsigned)size, (unsigned)_allocatedSize);
-		tsb::platform::log_flush();
 		_vm->_insideCreateResource--;
 		error("createResource(%s,%d): Out of memory while allocating %d", nameOfResType(type), idx, size);
 	}
+	memset(ptr, 0, size + SAFETY_AREA);
 
 	_allocatedSize += size;
 
@@ -1467,12 +1456,10 @@ void ScummEngine_v7::readGlobalObjects() {
 #endif
 
 void ScummEngine::allocateArrays() {
-	tsb::platform::checkpoint("allocateArrays entry", 0xFD80);
 	// Note: Buffers are now allocated in scummMain to allow for
 	//     early GUI init.
 
 	_objectOwnerTable = (byte *)reallocateArray(_objectOwnerTable, _numGlobalObjects, 1);
-	tsb::platform::checkpoint("alloc _objectOwnerTable", 0xC81F);
 	_objectStateTable = (byte *)reallocateArray(_objectStateTable, _numGlobalObjects, 1);
 	_classData = (uint32 *)reallocateArray(_classData, _numGlobalObjects, sizeof(uint32));
 	_newNames = (uint16 *)reallocateArray(_newNames, _numNewNames, sizeof(uint16));
@@ -1486,7 +1473,6 @@ void ScummEngine::allocateArrays() {
 	if (_game.heversion >= 60) {
 		_arraySlot = (byte *)reallocateArray(_arraySlot, _numArray, 1);
 	}
-	tsb::platform::checkpoint("alloc scalar arrays done", 0x447F);
 
 	_res->allocResTypeData(rtCostume, (_game.features & GF_NEW_COSTUMES) ? MKTAG('A','K','O','S') : MKTAG('C','O','S','T'),
 								_numCostumes, kStaticResTypeMode);
@@ -1507,7 +1493,6 @@ void ScummEngine::allocateArrays() {
 	_res->allocResTypeData(rtMatrix, 0, 10, kDynamicResTypeMode);
 	_res->allocResTypeData(rtImage, MKTAG('A','W','I','Z'), _numImages, kStaticResTypeMode);
 	_res->allocResTypeData(rtTalkie, MKTAG('T','L','K','E'), _numTalkies, kStaticResTypeMode);
-	tsb::platform::checkpoint("alloc resource arrays done", 0xC7E0);
 }
 
 void ScummEngine_v70he::allocateArrays() {

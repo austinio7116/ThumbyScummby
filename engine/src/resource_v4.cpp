@@ -83,10 +83,8 @@ void ScummEngine_v4::readIndexFile() {
 
 	debug(9, "readIndexFile()");
 
-	tsb::platform::checkpoint("readIndexFile entry",     0x801F);
 	closeRoom();
 	openRoom(0);
-	tsb::platform::checkpoint("readIndexFile post-openRoom", 0xFC00);
 
 	while (true) {
 		// Figure out the sizes of various resources
@@ -126,11 +124,8 @@ void ScummEngine_v4::readIndexFile() {
 
 	_fileHandle->seek(0, SEEK_SET);
 
-	tsb::platform::checkpoint("readIndexFile first-scan-done", 0xFC60);
 	readMAXS(0);
-	tsb::platform::checkpoint("readIndexFile post-readMAXS",   0xAFE5);
 	allocateArrays();
-	tsb::platform::checkpoint("readIndexFile post-allocArrays", 0x07F0);
 
 	while (true) {
 		/*itemsize = */_fileHandle->readUint32LE();
@@ -179,7 +174,6 @@ void ScummEngine_v4::readIndexFile() {
 		}
 	}
 	closeRoom();
-	tsb::platform::checkpoint("readIndexFile done", 0xF810);
 }
 
 void ScummEngine_v4::loadCharset(int no) {

@@ -25,7 +25,6 @@
 // header-guard cycle.
 #include "scummvm_compat.h"
 #include "platform.h"
-#include "osystem_thumby.h"   // for THUMBY-PORT _compositeBuf aliasing
 #include "scumm/actor.h"
 #include "scumm/resource.h"
 
@@ -437,12 +436,16 @@ ScummEngine::ScummEngine(OSystem *syst, const DetectorResult &dr)
 #endif
 #endif
 
-	// THUMBY-PORT: alias OSystem's 320x200 staging buffer instead of
-	// malloc'ing 64 KB; saves a duplicate framebuffer.
-	if (_game.version < 7) {
-		tsb::OSystem_Thumby *thumbyOsys = static_cast<tsb::OSystem_Thumby *>(_system);
-		_compositeBuf = thumbyOsys->getStagingPtr();
-	} else
+	// Allocate gfx compositing buffer (not needed for V7/V8 games).
+	// We can't alias OSystem's _staging buffer here: drawStripToScreen
+	// writes the composed strip starting at _compositeBuf[0] and then
+	// copyRectToScreen memcpys from there into _staging[y*pitch + x].
+	// With an alias those ranges overlap for non-zero y and the memcpy
+	// reads partially-overwritten source bytes — visible as garbage
+	// across the top of the screen as actors animate.
+	if (_game.version < 7)
+		_compositeBuf = (byte *)malloc(_screenWidth * _screenHeight * sizeMult);
+	else
 		_compositeBuf = nullptr;
 
 	if (_renderMode == Common::kRenderHercA || _renderMode == Common::kRenderHercG)
@@ -529,8 +532,7 @@ ScummEngine::~ScummEngine() {
 	free(_classData);
 	free(_arraySlot);
 
-	// THUMBY-PORT: _compositeBuf aliases OSystem's staging buffer (see
-	// setupScumm); we don't own it, so don't free.
+	free(_compositeBuf);
 	free(_hercCGAScaleBuf);
 	free(_16BitPalette);
 
@@ -1514,9 +1516,7 @@ Common::Error ScummEngine::init() {
 
 	_outputPixelFormat = _system->getScreenFormat();
 
-	tsb::platform::checkpoint("init pre-setupScumm",     0xF800);
 	setupScumm(macResourceFile);
-	tsb::platform::checkpoint("init post-setupScumm",    0xFFE0);
 
 	readIndexFile();
 
@@ -1526,10 +1526,8 @@ Common::Error ScummEngine::init() {
 	_insaneKeymap = nullptr;
 
 	resetScumm();
-	tsb::platform::checkpoint("init post-resetScumm",    0x001F);
 
 	resetScummVars();
-	tsb::platform::checkpoint("init post-resetScummVars", 0xFFFF);
 #ifdef THUMBY_DEVICE
 	tsb::platform::debug_splash(0xFB60);    // CORAL: resetScumm done
 #endif
@@ -1804,15 +1802,8 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	_res->setHeapThreshold(16 * 1024 * 1024, 32 * 1024 * 1024);
 #endif
 
-	// THUMBY-PORT: alias the OSystem's 320x200 staging buffer instead of
-	// malloc'ing a separate 64 KB. Both hold the same composed CLUT8 frame
-	// at different points; sharing them saves the duplicate buffer.
-	// Requires _screenWidth*_screenHeight*bytesPerPixel == staging size
-	// (320*200*1 for DOS v4/v5).
-	{
-		tsb::OSystem_Thumby *thumbyOsys = static_cast<tsb::OSystem_Thumby *>(_system);
-		_compositeBuf = thumbyOsys->getStagingPtr();
-	}
+	free(_compositeBuf);
+	_compositeBuf = (byte *)malloc(_screenWidth * _textSurfaceMultiplier * _screenHeight * _textSurfaceMultiplier * _outputPixelFormat.bytesPerPixel);
 
 	// MI2 NI DOS Demo, load demo.rec playback file if present
 	if ((_game.id == GID_MONKEY2) && (_game.features & GF_DEMO) && (_game.platform == Common::kPlatformDOS) && !ConfMan.getBool("disable_mi2_ni_demo"))
@@ -1960,7 +1951,6 @@ void ScummEngine::resetScumm() {
 	int i;
 
 	debug(9, "resetScumm");
-	tsb::platform::checkpoint("resetScumm entry", 0xFFFF);
 
 #ifdef USE_RGB_COLOR
 	if (_game.features & GF_16BIT_COLOR
@@ -2008,7 +1998,6 @@ void ScummEngine::resetScumm() {
 	} else {
 		initScreens(16, 144);
 	}
-	tsb::platform::checkpoint("resetScumm post-initScreens", 0xFC60);
 
 	_palManipCounter = 0;
 
@@ -2016,7 +2005,6 @@ void ScummEngine::resetScumm() {
 		_roomPalette[i] = i;
 
 	resetPalette(true);
-	tsb::platform::checkpoint("resetScumm post-resetPalette", 0xAFE5);
 	if (_game.version == 1) {
 	} else if (_game.features & GF_16COLOR) {
 		for (i = 0; i < 16; i++)
@@ -2028,7 +2016,6 @@ void ScummEngine::resetScumm() {
 
 	if (_game.features & GF_OLD_BUNDLE)
 		loadCharset(0);
-	tsb::platform::checkpoint("resetScumm post-loadCharset", 0x07F0);
 
 	setShake(0);
 	_cursor.animate = 1;
@@ -2056,7 +2043,6 @@ void ScummEngine::resetScumm() {
 			_actors[i]->setActorCostume(i);
 	}
 
-	tsb::platform::checkpoint("resetScumm post-actorAlloc", 0xF810);
 	if (_game.id == GID_MANIAC && _game.version <= 1) {
 		resetV1ActorTalkColor();
 	} else if (_game.id == GID_MANIAC && _game.version == 2 && (_game.features & GF_DEMO)) {
@@ -2668,7 +2654,6 @@ int ScummEngine::getTalkSpeed() {
 #pragma mark -
 
 Common::Error ScummEngine::go() {
-	tsb::platform::log("[go] entry\n");
 	setTotalPlayTime();
 
 	_lastWaitTime = _system->getMillis();
@@ -2679,9 +2664,7 @@ Common::Error ScummEngine::go() {
 		if (_game.platform == Common::kPlatformNES && _game.id == GID_MANIAC && !(_game.features & GF_DEMO)) {
 			playNESTitleScreens();
 		}
-		tsb::platform::log("[go] runBootscript()\n");
 		runBootscript();
-		tsb::platform::log("[go] runBootscript returned\n");
 	} else {
 		_loadFromLauncher = true; // The only purpose of this is triggering the IQ points update for INDY3/4
 		_saveLoadFlag = 0;

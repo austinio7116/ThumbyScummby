@@ -148,14 +148,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "platform init failed\n");
         return 1;
     }
-    tsb::platform::checkpoint("after platform_sdl::init (SDL, win, audio_dev)", 0);
 
     if (!tsb::platform_sdl::load_data_dir(argv[1])) {
         fprintf(stderr, "failed to load game data from %s\n", argv[1]);
         tsb::platform_sdl::shutdown();
         return 1;
     }
-    tsb::platform::checkpoint("after load_data_dir (LFL/LEC blobs in heap)", 0);
 
     // iMUSE / OPL2 stack — driven by SDL audio callback. The pre-pivot
     // engine.cpp wired this up; after the pivot we wire it here in main
@@ -183,14 +181,12 @@ int main(int argc, char **argv) {
         }
         tsb::platform::log("audio: %d Hz mono\n", actual_rate);
     }
-    tsb::platform::checkpoint("after audio init (opl2/adlib/imuse)", 0);
 
     // OSystem subclass that bridges to tsb::platform::*.  Lives on the stack
     // for the duration of main(); engine holds a pointer.
     tsb::OSystem_Thumby osys;
     osys.setEventPoller(sdl_to_scummvm_event, nullptr);
     osys.initBackend();
-    tsb::platform::checkpoint("after OSystem initBackend", 0);
     extern OSystem *g_system;
     g_system = &osys;
 
@@ -223,31 +219,9 @@ int main(int argc, char **argv) {
     //
     // The user requested support for v5 too — both classes are
     // compiled and addressed; pick by dr.game.version.
-    fprintf(stderr, "[size] sizeof(ScummEngine_v4) = %zu KB (%zu bytes)\n",
-            sizeof(tsb::ScummEngine_v4) / 1024, sizeof(tsb::ScummEngine_v4));
-#define SZ(T) fprintf(stderr, "[size] %-40s = %6zu B\n", #T, sizeof(T))
-    SZ(::Engine);
-    SZ(tsb::ScummEngine);
-    SZ(tsb::ScummEngine_v5);
-    SZ(tsb::ScummEngine_v4);
-    SZ(Graphics::Surface);
-    SZ(Common::String);
-    SZ(tsb::VirtScreen);
-    SZ(tsb::ColorCycle);
-    SZ(tsb::ScummFile);
-    SZ(Common::ConfigManager);
-    SZ(Common::EventDispatcher);
-    SZ(Common::EventManager);
-#undef SZ
-    fprintf(stderr, "[size] ScummEngine vs sum-of-bigs:\n");
-    fprintf(stderr, "  _grabbedCursor                  16384\n");
-    fprintf(stderr, "  _NESPatTable                     8192\n");
-    fprintf(stderr, "  _localScriptOffsets              4096\n");
-    fprintf(stderr, "  gfxUsageBits                     4920\n");
     tsb::ScummEngine *eng = (dr.game.version == 4)
         ? (tsb::ScummEngine *)new tsb::ScummEngine_v4(&osys, dr)
         : (tsb::ScummEngine *)new tsb::ScummEngine_v5(&osys, dr);
-    tsb::platform::checkpoint("after ScummEngine ctor", 0);
 
     Common::Error err = eng->run();
     if (err.getCode() != Common::kNoError) {
