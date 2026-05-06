@@ -53,11 +53,18 @@ Sound::Sound(ScummEngine *parent, Audio::Mixer * /*mixer*/, bool /*useReplacemen
       _soundCD(nullptr),
       _soundSE(nullptr),
       _mixer(nullptr) {
+    // string.cpp:1277 dereferences _talkChannelHandle even when no talkie is
+    // active.  Upstream Sound::Sound allocates one (sound.cpp:85); mirror
+    // that here so the deref doesn't segfault.  Our NullMixer ignores the
+    // handle anyway.
+    _talkChannelHandle = new Audio::SoundHandle();
     // Our imuse_init() is called from main.cpp before the engine starts,
     // so nothing to do here.
 }
 
-Sound::~Sound() {}
+Sound::~Sound() {
+    delete _talkChannelHandle;
+}
 
 // ----- Core sound dispatch -----------------------------------------------
 void Sound::startSound(int sound, int /*heOffset*/, int /*heChannel*/,
