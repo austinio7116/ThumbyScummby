@@ -35,11 +35,16 @@ public:
         auto fn = _parent ? _parent->eventPollerFn() : nullptr;
         if (!fn) return false;
         if (!fn(_parent->eventPollerUser(), &out)) return false;
-        // Update local mouse state cache for getters.
+        // Update local mouse state cache for getters AND keep the rendered
+        // cursor (composited inside updateScreen) tracking the engine mouse.
+        // Without the setEngineMousePos sync the cursor sprite stuck at its
+        // default (160,100) and only moved when the engine programmatically
+        // called warpMouse — clicks worked but the visible pointer didn't.
         if (out.type == Common::EVENT_MOUSEMOVE ||
             out.type == Common::EVENT_LBUTTONDOWN || out.type == Common::EVENT_LBUTTONUP ||
             out.type == Common::EVENT_RBUTTONDOWN || out.type == Common::EVENT_RBUTTONUP) {
             _mousePos = out.mouse;
+            if (_parent) _parent->setEngineMousePos(out.mouse.x, out.mouse.y);
         }
         if (out.type == Common::EVENT_LBUTTONDOWN) _btnState |=  Common::EventManager::LBUTTON;
         if (out.type == Common::EVENT_LBUTTONUP)   _btnState &= ~Common::EventManager::LBUTTON;
@@ -161,20 +166,46 @@ void OSystem_Thumby::updateScreen() {
             }
         }
     }
-    // Fit mode: 320x200 -> 128x80 letterboxed inside 128x128 (24px black
-    // bars top/bottom).  Shows the entire game frame.  ScaleMode::Fill
-    // would zoom-to-fit-height with horizontal pan, cropping ~120 source
-    // columns on host where the user has no way to drive the pan.  The
-    // device build can flip to Fill via the in-game MENU once that's
-    // wired up; for now we always show the whole frame.
+    // Scale mode + crop are owned by OSystem_Thumby and driven by the
+    // device input layer (MENU cycles mode; LB+dpad pans).  Host SDL just
+    // leaves them at the defaults and always shows Fit.
     platform::present(_staging, nullptr, _palette,
-                      platform::ScaleMode::Fit, 0, 0);
+                      _scaleMode, _cropX, _cropY);
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM
     // scripts that wait on music events stall (e.g. MI1 boot is
     // stuck on room 0 until the LucasFilm cue finishes).
     platform::audio_pump();
+    // Mark frame complete so the device input poller knows it's safe to
+    // re-sample buttons on its next pollEvent call.
+    _frameDone = true;
+}
+
+// MENU cycles Fit → Fill → Crop → Fit.  When entering Fill we reset crop_x
+// to centre (so the user sees the middle band), and when entering Crop we
+// centre the 128x128 viewport on the 320x200 screen.  Other modes ignore
+// the crop fields, but resetting on transition prevents stale offsets
+// confusing the user when they cycle back.
+void OSystem_Thumby::cycleScaleMode() {
+    switch (_scaleMode) {
+    case platform::ScaleMode::Fit:
+        _scaleMode = platform::ScaleMode::Fill;
+        _cropX = (320 - (128 * 200 / 128)) / 2;   // pan_max / 2 ~ 60
+        _cropY = 0;
+        break;
+    case platform::ScaleMode::Fill:
+        _scaleMode = platform::ScaleMode::Crop;
+        _cropX = (320 - 128) / 2;                 // 96
+        _cropY = (200 - 128) / 2;                 // 36
+        break;
+    case platform::ScaleMode::Crop:
+    default:
+        _scaleMode = platform::ScaleMode::Fit;
+        _cropX = 0;
+        _cropY = 0;
+        break;
+    }
 }
 
 // Capture the 8bpp cursor sprite scummvm v4 cursor.cpp uploads via

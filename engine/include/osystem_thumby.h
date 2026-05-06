@@ -15,6 +15,7 @@
 #include "common/system.h"
 #include "graphics/palette.h"
 #include "graphics/paletteman.h"
+#include "platform.h"
 
 namespace tsb {
 
@@ -135,12 +136,29 @@ public:
     // Called by ThumbyEventManager whenever an EVENT_MOUSEMOVE arrives so
     // updateScreen can composite the cursor at the right place.
     void setEngineMousePos(int gx, int gy) { _cursorX = gx; _cursorY = gy; }
+    int  cursorX() const { return _cursorX; }
+    int  cursorY() const { return _cursorY; }
+
+    // Scale-mode + pan state used by updateScreen() when calling
+    // tsb::platform::present.  The device input layer cycles these via
+    // MENU/LB+dpad; host SDL leaves them at the defaults.
+    void setScaleMode(platform::ScaleMode m) { _scaleMode = m; }
+    platform::ScaleMode scaleMode() const     { return _scaleMode; }
+    void cycleScaleMode();
+    void setCrop(int x, int y) { _cropX = x; _cropY = y; }
+    int  cropX() const { return _cropX; }
+    int  cropY() const { return _cropY; }
+
+    // Device input synchronisation: updateScreen() flips _frameDone=true so
+    // the device event poller knows a fresh button sample is needed before
+    // it produces the next batch of synthesised events.
+    bool consumeFrameDone()        { bool v = _frameDone; _frameDone = false; return v; }
 private:
 
 public:
     // Host SDL backend installs an event poller via this hook.  The engine's
     // EventManager calls it to get translated Common::Event entries.  Device
-    // builds leave it null and rely on engine-level button polling.
+    // builds install one that synthesises events from button state.
     typedef bool (*EventPollerFn)(void *user, Common::Event *out);
     void setEventPoller(EventPollerFn fn, void *user) {
         _eventPollerFn = fn; _eventPollerUser = user;
@@ -150,6 +168,11 @@ public:
 private:
     EventPollerFn  _eventPollerFn   = nullptr;
     void          *_eventPollerUser = nullptr;
+
+    platform::ScaleMode _scaleMode = platform::ScaleMode::Fit;
+    int  _cropX = 0;
+    int  _cropY = 0;
+    bool _frameDone = false;
 };
 
 }  // namespace tsb
