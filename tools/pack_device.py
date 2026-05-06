@@ -4,12 +4,15 @@ ThumbyScummby — pack MI1 VGA data files into a single firmware blob.
 
 Reads:
   data/mi1_vga/000.LFL          (unencrypted)
-  data/mi1_vga/DISK01..04.LEC   (encrypted with 0x69)
+  data/mi1_vga/DISK01..04.LEC   (encrypted with 0x69 — KEPT RAW)
   data/mi1_vga/901..904.LFL     (unencrypted)
 
-Writes a single decrypted blob with a small header for the
-device firmware to .incbin. The engine accesses the bytes via
+Writes a single RAW blob with a small header for the device firmware
+to .incbin. The engine accesses the bytes via
 platform::data_master_index() / data_disk(n) / data_helper(n).
+Disk LECs are NOT decrypted here: scummvm's ScummFile::read applies
+the 0x69 XOR per the v4 getEncByte() rules; pre-decrypting in this
+packer would double-XOR every byte.
 
 Layout:
   uint32  magic    'TSDB' (Thumby Scummby Data Blob)
@@ -66,12 +69,18 @@ def main():
 
     data_dir, out_path = sys.argv[1], sys.argv[2]
 
+    # Post-OSystem-pivot: ScummFile::read (file_engine.cpp) applies the
+    # 0x69 XOR per scummvm getEncByte() rules; pre-decrypting the LECs
+    # here would double-XOR every byte and the engine would see noise
+    # (e.g. read room id 99 instead of 10 from the disk offset table).
+    # Keep all entries as RAW bytes — same change that platform_sdl
+    # already needed.
     files = [
         ("000.LFL",     0),
-        ("DISK01.LEC",  0x69),
-        ("DISK02.LEC",  0x69),
-        ("DISK03.LEC",  0x69),
-        ("DISK04.LEC",  0x69),
+        ("DISK01.LEC",  0),
+        ("DISK02.LEC",  0),
+        ("DISK03.LEC",  0),
+        ("DISK04.LEC",  0),
         ("901.LFL",     0),
         ("902.LFL",     0),
         ("903.LFL",     0),
