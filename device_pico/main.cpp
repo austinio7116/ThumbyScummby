@@ -51,13 +51,17 @@ namespace tsb::platform_pico {
 // reach the engine without dropping.
 namespace {
 
-constexpr int kCursorPixelsPerFrame = 2;   // 30fps × 2 = 60 px/s — was 5
-                                           // then 3, both still felt too
-                                           // twitchy in 320×200 space.  At
-                                           // 2 px/frame the screen takes
-                                           // ~3 s to cross — fine but
-                                           // controllable.
-constexpr int kPanPixelsPerFrame    = 4;   // pan can stay snappier
+// Cursor velocity per scale mode — chosen so the time-to-cross the
+// VISIBLE display is roughly the same in every mode.  Visible source
+// width: Fit 320, Fill ~200, Crop 128.  At 2 px/frame Fit crosses in
+// ~5.3 s, Fill in ~3.3 s, Crop in only ~2.1 s — so Crop felt twitchy.
+// Halving Crop velocity to 1 px/frame brings it to ~4.3 s, in line
+// with Fit/Fill.
+constexpr int kCursorPxFit  = 2;
+constexpr int kCursorPxFill = 2;
+constexpr int kCursorPxCrop = 1;
+constexpr int kPanPixelsPerFrame = 4;     // pan stays snappier — LB+dpad
+                                          // is reach-across, not aiming
 
 struct DeviceInputState {
     int  curX = 160, curY = 100;          // virtual mouse in game coords
@@ -165,8 +169,12 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         // stays equal to old pos but the event still fires so things like
         // verb hover state refresh).
         if (dx || dy) {
-            int nx = g_in.curX + dx * kCursorPixelsPerFrame;
-            int ny = g_in.curY + dy * kCursorPixelsPerFrame;
+            const auto sm = osys.scaleMode();
+            const int vel = (sm == tsb::platform::ScaleMode::Crop) ? kCursorPxCrop
+                          : (sm == tsb::platform::ScaleMode::Fill) ? kCursorPxFill
+                                                                   : kCursorPxFit;
+            int nx = g_in.curX + dx * vel;
+            int ny = g_in.curY + dy * vel;
             if (nx < 0)   nx = 0;
             if (ny < 0)   ny = 0;
             if (nx > 319) nx = 319;
