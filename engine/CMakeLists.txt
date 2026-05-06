@@ -103,6 +103,7 @@ add_library(thumbyscummby_engine STATIC
     # ---- Bridge implementations (will shrink as pivot completes) ----
     src/osystem_thumby.cpp
     src/scummvm_stubs.cpp
+    src/scummvm_link_stubs.cpp  # bulk no-op bodies; --gc-sections strips
     src/audio_shim.cpp     # Sound class bodies forwarding to imuse_*
 )
 

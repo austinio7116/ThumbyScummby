@@ -2005,18 +2005,10 @@ void ScummEngine::resetScumm() {
 	_actors = new Actor * [_numActors];
 	_sortedActors = new Actor * [_numActors];
 	for (i = 0; i < _numActors; ++i) {
-		if (_game.version == 0)
-			_actors[i] = new Actor_v0(this, i);
-		else if (_game.version <= 2)
-			_actors[i] = new Actor_v2(this, i);
-		else if (_game.version == 3)
-			_actors[i] = new Actor_v3(this, i);
-		else if (_game.version >= 7)
-			_actors[i] = new Actor_v7(this, i);
-		else if (_game.heversion != 0)
-			_actors[i] = new ActorHE(this, i);
-		else
-			_actors[i] = new Actor(this, i);
+		// ThumbyScummby: v0/v2/v3/v7/HE branches removed — we only ship
+		// v4/v5 on RP2350.  Bare Actor is enough.  Removing the dead
+		// branches lets --gc-sections strip the unused subclass vtables.
+		_actors[i] = new Actor(this, i);
 		_actors[i]->initActor(-1);
 
 		// this is from IDB
