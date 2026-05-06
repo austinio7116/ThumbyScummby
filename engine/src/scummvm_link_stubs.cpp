@@ -568,11 +568,13 @@ Common::SeekableWriteStream *ScummEngine::openSaveFileForWriting(int, bool, Comm
 int  ScummEngine::checkSoundEngineSaveDataSize(Serializer &) { return 0; }
 void ScummEngine::saveLoadWithSerializer(Common::Serializer &) {}
 
-// Banner / GUI — out of MVP.
-Common::KeyState ScummEngine::showBannerAndPause(int, int, const char *, ...) { return Common::KeyState(); }
+// Banner / GUI — out of MVP.  Header signatures use Common::int32 which
+// is `long int` on ARM (int32_t typedef); plain `int` doesn't match
+// there.  Use int32 to keep host + device builds in sync.
+Common::KeyState ScummEngine::showBannerAndPause(int, int32, const char *, ...) { return Common::KeyState(); }
 bool ScummEngine::showBannerAndPauseForTextInput(int, const char *, Common::String &, uint) { return false; }
-Common::KeyState ScummEngine::showOldStyleBannerAndPause(const char *, int, int) { return Common::KeyState(); }
-Common::KeyState ScummEngine::printMessageAndPause(const char *, int, int, bool) { return Common::KeyState(); }
+Common::KeyState ScummEngine::showOldStyleBannerAndPause(const char *, int, int32) { return Common::KeyState(); }
+Common::KeyState ScummEngine::printMessageAndPause(const char *, int, int32, bool) { return Common::KeyState(); }
 void ScummEngine::clearBanner() {}
 int  ScummEngine::getBannerColor(int) { return 0; }
 void ScummEngine::initBanners() {}
