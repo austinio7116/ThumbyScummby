@@ -16,6 +16,7 @@
 #include "scummvm_compat.h"
 #include "scumm/scumm.h"
 #include "scumm/scumm_v5.h"
+#include "scumm/scumm_v4.h"
 #include "scumm/detection.h"
 #include "osystem_thumby.h"
 #include "platform.h"
@@ -59,6 +60,8 @@ int main(int argc, char **argv) {
     // for the duration of main(); engine holds a pointer.
     tsb::OSystem_Thumby osys;
     osys.initBackend();
+    extern OSystem *g_system;
+    g_system = &osys;
 
     // Construct the canonical engine.  MI1 VGA Floppy is GID_MONKEY (v4)
     // — but our 100% transcribed runtime uses ScummEngine_v5 dispatch
@@ -76,7 +79,16 @@ int main(int argc, char **argv) {
     // canonical MI1 VGA Floppy DOS English MD5.
     dr.md5               = "8e4ee4db46954bfcb6d2654dde0aae25";
 
-    tsb::ScummEngine *eng = new tsb::ScummEngine_v5(&osys, dr);
+    // ScummVM hierarchy: ScummEngine_v4 inherits ScummEngine_v5
+    // (older > newer numbering by inheritance).  For MI1 floppy we
+    // instantiate v4 to get its readIndexFile / charset / decoder
+    // overrides.  v5 codepaths (FOA, MI2) would use ScummEngine_v5.
+    //
+    // The user requested support for v5 too — both classes are
+    // compiled and addressed; pick by dr.game.version.
+    tsb::ScummEngine *eng = (dr.game.version == 4)
+        ? (tsb::ScummEngine *)new tsb::ScummEngine_v4(&osys, dr)
+        : (tsb::ScummEngine *)new tsb::ScummEngine_v5(&osys, dr);
 
     Common::Error err = eng->run();
     if (err.getCode() != Common::kNoError) {

@@ -48,6 +48,19 @@ const byte macGammaCorrectionLookUp[256] = {
 // Set by main() after constructing OSystem_Thumby.
 OSystem *g_system = nullptr;
 
+// Error handler — print full message before scummvm's exit(1).
+namespace Common {
+typedef bool (*ErrorHandler)(const char *);
+extern ErrorHandler s_errorHandler;
+ErrorHandler s_errorHandler = nullptr;
+static bool printError(const char *msg) {
+    fprintf(stderr, "scummvm error: %s\n", msg);
+    return false;     // don't suppress; allow exit(1)
+}
+struct ErrorInstaller { ErrorInstaller() { s_errorHandler = printError; } };
+static ErrorInstaller g_installError;
+}
+
 // scummvm-upstream/common/mutex.cpp: Mutex bodies.  Single-threaded engine,
 // so all are no-op.
 namespace Common {

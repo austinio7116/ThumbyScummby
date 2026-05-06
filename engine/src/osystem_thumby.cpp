@@ -23,6 +23,26 @@ public:
     bool lock() override   { return true; }
     bool unlock() override { return true; }
 };
+
+// Minimal EventManager.  We never call most of these methods at
+// runtime — getKeymapper / getGlobalKeymap return nullptr and scumm.cpp
+// null-checks them.  Real input flows through OSystem_Thumby::pollEvent.
+class NullEventManager : public Common::EventManager {
+public:
+    bool pollEvent(Common::Event &) override { return false; }
+    void pushEvent(const Common::Event &) override {}
+    void purgeMouseEvents() override {}
+    void purgeKeyboardEvents() override {}
+    Common::Point getMousePos() const override { return Common::Point(); }
+    int getButtonState() const override { return 0; }
+    int getModifierState() const override { return 0; }
+    int shouldQuit() const override { return 0; }
+    int shouldReturnToLauncher() const override { return 0; }
+    void resetReturnToLauncher() override {}
+    void resetQuit() override {}
+    Common::Keymapper *getKeymapper() override { return nullptr; }
+    Common::Keymap *getGlobalKeymap() override { return nullptr; }
+};
 }  // anonymous
 
 // ---------------------------------------------------------------------------
@@ -39,7 +59,10 @@ OSystem_Thumby::~OSystem_Thumby() {}
 
 void OSystem_Thumby::initBackend() {
     // tsb::platform::* is initialised by main() before constructing the
-    // engine.  Nothing to do here yet.
+    // engine.  Hook event manager so Engine ctor finds it.
+    static NullEventManager s_event_mgr;
+    _eventManager = &s_event_mgr;
+    platform::log("OSystem_Thumby::initBackend: _eventManager=%p\n", _eventManager);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +209,9 @@ Audio::Mixer *OSystem_Thumby::getMixer() {
     static NullMixer s_mixer;
     return &s_mixer;
 }
+
+// EventManager + Keymapper minimal stubs live above (declared in
+// anonymous namespace before initBackend uses them).
 
 // ---------------------------------------------------------------------------
 // Logging

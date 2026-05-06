@@ -82,6 +82,7 @@ add_library(thumbyscummby_engine STATIC
     src/charset-fontdata.cpp  # Built-in font data
     src/bomp.cpp           # decompressBomp / drawBomp
     src/resource.cpp       # ScummEngine::readIndex etc + ResourceManager
+    src/resource_v4.cpp    # ScummEngine_v4::readIndexFile
     # OLD lines below
     # src/charset.cpp.old    # needs Graphics::Font + MacGui::getFontByScummId
     # src/string.cpp         # depends on charset

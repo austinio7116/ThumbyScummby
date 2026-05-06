@@ -124,29 +124,53 @@ U32String ArchiveMember::getDisplayName() const { return U32String(); }
 bool ArchiveMember::isDirectory() const { return false; }
 void ArchiveMember::listChildren(ArchiveMemberList &, const char *) const {}
 // AltStream interface — not used in our path.
-}
-
-// ============================================================================
-// Common::File — backed by chunk readers via OSystem_Thumby (Phase 8 wires).
-// ============================================================================
+}  // close namespace Common briefly for #include
+#include "platform.h"
+#include "common/memstream.h"
 namespace Common {
-File::File() {}
-File::~File() {}
-bool   File::open(const Path &)             { return false; }
-bool   File::open(const Path &, Archive &)  { return false; }
-bool   File::open(const FSNode &)           { return false; }
-bool   File::open(SeekableReadStream *, const String &) { return false; }
-bool   File::exists(const Path &)           { return false; }
-void   File::close()                        {}
-bool   File::isOpen() const                 { return false; }
-int64  File::pos() const                    { return 0; }
-int64  File::size() const                   { return 0; }
-bool   File::seek(int64, int)               { return false; }
-bool   File::eos() const                    { return true; }
-uint32 File::read(void *, uint32)           { return 0; }
-void   File::clearErr()                     {}
-bool   File::err() const                    { return false; }
-// File::getName is inherited from a parent's; not overridden here.
+
+// Common::File — backed by tsb::platform::data_* chunk readers.  scummvm
+// opens 000.LFL / DISK01.LEC..DISK04.LEC / 901.LFL..904.LFL by name; we
+// resolve those via platform helpers.  All other paths fail.
+File::File()  : _handle(nullptr) {}
+File::~File() { delete _handle; }
+
+bool File::open(const Path &p) {
+    String name = p.baseName();
+    tsb::platform::log("File::open trying name='%s'\n", name.c_str());
+    tsb::Span s{};
+    if (name.equalsIgnoreCase("000.LFL"))      s = tsb::platform::data_master_index();
+    else if (name.equalsIgnoreCase("DISK01.LEC")) s = tsb::platform::data_disk(1);
+    else if (name.equalsIgnoreCase("DISK02.LEC")) s = tsb::platform::data_disk(2);
+    else if (name.equalsIgnoreCase("DISK03.LEC")) s = tsb::platform::data_disk(3);
+    else if (name.equalsIgnoreCase("DISK04.LEC")) s = tsb::platform::data_disk(4);
+    else if (name.equalsIgnoreCase("901.LFL"))    s = tsb::platform::data_helper(901);
+    else if (name.equalsIgnoreCase("902.LFL"))    s = tsb::platform::data_helper(902);
+    else if (name.equalsIgnoreCase("903.LFL"))    s = tsb::platform::data_helper(903);
+    else if (name.equalsIgnoreCase("904.LFL"))    s = tsb::platform::data_helper(904);
+    if (s.data && s.size) {
+        delete _handle;
+        _handle = new MemoryReadStream((const byte *)s.data, (uint32)s.size);
+        _name = name;
+        return true;
+    }
+    return false;
+}
+bool File::open(const Path &p, Archive &) { return open(p); }
+bool File::open(const FSNode &)           { return false; }
+bool File::open(SeekableReadStream *, const String &) { return false; }
+bool File::exists(const Path &p) {
+    File f; bool ok = f.open(p); return ok;
+}
+void File::close() { delete _handle; _handle = nullptr; _name.clear(); }
+bool File::isOpen() const { return _handle != nullptr; }
+int64 File::pos() const   { return _handle ? _handle->pos() : 0; }
+int64 File::size() const  { return _handle ? _handle->size() : 0; }
+bool File::seek(int64 offs, int whence) { return _handle ? _handle->seek(offs, whence) : false; }
+bool File::eos() const    { return _handle ? _handle->eos() : true; }
+uint32 File::read(void *buf, uint32 sz) { return _handle ? _handle->read(buf, sz) : 0; }
+void File::clearErr() { if (_handle) _handle->clearErr(); }
+bool File::err() const { return _handle ? _handle->err() : false; }
 
 DumpFile::DumpFile() {}
 DumpFile::~DumpFile() {}
@@ -372,8 +396,24 @@ SeekableReadStream *Archive::createReadStreamForMemberAltStream(const Path &, Al
 char Archive::getPathSeparator() const { return '/'; }
 bool Archive::getChildren(const Path &, Common::Array<Common::String> &, ListMode, bool) const { return false; }
 
-// SearchSet inherits Archive — also need anchors.
-SeekableReadStream *SearchSet::createReadStreamForMember(const Path &) const { return nullptr; }
+// SearchSet inherits Archive — wired to our chunk readers so
+// scummvm's SearchMan.createReadStreamForMember finds 000.LFL etc.
+SeekableReadStream *SearchSet::createReadStreamForMember(const Path &p) const {
+    String name = p.baseName();
+    tsb::Span s{};
+    if (name.equalsIgnoreCase("000.lfl"))      s = tsb::platform::data_master_index();
+    else if (name.equalsIgnoreCase("disk01.lec")) s = tsb::platform::data_disk(1);
+    else if (name.equalsIgnoreCase("disk02.lec")) s = tsb::platform::data_disk(2);
+    else if (name.equalsIgnoreCase("disk03.lec")) s = tsb::platform::data_disk(3);
+    else if (name.equalsIgnoreCase("disk04.lec")) s = tsb::platform::data_disk(4);
+    else if (name.equalsIgnoreCase("901.lfl"))    s = tsb::platform::data_helper(901);
+    else if (name.equalsIgnoreCase("902.lfl"))    s = tsb::platform::data_helper(902);
+    else if (name.equalsIgnoreCase("903.lfl"))    s = tsb::platform::data_helper(903);
+    else if (name.equalsIgnoreCase("904.lfl"))    s = tsb::platform::data_helper(904);
+    if (s.data && s.size)
+        return new MemoryReadStream((const byte *)s.data, (uint32)s.size);
+    return nullptr;
+}
 SeekableReadStream *SearchSet::createReadStreamForMemberNext(const Path &, const Archive *) const { return nullptr; }
 bool SearchSet::hasFile(const Path &) const { return false; }
 int  SearchSet::listMembers(ArchiveMemberList &) const { return 0; }
@@ -400,9 +440,18 @@ namespace Audio {
 Timestamp::Timestamp(uint, uint) : _secs(0), _numFrames(0), _framerate(22050), _framerateFactor(1) {}
 }
 
+// Common::EventManager + EventDispatcher anchors.
+namespace Common {
+EventManager::~EventManager() {}
+EventDispatcher::EventDispatcher() {}
+EventDispatcher::~EventDispatcher() {}
+}
+
 // Common::MemoryReadStream — vtable anchor.  Provide real `read` body.
 namespace Common {
 uint32 MemoryReadStream::read(void *dataPtr, uint32 dataSize) {
+    tsb::platform::log("MRS::read this=%p dataPtr=%p dataSize=%u _pos=%u _size=%u\n",
+                       this, dataPtr, dataSize, _pos, _size);
     if (_pos + dataSize > _size) {
         dataSize = _size - _pos;
         _eos = true;
@@ -413,6 +462,8 @@ uint32 MemoryReadStream::read(void *dataPtr, uint32 dataSize) {
 }
 // pos / size are inline in memstream.h.
 bool MemoryReadStream::seek(int64 offs, int whence) {
+    tsb::platform::log("MRS::seek this=%p offs=%lld whence=%d _pos=%u _size=%u\n",
+                       this, (long long)offs, whence, _pos, _size);
     switch (whence) {
     case SEEK_SET: _pos = (uint32)offs; break;
     case SEEK_CUR: _pos += (uint32)offs; break;
@@ -512,7 +563,19 @@ void ScummEngine::processActors() {}
 void ScummEngine::resetActorBgs() {}
 void ScummEngine::setActorRedrawFlags() {}
 bool ScummEngine::hasFeature(Engine::EngineFeature) const { return false; }
-Common::Path ScummEngine::generateFilename(int) const { return Common::Path(); }
+// generateFilename: real impl from scummvm-upstream/scumm/metaengine.cpp:53.
+// We only support v4 path (MI1).
+Common::Path ScummEngine::generateFilename(int room) const {
+    Common::String result;
+    if (_game.version == 4) {
+        if (room == 0 || room >= 900)
+            result = Common::String::format("%03d.lfl", room);
+        else
+            result = Common::String::format("disk%02d.lec",
+                                            _res->_types[rtRoom][room]._roomno);
+    }
+    return Common::Path(result, Common::Path::kNoSeparator);
+}
 int  ScummEngine::readSoundResource(uint16) { return 0; }
 int  ScummEngine::readSoundResourceSmallHeader(uint16) { return 0; }
 // verifyMI2MacBootScript lives in resource.cpp.
@@ -554,4 +617,8 @@ void ScummEngine_v0::setupOpcodes() {}
 int  ScummEngine_v5::checkSoundEngineSaveDataSize(Serializer &) { return 0; }
 // readMAXS lives in resource.cpp.
 void ScummEngine_v5::saveLoadWithSerializer(Common::Serializer &) {}
+
+// v4 — most bodies in resource_v4.cpp; banner/menu stubs here.
+int  ScummEngine_v4::getBannerColor(int) { return 0; }
+void ScummEngine_v4::setUpMainMenuControls() {}
 }

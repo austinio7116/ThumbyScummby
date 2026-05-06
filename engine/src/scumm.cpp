@@ -1516,10 +1516,9 @@ Common::Error ScummEngine::init() {
 	// Create the debugger now that _numVariables has been set
 	setDebugger(new ScummDebugger(this));
 
-	Common::Keymapper *keymapper = _system->getEventManager()->getKeymapper();
-	_insaneKeymap = keymapper->getKeymap(insaneKeymapId);
-	if (_insaneKeymap)
-		_insaneKeymap->setEnabled(false);
+	// ThumbyScummby: skip Keymapper wiring — we use platform::poll_input
+	// directly.  scummvm Keymapper backend not present.
+	_insaneKeymap = nullptr;
 
 	resetScumm();
 	resetScummVars();
