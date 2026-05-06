@@ -24,24 +24,48 @@ public:
     bool unlock() override { return true; }
 };
 
-// Minimal EventManager.  We never call most of these methods at
-// runtime — getKeymapper / getGlobalKeymap return nullptr and scumm.cpp
-// null-checks them.  Real input flows through OSystem_Thumby::pollEvent.
-class NullEventManager : public Common::EventManager {
+// EventManager that delegates to OSystem_Thumby's host-installed
+// EventPollerFn callback.  Tracks last-seen mouse position + button mask
+// so getMousePos / getButtonState reflect real input state.
+class ThumbyEventManager : public Common::EventManager {
 public:
-    bool pollEvent(Common::Event &) override { return false; }
+    explicit ThumbyEventManager(OSystem_Thumby *parent) : _parent(parent) {}
+
+    bool pollEvent(Common::Event &out) override {
+        auto fn = _parent ? _parent->eventPollerFn() : nullptr;
+        if (!fn) return false;
+        if (!fn(_parent->eventPollerUser(), &out)) return false;
+        // Update local mouse state cache for getters.
+        if (out.type == Common::EVENT_MOUSEMOVE ||
+            out.type == Common::EVENT_LBUTTONDOWN || out.type == Common::EVENT_LBUTTONUP ||
+            out.type == Common::EVENT_RBUTTONDOWN || out.type == Common::EVENT_RBUTTONUP) {
+            _mousePos = out.mouse;
+        }
+        if (out.type == Common::EVENT_LBUTTONDOWN) _btnState |=  Common::EventManager::LBUTTON;
+        if (out.type == Common::EVENT_LBUTTONUP)   _btnState &= ~Common::EventManager::LBUTTON;
+        if (out.type == Common::EVENT_RBUTTONDOWN) _btnState |=  Common::EventManager::RBUTTON;
+        if (out.type == Common::EVENT_RBUTTONUP)   _btnState &= ~Common::EventManager::RBUTTON;
+        if (out.type == Common::EVENT_QUIT)        _shouldQuit = 1;
+        return true;
+    }
     void pushEvent(const Common::Event &) override {}
     void purgeMouseEvents() override {}
     void purgeKeyboardEvents() override {}
-    Common::Point getMousePos() const override { return Common::Point(); }
-    int getButtonState() const override { return 0; }
+    Common::Point getMousePos() const override { return _mousePos; }
+    int getButtonState() const override { return _btnState; }
     int getModifierState() const override { return 0; }
-    int shouldQuit() const override { return 0; }
+    int shouldQuit() const override { return _shouldQuit; }
     int shouldReturnToLauncher() const override { return 0; }
     void resetReturnToLauncher() override {}
-    void resetQuit() override {}
+    void resetQuit() override { _shouldQuit = 0; }
     Common::Keymapper *getKeymapper() override { return nullptr; }
     Common::Keymap *getGlobalKeymap() override { return nullptr; }
+
+private:
+    OSystem_Thumby *_parent;
+    Common::Point   _mousePos;
+    int             _btnState = 0;
+    int             _shouldQuit = 0;
 };
 }  // anonymous
 
@@ -60,7 +84,7 @@ OSystem_Thumby::~OSystem_Thumby() {}
 void OSystem_Thumby::initBackend() {
     // tsb::platform::* is initialised by main() before constructing the
     // engine.  Hook event manager so Engine ctor finds it.
-    static NullEventManager s_event_mgr;
+    static ThumbyEventManager s_event_mgr(this);
     _eventManager = &s_event_mgr;
 }
 
@@ -115,8 +139,14 @@ void OSystem_Thumby::fillScreen(const Common::Rect &r, uint32 col) {
 }
 
 void OSystem_Thumby::updateScreen() {
+    // Fit mode: 320x200 -> 128x80 letterboxed inside 128x128 (24px black
+    // bars top/bottom).  Shows the entire game frame.  ScaleMode::Fill
+    // would zoom-to-fit-height with horizontal pan, cropping ~120 source
+    // columns on host where the user has no way to drive the pan.  The
+    // device build can flip to Fill via the in-game MENU once that's
+    // wired up; for now we always show the whole frame.
     platform::present(_staging, nullptr, _palette,
-                      platform::ScaleMode::Fill, 0, 0);
+                      platform::ScaleMode::Fit, 0, 0);
 }
 
 // ---------------------------------------------------------------------------

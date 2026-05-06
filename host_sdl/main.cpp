@@ -18,6 +18,8 @@
 #include "scumm/scumm_v5.h"
 #include "scumm/scumm_v4.h"
 #include "scumm/detection.h"
+#include "common/events.h"
+#include "common/keyboard.h"
 #include "osystem_thumby.h"
 #include "platform.h"
 #include "imuse.h"
@@ -36,6 +38,100 @@ namespace tsb::platform_sdl {
     bool main_loop_iter();
     void shutdown();
     bool load_data_dir(const char *path);
+}
+
+// SDL → Common::Event translator installed in OSystem_Thumby.  Pumps
+// SDL_PollEvent and converts to scummvm Common::Event so the engine's
+// EventManager (and downstream parseEvents / processInput / mouse
+// handlers) see real input.
+//
+// Mouse coords are converted from window space → 320x200 game space,
+// matching the active scale mode.  Currently we always use Fit
+// (320x200 scaled to 128x80 letterboxed inside 128x128 logical), so
+// invert that mapping here.
+static bool sdl_to_scummvm_event(void * /*user*/, Common::Event *out) {
+    SDL_Event ev;
+    if (!SDL_PollEvent(&ev)) return false;
+    out->type = Common::EVENT_INVALID;
+    out->kbdRepeat = false;
+
+    auto convertMouse = [&](int wx, int wy) {
+        // SDL_RenderWindowToLogical maps window pixels to the 128x128
+        // logical surface.  Then the Fit scale puts game (0..319, 0..199)
+        // at logical (0..127, 24..103).  Invert that.
+        // For now we don't have a renderer pointer here; instead read
+        // logical-window via SDL_GetWindowSize / RendererSize.  Keep it
+        // simple: get the window size and scale.
+        SDL_Window *w = SDL_GetMouseFocus();
+        if (!w) w = SDL_GL_GetCurrentWindow();
+        if (!w) {
+            out->mouse.x = 0; out->mouse.y = 0; return;
+        }
+        int ww, wh;
+        SDL_GetWindowSize(w, &ww, &wh);
+        // Logical 128x128 fills the window; Fit sub-region is the central
+        // 128x80 band.  Map window x → game x ∈ [0,320), window y → game y
+        // ∈ [0,200) using the Fit projection inverse.
+        int lx = wx * 128 / ww;
+        int ly = wy * 128 / wh;
+        const int dst_h = 80;
+        const int top   = (128 - dst_h) / 2; // 24
+        int gx = lx * 320 / 128;
+        int gy = (ly - top) * 200 / dst_h;
+        if (gx < 0)   gx = 0;
+        if (gx > 319) gx = 319;
+        if (gy < 0)   gy = 0;
+        if (gy > 199) gy = 199;
+        out->mouse.x = gx;
+        out->mouse.y = gy;
+    };
+
+    switch (ev.type) {
+    case SDL_QUIT:
+        out->type = Common::EVENT_QUIT;
+        return true;
+    case SDL_MOUSEMOTION:
+        out->type = Common::EVENT_MOUSEMOVE;
+        convertMouse(ev.motion.x, ev.motion.y);
+        return true;
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP: {
+        const bool down = (ev.type == SDL_MOUSEBUTTONDOWN);
+        if (ev.button.button == SDL_BUTTON_LEFT)
+            out->type = down ? Common::EVENT_LBUTTONDOWN : Common::EVENT_LBUTTONUP;
+        else if (ev.button.button == SDL_BUTTON_RIGHT)
+            out->type = down ? Common::EVENT_RBUTTONDOWN : Common::EVENT_RBUTTONUP;
+        else
+            return false;
+        convertMouse(ev.button.x, ev.button.y);
+        return true;
+    }
+    case SDL_KEYDOWN:
+    case SDL_KEYUP: {
+        const bool down = (ev.type == SDL_KEYDOWN);
+        out->type = down ? Common::EVENT_KEYDOWN : Common::EVENT_KEYUP;
+        out->kbdRepeat = (ev.key.repeat != 0);
+        // SDL_Keycode → Common::KeyCode is 1:1 for ASCII range.  Anything
+        // we don't map cleanly we drop into the keycode unchanged; SCUMM
+        // mostly checks ASCII chars and a few sentinels (ESC=27, F-keys).
+        Common::KeyCode kc = (Common::KeyCode)ev.key.keysym.sym;
+        out->kbd.keycode = kc;
+        // ASCII: SDL gives the keycode; cast for letters/digits.  For
+        // ESC/RETURN/SPACE the sym IS the ASCII code.
+        if (ev.key.keysym.sym >= 0 && ev.key.keysym.sym < 128) {
+            out->kbd.ascii = (uint16)ev.key.keysym.sym;
+        } else {
+            out->kbd.ascii = 0;
+        }
+        out->kbd.flags = 0;
+        if (ev.key.keysym.mod & KMOD_SHIFT) out->kbd.flags |= Common::KBD_SHIFT;
+        if (ev.key.keysym.mod & KMOD_CTRL)  out->kbd.flags |= Common::KBD_CTRL;
+        if (ev.key.keysym.mod & KMOD_ALT)   out->kbd.flags |= Common::KBD_ALT;
+        return true;
+    }
+    default:
+        return false;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -86,6 +182,7 @@ int main(int argc, char **argv) {
     // OSystem subclass that bridges to tsb::platform::*.  Lives on the stack
     // for the duration of main(); engine holds a pointer.
     tsb::OSystem_Thumby osys;
+    osys.setEventPoller(sdl_to_scummvm_event, nullptr);
     osys.initBackend();
     extern OSystem *g_system;
     g_system = &osys;

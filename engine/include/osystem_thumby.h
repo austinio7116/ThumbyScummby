@@ -110,6 +110,20 @@ private:
     // _eventManager / _timerManager / _audiocdManager / _savefileManager
     // / _paletteManager are inherited from OSystem; do NOT redeclare here
     // (shadowing breaks getEventManager() etc.).
+
+public:
+    // Host SDL backend installs an event poller via this hook.  The engine's
+    // EventManager calls it to get translated Common::Event entries.  Device
+    // builds leave it null and rely on engine-level button polling.
+    typedef bool (*EventPollerFn)(void *user, Common::Event *out);
+    void setEventPoller(EventPollerFn fn, void *user) {
+        _eventPollerFn = fn; _eventPollerUser = user;
+    }
+    EventPollerFn  eventPollerFn()   const { return _eventPollerFn;   }
+    void          *eventPollerUser() const { return _eventPollerUser; }
+private:
+    EventPollerFn  _eventPollerFn   = nullptr;
+    void          *_eventPollerUser = nullptr;
 };
 
 }  // namespace tsb
