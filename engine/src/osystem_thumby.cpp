@@ -144,33 +144,32 @@ void OSystem_Thumby::fillScreen(const Common::Rect &r, uint32 col) {
 }
 
 void OSystem_Thumby::updateScreen() {
-    // Composite the engine-managed cursor sprite (set via setMouseCursor /
-    // CursorMan::pushCursor in scumm v4 cursor.cpp) onto _staging at the
-    // current mouse position before sending the frame to the platform
-    // layer.  Hot-spot is the inside-cursor offset that should land on
-    // the engine's mouse coordinate.
-    if (_cursorVisible && _cursorW > 0 && _cursorH > 0) {
-        int x0 = _cursorX - _cursorHotspotX;
-        int y0 = _cursorY - _cursorHotspotY;
-        for (int j = 0; j < _cursorH; j++) {
-            int dy = y0 + j;
-            if (dy < 0 || dy >= _h) continue;
-            const uint8_t *src = _cursorBuf + j * _cursorW;
-            uint8_t *dst = _staging + dy * _w;
-            for (int i = 0; i < _cursorW; i++) {
-                int dx = x0 + i;
-                if (dx < 0 || dx >= _w) continue;
-                uint8_t c = src[i];
-                if (c == _cursorKeyColor) continue;   // transparent
-                dst[dx] = c;
-            }
-        }
-    }
     // Scale mode + crop are owned by OSystem_Thumby and driven by the
     // device input layer (MENU cycles mode; LB+dpad pans).  Host SDL just
     // leaves them at the defaults and always shows Fit.
+    //
+    // Cursor: pass a CursorInfo so platform::present blits it onto the
+    // LCD framebuffer AFTER scaling.  Painting it onto _staging here
+    // would ghost — the engine only redraws dirty rects, so old cursor
+    // stamps persist on background pixels indefinitely.  Letting the
+    // platform layer render it post-scale also lets us boost cursor size
+    // in Fit mode where 0.4× downsample makes the native 16×16 pointer
+    // unusably small.
+    platform::CursorInfo cur{};
+    platform::CursorInfo *cur_ptr = nullptr;
+    if (_cursorVisible && _cursorW > 0 && _cursorH > 0) {
+        cur.sprite     = _cursorBuf;
+        cur.w          = _cursorW;
+        cur.h          = _cursorH;
+        cur.hotspot_x  = _cursorHotspotX;
+        cur.hotspot_y  = _cursorHotspotY;
+        cur.x          = _cursorX;
+        cur.y          = _cursorY;
+        cur.key_color  = _cursorKeyColor;
+        cur_ptr        = &cur;
+    }
     platform::present(_staging, nullptr, _palette,
-                      _scaleMode, _cropX, _cropY);
+                      _scaleMode, _cropX, _cropY, cur_ptr);
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM

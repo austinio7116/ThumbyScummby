@@ -53,6 +53,21 @@ enum class ScaleMode : uint8_t {
     Crop = 2    // 128x128 native window, pannable via crop_x/y
 };
 
+// Cursor descriptor passed to present().  Drawing the cursor at LCD
+// resolution inside present() avoids the ghosting that an in-staging
+// composite would cause (the engine only redraws dirty regions of
+// _staging, so an old cursor stamp would persist forever).  Letting
+// present() handle it also lets the cursor render at sizes independent
+// of the source 320×200 — important in Fit mode where 0.4× downsample
+// would otherwise shrink a 16×16 pointer to ~6 LCD pixels.
+struct CursorInfo {
+    const uint8_t *sprite;       // w*h bytes of palette indices
+    int w, h;                    // sprite size in source 320×200 coords
+    int hotspot_x, hotspot_y;
+    int x, y;                    // hotspot position in 320×200 coords
+    uint8_t key_color;           // transparent index
+};
+
 // Submit a frame.
 //   virt is 320*200 bytes of palette indices for the main scene.
 //   text is 320*200 bytes of palette indices for the kTextVirtScreen
@@ -61,6 +76,7 @@ enum class ScaleMode : uint8_t {
 //        Pass nullptr if no overlay.
 //   palette is 256*3 bytes of RGB888 (0..255 range, NOT scumm 6-bit).
 //   crop_x/y are used in CROP mode (0..(320-128) and 0..(200-128)).
+//   cursor optional; nullptr or sprite=nullptr → no cursor drawn.
 //
 // The text overlay is composited with ink-priority during scaling so
 // thin glyph features (1-pixel shadows) survive the 320→128 downsample
@@ -68,7 +84,8 @@ enum class ScaleMode : uint8_t {
 // scene uses the ThumbyNES 2x2 packed-RGB565 box blend (md_core.c:601).
 void present(const uint8_t *virt, const uint8_t *text,
              const uint8_t *palette,
-             ScaleMode mode, int crop_x, int crop_y);
+             ScaleMode mode, int crop_x, int crop_y,
+             const CursorInfo *cursor = nullptr);
 
 // ---------------------------------------------------------------------------
 // Input

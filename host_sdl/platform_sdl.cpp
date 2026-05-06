@@ -262,9 +262,76 @@ static inline uint8_t resolve_src(uint8_t t, uint8_t v) {
     return (t != 0xFD) ? t : v;
 }
 
+// Source-coord → LCD-coord helpers, matching present()'s scaling math.
+// blit_cursor_overlay below uses these so the cursor always lands under
+// the user's logical (gx, gy) regardless of mode.
+static inline int src_to_lcd_x(int src_x, ScaleMode mode, int crop_x) {
+    if (mode == ScaleMode::Fill)
+        return (src_x - crop_x) * DISPLAY_H / VIRTUAL_SCREEN_H;
+    if (mode == ScaleMode::Crop)
+        return src_x - crop_x;
+    return src_x * DISPLAY_W / VIRTUAL_SCREEN_W;
+}
+static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y) {
+    if (mode == ScaleMode::Crop) return src_y - crop_y;
+    const int dst_h = (mode == ScaleMode::Fill) ? DISPLAY_H : 80;
+    const int top   = (DISPLAY_H - dst_h) / 2;
+    return top + src_y * dst_h / VIRTUAL_SCREEN_H;
+}
+
+// Render the cursor sprite onto the LCD framebuffer in pixel space — see
+// device_pico/platform_pico.cpp for the design rationale.  Implementation
+// kept identical between hosts so behaviour matches between SDL and
+// device builds.
+static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
+                                const uint8_t *palette,
+                                ScaleMode mode, int crop_x, int crop_y) {
+    if (!c.sprite || c.w <= 0 || c.h <= 0) return;
+
+    const int anchor_lcd_x = src_to_lcd_x(c.x, mode, crop_x);
+    const int anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y);
+
+    int cw_natural, ch_natural;
+    if (mode == ScaleMode::Fill) {
+        cw_natural = c.w * DISPLAY_H / VIRTUAL_SCREEN_H;
+        ch_natural = c.h * DISPLAY_H / VIRTUAL_SCREEN_H;
+    } else if (mode == ScaleMode::Crop) {
+        cw_natural = c.w;
+        ch_natural = c.h;
+    } else {  // Fit
+        cw_natural = c.w * DISPLAY_W / VIRTUAL_SCREEN_W;
+        ch_natural = c.h * 80         / VIRTUAL_SCREEN_H;
+    }
+    const int boost = (mode == ScaleMode::Fit) ? 2 : 1;
+    int cw_lcd = cw_natural * boost; if (cw_lcd < 4) cw_lcd = 4;
+    int ch_lcd = ch_natural * boost; if (ch_lcd < 4) ch_lcd = 4;
+
+    const int hsx_lcd = (cw_lcd > 0 && c.w > 0) ? c.hotspot_x * cw_lcd / c.w : 0;
+    const int hsy_lcd = (ch_lcd > 0 && c.h > 0) ? c.hotspot_y * ch_lcd / c.h : 0;
+    const int origin_x = anchor_lcd_x - hsx_lcd;
+    const int origin_y = anchor_lcd_y - hsy_lcd;
+
+    for (int ly = 0; ly < ch_lcd; ly++) {
+        const int dy = origin_y + ly;
+        if (dy < 0 || dy >= DISPLAY_H) continue;
+        const int sy = ly * c.h / ch_lcd;
+        const uint8_t *srow = c.sprite + sy * c.w;
+        uint16_t *drow = fb + dy * DISPLAY_W;
+        for (int lx = 0; lx < cw_lcd; lx++) {
+            const int dx = origin_x + lx;
+            if (dx < 0 || dx >= DISPLAY_W) continue;
+            const int sx = lx * c.w / cw_lcd;
+            const uint8_t v = srow[sx];
+            if (v == c.key_color) continue;
+            drow[dx] = pal_to_565(palette, v);
+        }
+    }
+}
+
 void present(const uint8_t *virt, const uint8_t *text,
              const uint8_t *palette,
-             ScaleMode mode, int crop_x, int crop_y) {
+             ScaleMode mode, int crop_x, int crop_y,
+             const CursorInfo *cursor) {
     using namespace tsb::platform_sdl;
     uint16_t *fb = g.framebuffer;
 
@@ -345,6 +412,8 @@ void present(const uint8_t *virt, const uint8_t *text,
             }
         }
     }
+
+    if (cursor) blit_cursor_overlay(fb, *cursor, palette, mode, crop_x, crop_y);
 
     SDL_UpdateTexture(g.tex, nullptr, fb, DISPLAY_W * 2);
     SDL_RenderClear(g.ren);

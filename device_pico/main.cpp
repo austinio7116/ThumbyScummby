@@ -51,8 +51,11 @@ namespace tsb::platform_pico {
 // reach the engine without dropping.
 namespace {
 
-constexpr int kCursorPixelsPerFrame = 5;   // 30fps × 5 = 150 px/s
-constexpr int kPanPixelsPerFrame    = 4;   // gentler — used in Fill / Crop
+constexpr int kCursorPixelsPerFrame = 3;   // 30fps × 3 = 90 px/s — tuned
+                                           // for fine control on a 320×200
+                                           // game space; user found 5 too
+                                           // twitchy.
+constexpr int kPanPixelsPerFrame    = 4;   // pan can stay snappier
 
 struct DeviceInputState {
     int  curX = 160, curY = 100;          // virtual mouse in game coords

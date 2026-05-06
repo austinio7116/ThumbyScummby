@@ -161,9 +161,88 @@ static inline uint8_t resolve_src(uint8_t t, uint8_t v) {
     return (t != 0xFD) ? t : v;
 }
 
+// Source-coord → LCD-coord helpers, matching the present() scaling math.
+// Used both for the main blit AND for blit_cursor_overlay so the cursor
+// position lands exactly under the user's logical mouse coord.
+static inline int src_to_lcd_x(int src_x, ScaleMode mode, int crop_x) {
+    if (mode == ScaleMode::Fill)
+        return (src_x - crop_x) * DISPLAY_H / VIRTUAL_SCREEN_H;
+    if (mode == ScaleMode::Crop)
+        return src_x - crop_x;
+    return src_x * DISPLAY_W / VIRTUAL_SCREEN_W;
+}
+static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y) {
+    if (mode == ScaleMode::Crop) return src_y - crop_y;
+    const int dst_h = (mode == ScaleMode::Fill) ? DISPLAY_H : 80;
+    const int top   = (DISPLAY_H - dst_h) / 2;
+    return top + src_y * dst_h / VIRTUAL_SCREEN_H;
+}
+
+// Render the cursor sprite onto the LCD framebuffer in pixel space.
+// Sprite is stored in source-coord pixels (8bpp palette indices); we
+// scale + boost to keep it visible across all three scale modes.
+//
+//   Fit mode  — natural mapping is 0.4× (320→128); a 16×16 sprite would
+//               render at ≈6×6 LCD pixels.  Boost ×2 to ≈12 LCD px so
+//               the user can actually see where their cursor is.
+//   Fill mode — natural mapping is 0.64× (200→128 on Y, isotropic);
+//               16×16 sprite renders at ≈10×10 LCD px, readable enough.
+//   Crop mode — 1:1, sprite renders at original size.
+static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
+                                const uint8_t *palette,
+                                ScaleMode mode, int crop_x, int crop_y) {
+    using namespace tsb::platform_pico;     // for pal_to_565
+    if (!c.sprite || c.w <= 0 || c.h <= 0) return;
+
+    // Hotspot's LCD anchor — this is where the user's logical mouse coord
+    // (c.x, c.y) lands on screen.
+    const int anchor_lcd_x = src_to_lcd_x(c.x, mode, crop_x);
+    const int anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y);
+
+    // LCD-space cursor dimensions: natural mode-scale × per-mode boost.
+    int cw_natural, ch_natural;
+    if (mode == ScaleMode::Fill) {
+        cw_natural = c.w * DISPLAY_H / VIRTUAL_SCREEN_H;
+        ch_natural = c.h * DISPLAY_H / VIRTUAL_SCREEN_H;
+    } else if (mode == ScaleMode::Crop) {
+        cw_natural = c.w;
+        ch_natural = c.h;
+    } else {  // Fit
+        cw_natural = c.w * DISPLAY_W / VIRTUAL_SCREEN_W;
+        ch_natural = c.h * 80         / VIRTUAL_SCREEN_H;
+    }
+    const int boost = (mode == ScaleMode::Fit) ? 2 : 1;
+    int cw_lcd = cw_natural * boost; if (cw_lcd < 4) cw_lcd = 4;
+    int ch_lcd = ch_natural * boost; if (ch_lcd < 4) ch_lcd = 4;
+
+    // Hotspot in the boosted LCD cursor — keeps the click point under the
+    // logical mouse position even as we scale the visual.
+    const int hsx_lcd = (cw_lcd > 0 && c.w > 0) ? c.hotspot_x * cw_lcd / c.w : 0;
+    const int hsy_lcd = (ch_lcd > 0 && c.h > 0) ? c.hotspot_y * ch_lcd / c.h : 0;
+    const int origin_x = anchor_lcd_x - hsx_lcd;
+    const int origin_y = anchor_lcd_y - hsy_lcd;
+
+    for (int ly = 0; ly < ch_lcd; ly++) {
+        const int dy = origin_y + ly;
+        if (dy < 0 || dy >= DISPLAY_H) continue;
+        const int sy = ly * c.h / ch_lcd;
+        const uint8_t *srow = c.sprite + sy * c.w;
+        uint16_t *drow = fb + dy * DISPLAY_W;
+        for (int lx = 0; lx < cw_lcd; lx++) {
+            const int dx = origin_x + lx;
+            if (dx < 0 || dx >= DISPLAY_W) continue;
+            const int sx = lx * c.w / cw_lcd;
+            const uint8_t v = srow[sx];
+            if (v == c.key_color) continue;
+            drow[dx] = pal_to_565(palette, v);
+        }
+    }
+}
+
 void present(const uint8_t *virt, const uint8_t *text,
              const uint8_t *palette,
-             ScaleMode mode, int crop_x, int crop_y) {
+             ScaleMode mode, int crop_x, int crop_y,
+             const CursorInfo *cursor) {
     using namespace tsb::platform_pico;
     uint16_t *fb = g_fb;
 
@@ -242,6 +321,8 @@ void present(const uint8_t *virt, const uint8_t *text,
             }
         }
     }
+
+    if (cursor) blit_cursor_overlay(fb, *cursor, palette, mode, crop_x, crop_y);
 
     lcd_present(fb);
 }
