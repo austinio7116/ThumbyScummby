@@ -72,6 +72,9 @@ int main(int argc, char **argv) {
     dr.game.heversion    = 0;
     dr.language          = Common::EN_ANY;
     dr.extra             = "";
+    // ScummEngine ctor reads dr.md5 as a 32-char hex string.  Use the
+    // canonical MI1 VGA Floppy DOS English MD5.
+    dr.md5               = "8e4ee4db46954bfcb6d2654dde0aae25";
 
     tsb::ScummEngine *eng = new tsb::ScummEngine_v5(&osys, dr);
 

@@ -36,6 +36,7 @@
 #include "engines/savestate.h"
 #include "engines/util.h"
 #include "graphics/cursorman.h"
+#include "audio/timestamp.h"
 
 // Mutex/StackLock bodies live in scummvm_stubs.cpp.
 
@@ -287,8 +288,11 @@ void OSystem::updateStartSettings(const Common::String &, Common::String &,
 // ============================================================================
 // Engine base
 // ============================================================================
-Engine::Engine(OSystem *syst) : _system(syst), _mixer(nullptr), _eventMan(nullptr),
-    _saveFileMan(nullptr), _timer(nullptr) {}
+Engine::Engine(OSystem *syst) : _system(syst),
+    _mixer(syst ? syst->getMixer() : nullptr),
+    _eventMan(nullptr),
+    _saveFileMan(nullptr),
+    _timer(nullptr) {}
 Engine::~Engine() {}
 bool Engine::canLoadGameStateCurrently(Common::U32String *) { return false; }
 bool Engine::canSaveGameStateCurrently(Common::U32String *) { return false; }
@@ -389,6 +393,11 @@ bool SearchSet::getChildren(const Path &, Common::Array<Common::String> &, Archi
 namespace tsb {
 // vtables for Actor_v0/v2/v3/v7 — never instantiated.  Don't anchor;
 // linker errors are about unresolved vtable refs from never-called code.
+}
+
+// Audio::Timestamp ctor — used by NullMixer.
+namespace Audio {
+Timestamp::Timestamp(uint, uint) : _secs(0), _numFrames(0), _framerate(22050), _framerateFactor(1) {}
 }
 
 // Common::MemoryReadStream — vtable anchor.  Provide real `read` body.

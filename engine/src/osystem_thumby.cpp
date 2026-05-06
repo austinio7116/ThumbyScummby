@@ -9,6 +9,8 @@
 #include "common/mutex.h"
 #include "common/events.h"
 #include "audio/mixer.h"
+#include "audio/audiostream.h"
+#include "audio/timestamp.h"
 
 namespace tsb {
 
@@ -132,11 +134,57 @@ Common::MutexInternal *OSystem_Thumby::createMutex() {
 }
 
 // ---------------------------------------------------------------------------
-// Audio — Phase 7 swaps in the real audio_shim that talks to imuse_*.
-// For now we return null and stub callers handle it.
+// Audio — minimal Audio::Mixer subclass.  All methods no-op; the real
+// sound output goes through our imuse_* path inside Sound subclass
+// (see audio_shim.cpp).
 // ---------------------------------------------------------------------------
+namespace {
+class NullMixer : public Audio::Mixer {
+public:
+    bool isReady() const override { return true; }
+    Common::Mutex &mutex() override { static Common::Mutex m; return m; }
+    void playStream(SoundType, Audio::SoundHandle *, Audio::AudioStream *,
+                    int, byte, int8, DisposeAfterUse::Flag, bool, bool) override {}
+    void stopAll() override {}
+    void stopID(int) override {}
+    void stopHandle(Audio::SoundHandle) override {}
+    void pauseAll(bool) override {}
+    void pauseID(int, bool) override {}
+    void pauseHandle(Audio::SoundHandle, bool) override {}
+    bool isSoundIDActive(int) override { return false; }
+    int  getSoundID(Audio::SoundHandle) override { return 0; }
+    bool isSoundHandleActive(Audio::SoundHandle) override { return false; }
+    void muteSoundType(SoundType, bool) override {}
+    bool isSoundTypeMuted(SoundType) const override { return false; }
+    void setChannelVolume(Audio::SoundHandle, byte) override {}
+    byte getChannelVolume(Audio::SoundHandle) override { return 0; }
+    void setChannelBalance(Audio::SoundHandle, int8) override {}
+    int8 getChannelBalance(Audio::SoundHandle) override { return 0; }
+    void setChannelFaderL(Audio::SoundHandle, uint8) override {}
+    uint8 getChannelFaderL(Audio::SoundHandle) override { return 0; }
+    void setChannelFaderR(Audio::SoundHandle, uint8) override {}
+    uint8 getChannelFaderR(Audio::SoundHandle) override { return 0; }
+    void setChannelRate(Audio::SoundHandle, uint32) override {}
+    uint32 getChannelRate(Audio::SoundHandle) override { return 0; }
+    void resetChannelRate(Audio::SoundHandle) override {}
+    uint32 getSoundElapsedTime(Audio::SoundHandle) override { return 0; }
+    Audio::Timestamp getElapsedTime(Audio::SoundHandle) override;
+    bool hasActiveChannelOfType(SoundType) override { return false; }
+    void setVolumeForSoundType(SoundType, int) override {}
+    int getVolumeForSoundType(SoundType) const override { return 0; }
+    uint getOutputRate() const override { return 22050; }
+    void loopChannel(Audio::SoundHandle) override {}
+    bool getOutputStereo() const override { return false; }
+    uint getOutputBufSize() const override { return 0; }
+};
+Audio::Timestamp NullMixer::getElapsedTime(Audio::SoundHandle) {
+    return Audio::Timestamp(0, 22050);
+}
+}  // anonymous
+
 Audio::Mixer *OSystem_Thumby::getMixer() {
-    return _mixer;     // null until audio_shim wires it
+    static NullMixer s_mixer;
+    return &s_mixer;
 }
 
 // ---------------------------------------------------------------------------
