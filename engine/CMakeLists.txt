@@ -1,21 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Engine library — SCUMM v0-v5 interpreter, post-OSystem-pivot.
+# Engine library — SCUMM v0-v5 interpreter.
 #
 # Three groups of source files:
 #   1. SCUMMVM TRANSCRIBED — engine logic, verbatim from scummvm-upstream
 #      with only boundary edits (header swap, scummvm_compat.h include).
-#      ALL of these compile in the same build.
 #   2. SCUMMVM common/graphics — supporting infrastructure (String, Path,
 #      File, Surface, Palette, etc.) verbatim from scummvm-upstream.
 #   3. THUMBY-NATIVE — audio (DOSBox OPL + iMUSE), platform abstraction,
-#      LFL/LEC chunk readers.  Stays as-is across the pivot.
-#
-# Files NOT in the build (legacy hand-written engine that's being replaced):
-#   src/engine.cpp, vm.cpp, opcodes.cpp, opcodes_v4.cpp,
-#   src/{room,object,costume,charset,string}_legacy.cpp,
-#   src/walkbox.cpp, src/scummvm_compat.cpp, src/actor_compat.cpp.
-# These will be deleted in Phase 9 once the pivot drives runtime.
+#      LFL/LEC chunk readers.
 
 add_library(thumbyscummby_engine STATIC
     # ---- Group 3: Thumby-native (kept across pivot) ----
