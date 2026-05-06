@@ -139,6 +139,28 @@ void OSystem_Thumby::fillScreen(const Common::Rect &r, uint32 col) {
 }
 
 void OSystem_Thumby::updateScreen() {
+    // Composite the engine-managed cursor sprite (set via setMouseCursor /
+    // CursorMan::pushCursor in scumm v4 cursor.cpp) onto _staging at the
+    // current mouse position before sending the frame to the platform
+    // layer.  Hot-spot is the inside-cursor offset that should land on
+    // the engine's mouse coordinate.
+    if (_cursorVisible && _cursorW > 0 && _cursorH > 0) {
+        int x0 = _cursorX - _cursorHotspotX;
+        int y0 = _cursorY - _cursorHotspotY;
+        for (int j = 0; j < _cursorH; j++) {
+            int dy = y0 + j;
+            if (dy < 0 || dy >= _h) continue;
+            const uint8_t *src = _cursorBuf + j * _cursorW;
+            uint8_t *dst = _staging + dy * _w;
+            for (int i = 0; i < _cursorW; i++) {
+                int dx = x0 + i;
+                if (dx < 0 || dx >= _w) continue;
+                uint8_t c = src[i];
+                if (c == _cursorKeyColor) continue;   // transparent
+                dst[dx] = c;
+            }
+        }
+    }
     // Fit mode: 320x200 -> 128x80 letterboxed inside 128x128 (24px black
     // bars top/bottom).  Shows the entire game frame.  ScaleMode::Fill
     // would zoom-to-fit-height with horizontal pan, cropping ~120 source
@@ -147,6 +169,25 @@ void OSystem_Thumby::updateScreen() {
     // wired up; for now we always show the whole frame.
     platform::present(_staging, nullptr, _palette,
                       platform::ScaleMode::Fit, 0, 0);
+}
+
+// Capture the 8bpp cursor sprite scummvm v4 cursor.cpp uploads via
+// CursorMan::pushCursor.  We just memcpy and remember the hotspot +
+// keycolor; updateScreen blits it on top of _staging.
+void OSystem_Thumby::setMouseCursor(const void *buf, uint w, uint h,
+                                    int hotspotX, int hotspotY,
+                                    uint32 keycolor, bool /*dontScale*/,
+                                    const Graphics::PixelFormat * /*format*/,
+                                    const byte * /*mask*/) {
+    if (w > (uint)kMaxCursorW) w = kMaxCursorW;
+    if (h > (uint)kMaxCursorH) h = kMaxCursorH;
+    _cursorW = (int)w;
+    _cursorH = (int)h;
+    _cursorHotspotX = hotspotX;
+    _cursorHotspotY = hotspotY;
+    _cursorKeyColor = (uint8_t)keycolor;
+    if (buf && w > 0 && h > 0)
+        memcpy(_cursorBuf, buf, w * h);
 }
 
 // ---------------------------------------------------------------------------

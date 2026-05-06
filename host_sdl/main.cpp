@@ -55,20 +55,23 @@ static bool sdl_to_scummvm_event(void * /*user*/, Common::Event *out) {
     out->type = Common::EVENT_INVALID;
     out->kbdRepeat = false;
 
-    auto convertMouse = [&](int wx, int wy) {
-        // SDL_RenderWindowToLogical maps window pixels to the 128x128
-        // logical surface.  Then the Fit scale puts game (0..319, 0..199)
-        // at logical (0..127, 24..103).  Invert that.
-        // For now we don't have a renderer pointer here; instead read
-        // logical-window via SDL_GetWindowSize / RendererSize.  Keep it
-        // simple: get the window size and scale.
-        SDL_Window *w = SDL_GetMouseFocus();
-        if (!w) w = SDL_GL_GetCurrentWindow();
+    auto convertMouse = [&](int wx, int wy, Uint32 windowID) {
+        // Resolve the window from the event's windowID — SDL_GetMouseFocus()
+        // returned null when the window was unfocused or the cursor hadn't
+        // entered it since startup, which made every click register at
+        // (0, 0).  Using the windowID stored on the event is reliable.
+        SDL_Window *w = SDL_GetWindowFromID(windowID);
+        if (!w) {
+            // Fallback: walk the SDL window list and grab the first one.
+            // Our app only has one window.
+            w = SDL_GetMouseFocus();
+        }
         if (!w) {
             out->mouse.x = 0; out->mouse.y = 0; return;
         }
         int ww, wh;
         SDL_GetWindowSize(w, &ww, &wh);
+        if (ww <= 0 || wh <= 0) { out->mouse.x = 0; out->mouse.y = 0; return; }
         // Logical 128x128 fills the window; Fit sub-region is the central
         // 128x80 band.  Map window x → game x ∈ [0,320), window y → game y
         // ∈ [0,200) using the Fit projection inverse.
@@ -92,7 +95,7 @@ static bool sdl_to_scummvm_event(void * /*user*/, Common::Event *out) {
         return true;
     case SDL_MOUSEMOTION:
         out->type = Common::EVENT_MOUSEMOVE;
-        convertMouse(ev.motion.x, ev.motion.y);
+        convertMouse(ev.motion.x, ev.motion.y, ev.motion.windowID);
         return true;
     case SDL_MOUSEBUTTONDOWN:
     case SDL_MOUSEBUTTONUP: {
@@ -103,7 +106,7 @@ static bool sdl_to_scummvm_event(void * /*user*/, Common::Event *out) {
             out->type = down ? Common::EVENT_RBUTTONDOWN : Common::EVENT_RBUTTONUP;
         else
             return false;
-        convertMouse(ev.button.x, ev.button.y);
+        convertMouse(ev.button.x, ev.button.y, ev.button.windowID);
         return true;
     }
     case SDL_KEYDOWN:
