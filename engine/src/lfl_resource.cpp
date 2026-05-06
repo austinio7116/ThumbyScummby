@@ -47,26 +47,17 @@ static Span lookup_in_room_lflf(const ResourceEntry &entry, uint16_t tag,
     // 2-byte room_id, i.e. the same starting point as the ROOM chunk.
     uint32_t abs_off = room.offset + 6 + 2 + entry.offset;
     if (abs_off + 6 > disk_data.size) {
-        platform::log("resource: id %d offs 0x%X out of bounds (room=%d disk=%u room_offs=0x%X scr_offs=0x%X)\n",
-                      resource_id, abs_off, owning_room, room.disk,
-                      room.offset, entry.offset);
         return Span{nullptr, 0};
     }
 
     SmallChunk c{};
     if (!small_read(disk_data.sub(abs_off), &c)) {
-        platform::log("resource: id %d small_read failed at 0x%X\n",
-                      resource_id, abs_off);
         return Span{nullptr, 0};
     }
     if (c.tag != tag) {
         // Dump the bytes at that offset to debug
         char ta = (char)(c.tag & 0xFF), tb = (char)((c.tag >> 8) & 0xFF);
         char wa = (char)(tag & 0xFF), wb = (char)((tag >> 8) & 0xFF);
-        platform::log("resource: id %d tag mismatch at 0x%X (room %d disk %u room_offs 0x%X scr_offs 0x%X): got '%c%c'(0x%04X) size=%u want '%c%c'(0x%04X)\n",
-                      resource_id, abs_off, owning_room, room.disk,
-                      room.offset, entry.offset,
-                      ta, tb, c.tag, c.size, wa, wb, tag);
         return Span{nullptr, 0};
     }
     return include_header ? c.full : c.payload;

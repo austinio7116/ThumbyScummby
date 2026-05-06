@@ -933,7 +933,12 @@ ResourceManager::Resource::Resource() {
 }
 
 ResourceManager::Resource::~Resource() {
-	delete[] _address;
+	// THUMBY-PORT: off-heap resources alias flash; don't free. On-heap
+	// resources come from malloc in createResource, so use free()
+	// (delete[] would be UB and was the cause of glibc reporting
+	// "smallbin double linked list corrupted" at first iMuse alloc).
+	if (!isOffHeap())
+		free(_address);
 	_address = nullptr;
 }
 

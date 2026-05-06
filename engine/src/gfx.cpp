@@ -529,9 +529,16 @@ void ScummEngine::drawDirtyScreenParts() {
 
 	// Update game area ("stage")
 	if (camera._last.x != camera._cur.x || (_game.version >= 7 && (camera._cur.y != camera._last.y))) {
-		// Camera moved: redraw everything
+		// Camera moved: redraw everything.
+		// THUMBY-PORT: split the canonical single full-virtscreen call into
+		// per-8-pixel-strip calls so _compositeBuf can be sized for one
+		// strip (a few KB) instead of a full screen (64 KB). Each
+		// drawStripToScreen composes ≤ 8 * vs->h * bpp bytes.
 		VirtScreen *vs = &_virtscr[kMainVirtScreen];
-		drawStripToScreen(vs, 0, vs->w, 0, vs->h);
+		for (int sx = 0; sx < vs->w; sx += 8) {
+			int sw = (sx + 8 <= vs->w) ? 8 : (vs->w - sx);
+			drawStripToScreen(vs, sx, sw, 0, vs->h);
+		}
 		vs->setDirtyRange(vs->h, 0);
 	} else {
 		updateDirtyScreen(kMainVirtScreen);
@@ -595,12 +602,12 @@ void ScummEngine::updateDirtyScreen(VirtScreenNumber slot) {
 			const int bottom = vs->bdirty[i];
 			vs->tdirty[i] = vs->h;
 			vs->bdirty[i] = 0;
-			if (i != (_gdi->_numStrips - 1) && vs->bdirty[i + 1] == bottom && vs->tdirty[i + 1] == top) {
-				// Simple optimizations: if two or more neighboring strips
-				// form one bigger rectangle, coalesce them.
-				w += 8;
-				continue;
-			}
+			// THUMBY-PORT: scummvm's coalescing optimisation can produce
+			// strips up to vs->w * vs->h bytes (>40 KB for kMain at h=200
+			// after a SO_ROOM_SCREEN script opcode), which won't fit in
+			// our small _compositeBuf. Always emit per-8-pixel-strip
+			// drawStripToScreen calls — slightly slower but bounded by
+			// 8 * vs->h (a few KB max).
 #ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
 			if (_game.platform == Common::kPlatformFMTowns && vs->number == kBannerVirtScreen) {
 				int scl = _textSurfaceMultiplier;

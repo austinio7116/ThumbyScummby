@@ -24,7 +24,6 @@ static bool read_dir(Span s, ResourceEntry *out, int max, int *out_count) {
     if (s.size < 2) return false;
     uint16_t n = read_le16(s.data);
     if (n > max) {
-        platform::log("master: directory count %u exceeds max %d\n", n, max);
         return false;
     }
     if (s.size < (size_t)2 + (size_t)n * 5) return false;
@@ -49,8 +48,6 @@ bool parse_master_index(Span data, MasterIndex *out) {
         uint32_t blocksize = read_le32(data.data + cursor);
         uint16_t blocktype = read_le16(data.data + cursor + 4);
         if (blocksize < 6 || cursor + blocksize > data.size) {
-            platform::log("master: bad block at %zu (size=%u, file=%zu)\n",
-                          cursor, blocksize, data.size);
             return false;
         }
         Span body = data.sub(cursor + 6, blocksize - 6);
@@ -79,7 +76,6 @@ bool parse_master_index(Span data, MasterIndex *out) {
             if (body.size < 2) return false;
             uint16_t n = read_le16(body.data);
             if (n > MAX_GLOBAL_OBJECTS) {
-                platform::log("master: too many globals: %u\n", n);
                 return false;
             }
             out->num_global_objects = n;
@@ -91,29 +87,20 @@ bool parse_master_index(Span data, MasterIndex *out) {
             break;
         }
         default:
-            platform::log("master: unknown block 0x%04X size=%u at %zu (skipping)\n",
-                          blocktype, blocksize, cursor);
             break;
         }
         cursor += blocksize;
     }
 
-    platform::log("master index: %d rooms, %d scripts, %d sounds, %d costumes, %d globals\n",
-        out->num_rooms, out->num_scripts, out->num_sounds, out->num_costumes,
-        out->num_global_objects);
 
     // Dump first few scripts for diagnostic
     for (int i = 1; i <= 5 && i < out->num_scripts; i++) {
-        platform::log("  script %d -> room %u offset 0x%X\n",
-                      i, out->scripts[i].disk, out->scripts[i].offset);
     }
 
     // Dump first few present rooms for sanity
     int dumped = 0;
     for (int i = 1; i < out->num_rooms && dumped < 10; i++) {
         if (out->rooms[i].disk != 0) {
-            platform::log("  room %d -> disk %u offset 0x%08X\n",
-                i, out->rooms[i].disk, out->rooms[i].offset);
             dumped++;
         }
     }
@@ -134,7 +121,6 @@ void resolve_room_offsets(MasterIndex *index) {
         // Optional sanity-check the LECF / LOFF tags
         if (read_le16(d.data + 4) != 0x454C ||  // "LE"
             read_le16(d.data + 10) != 0x4F46) { // "FO"
-            platform::log("disk %d: unexpected header tags\n", disk);
             continue;
         }
         uint8_t num = d.data[12];
@@ -150,8 +136,6 @@ void resolve_room_offsets(MasterIndex *index) {
             }
             p += 5;
         }
-        platform::log("disk %d: LOFF has %u rooms (filled %d on this disk)\n",
-                      disk, num, filled);
     }
 }
 

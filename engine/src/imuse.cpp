@@ -292,7 +292,6 @@ void imuse_init() {
 static bool init_ad_song(Span sound_resource, uint32_t body_off,
                          uint32_t payload_size) {
     if (payload_size < 2 + 0x11 + 8 * 16) {
-        platform::log("imuse: AD payload too small (%u bytes)\n", payload_size);
         return false;
     }
     const uint8_t *body = sound_resource.data + body_off;
@@ -359,17 +358,11 @@ static bool init_ad_song(Span sound_resource, uint32_t body_off,
     g_song.tempo_us_per_tick = us_per_tick;
     g_song.running_status = 0;
 
-    platform::log("imuse: AD sound: kind=%s ticks=%u play_once=%u num_instr=%u "
-                  "tempo=%u us/quarter (%u us/tick)\n",
-                  kind == 0x80 ? "MUSIC" : "SFX",
-                  (unsigned)ticks, (unsigned)play_once, (unsigned)num_instr,
-                  us_per_quarter, us_per_tick);
     return true;
 }
 
 bool imuse_start_sound(int sound_id, Span sound_resource) {
     if (sound_resource.empty()) {
-        platform::log("imuse: sound %d has empty resource\n", sound_id);
         return false;
     }
     ParserType pt;
@@ -380,8 +373,6 @@ bool imuse_start_sound(int sound_id, Span sound_resource) {
         size_t n = sound_resource.size < 16 ? sound_resource.size : 16;
         char hex[64]; int hn = 0;
         for (size_t i = 0; i < n; i++) hn += snprintf(hex+hn, sizeof(hex)-hn, "%02X ", p[i]);
-        platform::log("imuse: sound %d unknown format (size=%zu, hdr: %s)\n",
-                      sound_id, sound_resource.size, hex);
         return false;
     }
 
@@ -419,7 +410,6 @@ bool imuse_start_sound(int sound_id, Span sound_resource) {
         uint32_t ad_chunk_off = body_off - 6;
         uint32_t ad_chunk_sz  = rd_u32_le(sound_resource.data, ad_chunk_off);
         if (ad_chunk_sz < 6 || ad_chunk_sz > (uint32_t)sound_resource.size - ad_chunk_off) {
-            platform::log("imuse: AD chunk header truncated (sound %d)\n", sound_id);
             g_song.playing = false;
             return false;
         }
@@ -445,8 +435,6 @@ bool imuse_start_sound(int sound_id, Span sound_resource) {
                       : pt == PT_AD  ? "AD"
                       : pt == PT_SMF ? "SMF"
                                      : "?";
-    platform::log("imuse: starting sound %d (parser=%s body_off=%u size=%u)\n",
-                  sound_id, pname, body_off, (unsigned)sound_resource.size);
 
     return true;
 }
@@ -732,7 +720,6 @@ void imuse_tick(uint32_t elapsed_us) {
             // Stream is over.
             g_song.playing = false;
             adlib_silence_all();
-            platform::log("imuse: sound %d ended\n", g_song.sound_id);
             return;
         }
         g_song.ticks_until_next = g_song.next.delta_ticks;
@@ -752,7 +739,6 @@ void imuse_tick(uint32_t elapsed_us) {
             }
             g_song.playing = false;
             adlib_silence_all();
-            platform::log("imuse: sound %d ended\n", g_song.sound_id);
             return;
         }
         g_song.ticks_until_next = g_song.next.delta_ticks;

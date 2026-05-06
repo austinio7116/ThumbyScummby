@@ -132,13 +132,10 @@ bool smap_decode_bm(Span bm_payload, int width, int height,
                     uint8_t *out_buf, int out_pitch) {
     if (width <= 0 || height <= 0) return false;
     if (width % 8 != 0) {
-        platform::log("smap: width %d not divisible by 8\n", width);
         return false;
     }
     int num_strips = width / 8;
     if (bm_payload.size < (size_t)4 + (size_t)num_strips * 4) {
-        platform::log("smap: BM payload too small (%zu B for %d strips)\n",
-                      bm_payload.size, num_strips);
         return false;
     }
 
@@ -194,7 +191,6 @@ bool smap_decode_bm(Span bm_payload, int width, int height,
                     dst[y * out_pitch + x] = (uint8_t)(0xE0 + (code & 0xF));
                 }
             }
-            platform::log("smap: unknown strip code %u in strip %d\n", code, s);
         }
     }
     return true;

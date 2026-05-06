@@ -437,14 +437,17 @@ ScummEngine::ScummEngine(OSystem *syst, const DetectorResult &dr)
 #endif
 
 	// Allocate gfx compositing buffer (not needed for V7/V8 games).
-	// We can't alias OSystem's _staging buffer here: drawStripToScreen
-	// writes the composed strip starting at _compositeBuf[0] and then
-	// copyRectToScreen memcpys from there into _staging[y*pitch + x].
-	// With an alias those ranges overlap for non-zero y and the memcpy
-	// reads partially-overwritten source bytes — visible as garbage
-	// across the top of the screen as actors animate.
+	// THUMBY-PORT: canonical scummvm sizes this for the full screen
+	// (320*200 = 64 KB). With our two changes:
+	//   1. The camera-move full-virtscreen call (gfx.cpp:534) is split
+	//      into per-8-pixel-strip calls.
+	//   2. updateDirtyScreen's coalescing optimisation is disabled.
+	// every drawStripToScreen call is now bounded by 8 * vs->h * bpp.
+	// Worst case: kMain after a SO_ROOM_SCREEN opcode that sets h=200.
+	// 8 * 200 * 2 bpp * m * m = 6.4 KB max (8-bit MI1: 1.6 KB). Allocate
+	// 8 KB to absorb any path we might miss, saving ~56 KB vs canonical.
 	if (_game.version < 7)
-		_compositeBuf = (byte *)malloc(_screenWidth * _screenHeight * sizeMult);
+		_compositeBuf = (byte *)malloc(8 * _screenHeight * sizeMult * 2);
 	else
 		_compositeBuf = nullptr;
 
@@ -1528,14 +1531,8 @@ Common::Error ScummEngine::init() {
 	resetScumm();
 
 	resetScummVars();
-#ifdef THUMBY_DEVICE
-	tsb::platform::debug_splash(0xFB60);    // CORAL: resetScumm done
-#endif
 
 	resetScummVars();
-#ifdef THUMBY_DEVICE
-	tsb::platform::debug_splash(0x041F);    // TEAL: resetScummVars done
-#endif
 
 	if (!_copyProtection && _game.id == GID_TENTACLE) {
 		VAR(124) = 1;
@@ -1802,8 +1799,14 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	_res->setHeapThreshold(16 * 1024 * 1024, 32 * 1024 * 1024);
 #endif
 
+	// THUMBY-PORT: same per-strip-sized buffer as the ctor (see comment
+	// there). Bounded by 8 * H * m * m * bpp now that updateDirtyScreen
+	// coalescing is disabled and the camera-move call is split.
 	free(_compositeBuf);
-	_compositeBuf = (byte *)malloc(_screenWidth * _textSurfaceMultiplier * _screenHeight * _textSurfaceMultiplier * _outputPixelFormat.bytesPerPixel);
+	_compositeBuf = (byte *)malloc(8 * _screenHeight *
+	                                _textSurfaceMultiplier *
+	                                _textSurfaceMultiplier *
+	                                _outputPixelFormat.bytesPerPixel * 2);
 
 	// MI2 NI DOS Demo, load demo.rec playback file if present
 	if ((_game.id == GID_MONKEY2) && (_game.features & GF_DEMO) && (_game.platform == Common::kPlatformDOS) && !ConfMan.getBool("disable_mi2_ni_demo"))
