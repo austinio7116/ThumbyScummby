@@ -2371,10 +2371,9 @@ Actor *ScummEngine::derefActorSafe(int id, const char *errmsg) const {
 #pragma mark -
 
 
-// ThumbyScummby: ScummEngine::processActors / processUpperActors gated —
-// they touch _gdi (Gdi class), _virtscr[] (VirtScreen array), and the
-// gfx-usage tracker.  Light up at step 12 (gfx.cpp).
-#if 0  // TODO: enable when gfx.cpp lands
+// ThumbyScummby: ScummEngine::processActors / processUpperActors —
+// upstream actor render path.  Re-enabled now that gfx.cpp + costume.cpp
+// are in the build (they were the original gating reasons).
 void ScummEngine::processActors() {
 	int numactors = 0;
 
@@ -2586,7 +2585,7 @@ void ScummEngine::processUpperActors() {
 		}
 	}
 }
-#endif  // ScummEngine::processActors / processUpperActors gated — gfx.cpp
+// END processActors block
 
 // ThumbyScummby: drawActorCostume / prepareDrawActorCostume bodies depend
 // on transcribed costume.cpp (BaseCostumeRenderer::drawCostume etc.) and
@@ -2596,13 +2595,9 @@ void ScummEngine::processUpperActors() {
 // transcribed Actor class fields (_pos, _costume, _cost.* etc.).  No
 // runtime regression — only the transcription path is staged.
 //
-// Empty body provided to satisfy virtual method vtable resolution.
-void Actor::drawActorCostume(bool /*hitTestMode*/) {
-    // TODO: enable when costume.cpp + gfx.cpp transcriptions land.
-    // Original body in upstream actor.cpp:2580+.
-}
-#if 0  // Original drawActorCostume body — restore at step 4/12.
-void Actor::drawActorCostume_DISABLED(bool hitTestMode) {
+// ThumbyScummby: drawActorCostume re-enabled now that costume.cpp +
+// gfx.cpp are in the build.  Body verbatim from upstream actor.cpp.
+void Actor::drawActorCostume(bool hitTestMode) {
 	if (_costume == 0)
 		return;
 
@@ -2632,15 +2627,11 @@ void Actor::drawActorCostume_DISABLED(bool hitTestMode) {
 		_bottom = bcr->_drawBottom;
 	}
 }
-#endif
 
 
-// ThumbyScummby: see drawActorCostume above.  Empty stub for vtable.
-void Actor::prepareDrawActorCostume(BaseCostumeRenderer * /*bcr*/) {
-    // TODO: enable when costume.cpp + gfx.cpp transcriptions land.
-}
-#if 0  // Original prepareDrawActorCostume body — restore at step 4/12.
-void Actor::prepareDrawActorCostume_DISABLED(BaseCostumeRenderer *bcr) {
+// ThumbyScummby: prepareDrawActorCostume re-enabled now that costume.cpp +
+// gfx.cpp are in the build.  Body verbatim from upstream actor.cpp.
+void Actor::prepareDrawActorCostume(BaseCostumeRenderer *bcr) {
 	bcr->_actorID = _number;
 	bcr->_actorX = _pos.x - _vm->_virtscr[kMainVirtScreen].xstart;
 	bcr->_actorY = _pos.y - _elevation;
@@ -2688,7 +2679,6 @@ void Actor::prepareDrawActorCostume_DISABLED(BaseCostumeRenderer *bcr) {
 	bcr->_drawTop = 0x7fffffff;
 	bcr->_drawBottom = 0;
 }
-#endif  // prepareDrawActorCostume — needs costume.cpp + gfx.cpp
 
 #if 0  // ThumbyScummby: variant disabled
 void ActorHE::prepareDrawActorCostume(BaseCostumeRenderer *bcr) {
@@ -3082,11 +3072,9 @@ void Actor::animateLimb(int limb, int f) {
 #endif
 
 // ThumbyScummby: rendering / talk / save-load methods below depend on
-// transcribed costume.cpp, charset.cpp, sound.cpp, gfx.cpp.  Per
-// TRANSCRIPTION_PLAN.md they go live in steps 4-6/12.  Until then
-// scummvm_compat.cpp provides minimal stubs for getTalkingActor /
-// setTalkingActor / stopTalk; our legacy renderer and charset draw.
-#if 0  // TODO: enable in steps 4-6 / 12 (costume / charset / sound / gfx)
+// ThumbyScummby: redrawAllActors / setActorRedrawFlags — upstream bodies
+// re-enabled now that costume.cpp / charset.cpp / gfx.cpp are in the
+// build (they were the original gating reason).
 void ScummEngine::redrawAllActors() {
 	for (int i = 1; i < _numActors; ++i) {
 		_actors[i]->_needRedraw = true;
@@ -3278,7 +3266,6 @@ void ScummEngine_v70he::resetActorBgs() {
 		_actors[i]->_needBgReset = false;
 	}
 }
-#endif
 
 #ifdef ENABLE_HE
 bool ScummEngine_v95he::prepareForActorErase() {

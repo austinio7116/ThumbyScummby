@@ -610,9 +610,10 @@ void ScummEngine::playNESTitleScreens() {}
 // Misc.
 void ScummEngine::actorTalk(const byte *) {}
 void ScummEngine::resetV1ActorTalkColor() {}
-void ScummEngine::processActors() {}
-void ScummEngine::resetActorBgs() {}
-void ScummEngine::setActorRedrawFlags() {}
+// processActors / resetActorBgs / setActorRedrawFlags / redrawAllActors
+// have real implementations in actor.cpp now (enabled along with
+// drawActorCostume + prepareDrawActorCostume to bring sparkles, clouds,
+// and the rest of the actor rendering online).
 bool ScummEngine::hasFeature(Engine::EngineFeature) const { return false; }
 // generateFilename: real impl from scummvm-upstream/scumm/metaengine.cpp:53.
 // We only support v4 path (MI1).
