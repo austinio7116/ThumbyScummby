@@ -199,21 +199,12 @@ static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
     using namespace tsb::platform_pico;     // for pal_to_565
     if (!c.sprite || c.w <= 0 || c.h <= 0) return;
 
-    // Per-mode LCD cursor size:
-    //   Fit  — 1.25× source (20 LCD px for a 16-px source).
-    //   Fill — 1.125× source (18 LCD px).
-    //   Crop — 1× source (16 LCD px, 1:1 native).
-    int cw_lcd, ch_lcd;
-    if (mode == ScaleMode::Fit) {
-        cw_lcd = c.w * 5 / 4;
-        ch_lcd = c.h * 5 / 4;
-    } else if (mode == ScaleMode::Fill) {
-        cw_lcd = c.w * 9 / 8;
-        ch_lcd = c.h * 9 / 8;
-    } else {  // Crop
-        cw_lcd = c.w;
-        ch_lcd = c.h;
-    }
+    // Cursor is composited at LCD resolution post-scene-blit, so its on-
+    // screen size is independent of the scene scale mode — same 1× source
+    // size in Fit, Fill, and Crop.
+    int cw_lcd = c.w;
+    int ch_lcd = c.h;
+    (void)mode;
     if (cw_lcd < 4) cw_lcd = 4;
     if (ch_lcd < 4) ch_lcd = 4;
 

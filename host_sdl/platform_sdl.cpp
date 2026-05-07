@@ -287,18 +287,10 @@ static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
                                 ScaleMode mode, int crop_x, int crop_y) {
     if (!c.sprite || c.w <= 0 || c.h <= 0) return;
 
-    // Per-mode sizes mirror device_pico/platform_pico.cpp.
-    int cw_lcd, ch_lcd;
-    if (mode == ScaleMode::Fit) {
-        cw_lcd = c.w * 5 / 4;
-        ch_lcd = c.h * 5 / 4;
-    } else if (mode == ScaleMode::Fill) {
-        cw_lcd = c.w * 9 / 8;
-        ch_lcd = c.h * 9 / 8;
-    } else {  // Crop
-        cw_lcd = c.w;
-        ch_lcd = c.h;
-    }
+    // Same size in all modes — see device_pico/platform_pico.cpp comment.
+    int cw_lcd = c.w;
+    int ch_lcd = c.h;
+    (void)mode;
     if (cw_lcd < 4) cw_lcd = 4;
     if (ch_lcd < 4) ch_lcd = 4;
 
