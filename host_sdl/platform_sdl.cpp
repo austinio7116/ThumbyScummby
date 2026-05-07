@@ -159,7 +159,9 @@ bool init(int argc, char **argv) {
     if (!g.ren) g.ren = SDL_CreateRenderer(g.win, -1, SDL_RENDERER_SOFTWARE);
     if (!g.ren) { fprintf(stderr, "CreateRenderer: %s\n", SDL_GetError()); return false; }
 
-    SDL_RenderSetLogicalSize(g.ren, DISPLAY_W, DISPLAY_H);
+    // SDL_RenderSetLogicalSize was unreliable under WSLg — output landed
+    // at the top-left 128×128 of the window unscaled.  Use an explicit
+    // dst-rect at present time + manual mouse-coord scaling instead.
     g.tex = SDL_CreateTexture(g.ren, SDL_PIXELFORMAT_RGB565,
                               SDL_TEXTUREACCESS_STREAMING, DISPLAY_W, DISPLAY_H);
     if (!g.tex) { fprintf(stderr, "CreateTexture: %s\n", SDL_GetError()); return false; }
@@ -437,7 +439,10 @@ void present(const uint8_t *virt, const uint8_t *text,
 
     SDL_UpdateTexture(g.tex, nullptr, fb, DISPLAY_W * 2);
     SDL_RenderClear(g.ren);
-    SDL_RenderCopy(g.ren, g.tex, nullptr, nullptr);
+    int rw = 0, rh = 0;
+    SDL_GetRendererOutputSize(g.ren, &rw, &rh);
+    SDL_Rect dst{0, 0, rw, rh};
+    SDL_RenderCopy(g.ren, g.tex, nullptr, &dst);
     SDL_RenderPresent(g.ren);
 }
 

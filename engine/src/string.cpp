@@ -955,7 +955,12 @@ void ScummEngine_v2::drawSentence() {
 	_string[2].charset = 1;
 	_string[2].ypos = _virtscr[kVerbVirtScreen].topline + pixelYOffset;
 	_string[2].xpos = 0 + pixelXOffset;
-	_string[2].right = _virtscr[kVerbVirtScreen].w - 1 + pixelXOffset;
+	// THUMBY-PORT: in Fill mode the verb panel is locked to the left
+	// 200 source-px, so centre the sentence line on x=100 (right edge
+	// 199) instead of the canonical 320-wide centre at x=160.  Other
+	// scale modes still benefit — sentence text stays close to the
+	// verbs you'd be reading along with it.
+	_string[2].right = 199 + pixelXOffset;
 	if (_game.platform == Common::kPlatformNES) {
 		_string[2].xpos = 16;
 		_string[2].color = 0;

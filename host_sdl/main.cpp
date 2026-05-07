@@ -49,36 +49,46 @@ namespace tsb::platform_sdl {
 // matching the active scale mode.  Currently we always use Fit
 // (320x200 scaled to 128x80 letterboxed inside 128x128 logical), so
 // invert that mapping here.
-static bool sdl_to_scummvm_event(void * /*user*/, Common::Event *out) {
+static bool sdl_to_scummvm_event(void *user, Common::Event *out) {
+    auto *osys = static_cast<tsb::OSystem_Thumby *>(user);
     SDL_Event ev;
     if (!SDL_PollEvent(&ev)) return false;
     out->type = Common::EVENT_INVALID;
     out->kbdRepeat = false;
 
+    // Host-side scale-mode shortcut — TAB cycles Fit / Fill / Crop, the
+    // same behaviour as the device's MENU button.  Consumed here so the
+    // engine never sees the keypress.
+    if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_TAB && osys) {
+        osys->cycleScaleMode();
+        return false;        // skip — try next event on next poll
+    }
+
     auto convertMouse = [&](int wx, int wy, Uint32 windowID) {
-        // Resolve the window from the event's windowID — SDL_GetMouseFocus()
-        // returned null when the window was unfocused or the cursor hadn't
-        // entered it since startup, which made every click register at
-        // (0, 0).  Using the windowID stored on the event is reliable.
+        // The renderer is configured WITHOUT SetLogicalSize — present()
+        // blits with an explicit dst rect filling the renderer output —
+        // so we map mouse window-pixel coords to LCD coords using the
+        // same renderer output size, NOT SDL_GetWindowSize (which on
+        // WSLg can return DPI-logical pixels that differ from the
+        // event coords).  GetRendererOutputSize gives the actual pixel
+        // grid present() blits onto.
         SDL_Window *w = SDL_GetWindowFromID(windowID);
-        if (!w) {
-            // Fallback: walk the SDL window list and grab the first one.
-            // Our app only has one window.
-            w = SDL_GetMouseFocus();
-        }
-        if (!w) {
-            out->mouse.x = 0; out->mouse.y = 0; return;
-        }
-        int ww, wh;
-        SDL_GetWindowSize(w, &ww, &wh);
-        if (ww <= 0 || wh <= 0) { out->mouse.x = 0; out->mouse.y = 0; return; }
-        // Logical 128x128 fills the window; Fit sub-region is the central
-        // 128x80 band.  Map window x → game x ∈ [0,320), window y → game y
-        // ∈ [0,200) using the Fit projection inverse.
-        int lx = wx * 128 / ww;
-        int ly = wy * 128 / wh;
+        if (!w) w = SDL_GetMouseFocus();
+        SDL_Renderer *ren = w ? SDL_GetRenderer(w) : nullptr;
+        int ow = 0, oh = 0;
+        if (ren) SDL_GetRendererOutputSize(ren, &ow, &oh);
+        if (ow <= 0 || oh <= 0) { out->mouse.x = 0; out->mouse.y = 0; return; }
+        int lx = wx * 128 / ow;
+        int ly = wy * 128 / oh;
+        if (lx < 0)   lx = 0;
+        if (ly < 0)   ly = 0;
+        if (lx > 127) lx = 127;
+        if (ly > 127) ly = 127;
+        // Logical 128×128 → Fit-mode game 320×200 (24-px letterbox on
+        // top/bottom).  Fit is the host default; mode-aware mapping for
+        // Fill / Crop will come when the host wires those modes.
         const int dst_h = 80;
-        const int top   = (128 - dst_h) / 2; // 24
+        const int top   = (128 - dst_h) / 2;
         int gx = lx * 320 / 128;
         int gy = (ly - top) * 200 / dst_h;
         if (gx < 0)   gx = 0;
@@ -185,7 +195,7 @@ int main(int argc, char **argv) {
     // OSystem subclass that bridges to tsb::platform::*.  Lives on the stack
     // for the duration of main(); engine holds a pointer.
     tsb::OSystem_Thumby osys;
-    osys.setEventPoller(sdl_to_scummvm_event, nullptr);
+    osys.setEventPoller(sdl_to_scummvm_event, &osys);
     osys.initBackend();
     extern OSystem *g_system;
     g_system = &osys;

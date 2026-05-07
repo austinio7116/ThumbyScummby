@@ -185,22 +185,30 @@ void OSystem_Thumby::updateScreen() {
     _frameDone = true;
 }
 
-// MENU cycles Fit → Fill → Crop → Fit.  When entering Fill we reset crop_x
-// to centre (so the user sees the middle band), and when entering Crop we
-// centre the 128x128 viewport on the 320x200 screen.  Other modes ignore
-// the crop fields, but resetting on transition prevents stale offsets
-// confusing the user when they cycle back.
+// MENU cycles Fit → Fill → Crop → Fit.  When entering a mode whose
+// viewport is smaller than the 320×200 source, centre the visible
+// region on the current cursor position so the user's focal point
+// stays put across mode changes.  Each cropped axis is clamped so we
+// never expose pixels outside the source.
 void OSystem_Thumby::cycleScaleMode() {
+    auto centred_crop = [&](int vis_w, int vis_h, int &out_x, int &out_y) {
+        const int cx = _cursorX - vis_w / 2;
+        const int cy = _cursorY - vis_h / 2;
+        const int max_x = 320 - vis_w;
+        const int max_y = 200 - vis_h;
+        out_x = cx < 0 ? 0 : (cx > max_x ? max_x : cx);
+        out_y = cy < 0 ? 0 : (cy > max_y ? max_y : cy);
+    };
     switch (_scaleMode) {
     case platform::ScaleMode::Fit:
         _scaleMode = platform::ScaleMode::Fill;
-        _cropX = (320 - (128 * 200 / 128)) / 2;   // pan_max / 2 ~ 60
-        _cropY = 0;
+        // Fill viewport ≈ 200 source-px wide, full 200 source-px tall.
+        centred_crop(200, 200, _cropX, _cropY);
+        _cropY = 0;                       // Fill doesn't pan vertically
         break;
     case platform::ScaleMode::Fill:
         _scaleMode = platform::ScaleMode::Crop;
-        _cropX = (320 - 128) / 2;                 // 96
-        _cropY = (200 - 128) / 2;                 // 36
+        centred_crop(128, 128, _cropX, _cropY);
         break;
     case platform::ScaleMode::Crop:
     default:
