@@ -269,7 +269,13 @@ void present(const uint8_t *virt, const uint8_t *text,
         // 320 width onto 128 dst pixels (anisotropic). FILL keeps the
         // vertical scale ratio in X (isotropic, 200→128) and pans
         // horizontally via crop_x in source-x pixels (range 0..120).
+        //
+        // FILL also computes a SECOND sx[] pair with crop_x=0 — the
+        // verb panel (MI1 source y >= 144) is sampled from this so it
+        // stays locked at the left of the source regardless of how the
+        // user has panned the main scene.  Verbs always visible.
         uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
+        uint16_t sxa_v[DISPLAY_W], sxb_v[DISPLAY_W];
         if (mode == ScaleMode::Fill) {
             int pan_max = VIRTUAL_SCREEN_W -
                           (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H);
@@ -280,6 +286,10 @@ void present(const uint8_t *virt, const uint8_t *text,
                 int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
                 sxa[dx] = (uint16_t)sx;
                 sxb[dx] = (uint16_t)sx2;
+                int svx  = (dx * VIRTUAL_SCREEN_H) / DISPLAY_H;
+                int svx2 = svx + 1; if (svx2 >= VIRTUAL_SCREEN_W) svx2 = svx;
+                sxa_v[dx] = (uint16_t)svx;
+                sxb_v[dx] = (uint16_t)svx2;
             }
         } else {
             for (int dx = 0; dx < DISPLAY_W; dx++) {
@@ -290,6 +300,12 @@ void present(const uint8_t *virt, const uint8_t *text,
             }
         }
 
+        // MI1 verb panel starts at source y=144.  In Fill mode (dst_h=128
+        // / VIRTUAL_SCREEN_H=200) that's LCD row 144 * 128/200 ≈ 92.
+        // Hardcoded for now; v5 games may differ.
+        constexpr int kVerbPanelSrcY = 144;
+        const bool   has_verb_lock  = (mode == ScaleMode::Fill);
+
         for (int dy = 0; dy < dst_h; dy++) {
             int sy  = (dy * VIRTUAL_SCREEN_H) / dst_h;
             int sy2 = sy + 1; if (sy2 >= VIRTUAL_SCREEN_H) sy2 = sy;
@@ -298,8 +314,11 @@ void present(const uint8_t *virt, const uint8_t *text,
             const uint8_t *trow1 = text ? text + sy  * VIRTUAL_SCREEN_W : nullptr;
             const uint8_t *trow2 = text ? text + sy2 * VIRTUAL_SCREEN_W : nullptr;
             uint16_t *drow = fb + (dy + letterbox_top) * DISPLAY_W;
+            const bool verb_row = has_verb_lock && (sy >= kVerbPanelSrcY);
+            const uint16_t *xa = verb_row ? sxa_v : sxa;
+            const uint16_t *xb = verb_row ? sxb_v : sxb;
             for (int dx = 0; dx < DISPLAY_W; dx++) {
-                int sx = sxa[dx], sx2 = sxb[dx];
+                int sx = xa[dx], sx2 = xb[dx];
                 // Text composited per source pixel BEFORE the 2x2 box
                 // blend, so glyph edges anti-alias against the
                 // background. Trade-off: 1-pixel strokes soften, but
