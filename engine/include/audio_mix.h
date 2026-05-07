@@ -20,4 +20,13 @@ void audio_mix_init(int sample_rate);
 // SDL/host callback. Mono int16, n samples.
 void audio_mix_callback(void *user, int16_t *samples, int n_samples);
 
+// Master volume on a 0..20 scale (default 10 = 100% unity gain).
+//   level/10  is the linear gain applied after OPL2 render —
+//   level=0   → silent, level=10 → unity, level=20 → 2× gain (with
+//   per-sample int16 clamp).  Wired to the LB+UP/DOWN device chord.
+void audio_mix_set_volume(int level_0_20);
+int  audio_mix_get_volume();
+constexpr int kAudioMixVolumeMax  = 20;
+constexpr int kAudioMixVolumeUnit = 10;     // unity-gain step
+
 }  // namespace tsb

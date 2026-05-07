@@ -33,10 +33,14 @@ namespace tsb::platform_pico {
 // Thumby Color has nine physical buttons (D-pad, A, B, LB, RB, MENU).  We
 // translate them into the SCUMM engine's expected event stream:
 //
-//   D-pad        → move on-screen pointer in 320×200 game space
-//                  (when LB held, pans the scaled view instead).
+//   D-pad        → move on-screen pointer in 320×200 game space.  When
+//                  the cursor reaches the edge of the visible region in
+//                  Fill / Crop mode, the crop slides with it so the
+//                  scene scrolls under the cursor (no LB chord needed).
 //   A            → right-click  (RBUTTON{DOWN,UP})
 //   B            → left-click   (LBUTTON{DOWN,UP})
+//   LB + UP/DOWN → adjust master audio volume on a 0..20 scale (default
+//                  10).  Cursor/pan motion is suppressed while LB is held.
 //   MENU         → cycle scale mode (Fit / Fill / Crop)
 //   RB           → ESC keypress (skip cutscenes / dismiss banners)
 //
@@ -60,11 +64,11 @@ namespace {
 constexpr int kCursorPxFit  = 2;
 constexpr int kCursorPxFill = 2;
 constexpr int kCursorPxCrop = 1;
-constexpr int kPanPixelsPerFrame = 4;     // pan stays snappier — LB+dpad
-                                          // is reach-across, not aiming
 
 struct DeviceInputState {
     int  curX = 160, curY = 100;          // virtual mouse in game coords
+    bool prev_up   = false;
+    bool prev_down = false;
 };
 
 constexpr int kQCap = 16;
@@ -136,53 +140,81 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
     g_in.curX = osys.cursorX();
     g_in.curY = osys.cursorY();
 
-    const bool panMode = in.button_lb;
+    // LB+UP/DOWN — adjust master volume on press edges.  Suppresses
+    // cursor movement while LB is held so the user can change volume
+    // without moving the pointer.
+    if (in.button_lb) {
+        const bool up_edge   = in.dpad_up   && !g_in.prev_up;
+        const bool down_edge = in.dpad_down && !g_in.prev_down;
+        if (up_edge)
+            tsb::audio_mix_set_volume(tsb::audio_mix_get_volume() + 1);
+        if (down_edge)
+            tsb::audio_mix_set_volume(tsb::audio_mix_get_volume() - 1);
+        g_in.prev_up   = in.dpad_up;
+        g_in.prev_down = in.dpad_down;
+        // Skip cursor / pan updates this frame.
+        if (in.menu_pressed) osys.cycleScaleMode();
+        if (in.a_pressed)  emit_button(false, true);
+        if (in.a_released) emit_button(false, false);
+        if (in.b_pressed)  emit_button(true,  true);
+        if (in.b_released) emit_button(true,  false);
+        if (in.rb_pressed)  emit_esc(true);
+        if (in.rb_released) emit_esc(false);
+        return;
+    }
+    g_in.prev_up   = in.dpad_up;
+    g_in.prev_down = in.dpad_down;
 
-    // Direction deltas — diagonals get full speed on each axis (cheap and
-    // matches user expectation; analog feel can come later if needed).
+    // Direction deltas — diagonals get full speed on each axis.
     int dx = (in.dpad_right ? 1 : 0) - (in.dpad_left ? 1 : 0);
     int dy = (in.dpad_down  ? 1 : 0) - (in.dpad_up   ? 1 : 0);
 
-    if (panMode) {
-        // LB-held pan.  Only modes with viewport-smaller-than-source make
-        // pan meaningful: Fill (only horizontal pan), Crop (both).  Fit
-        // shows the entire frame so we ignore pan there.
-        auto sm = osys.scaleMode();
+    if (dx || dy) {
+        // Cursor motion in source-coord space.  In Fill / Crop the
+        // visible region is smaller than the 320×200 source, so when the
+        // cursor moves past the visible edge we slide the crop with it
+        // — the cursor visually sticks at the LCD edge while the scene
+        // scrolls underneath.  Replaces the old LB+dpad pan chord.
+        const auto sm = osys.scaleMode();
+        const int vel = (sm == tsb::platform::ScaleMode::Crop) ? kCursorPxCrop
+                      : (sm == tsb::platform::ScaleMode::Fill) ? kCursorPxFill
+                                                               : kCursorPxFit;
+        int nx = g_in.curX + dx * vel;
+        int ny = g_in.curY + dy * vel;
+        if (nx < 0)   nx = 0;
+        if (ny < 0)   ny = 0;
+        if (nx > 319) nx = 319;
+        if (ny > 199) ny = 199;
+        g_in.curX = nx;
+        g_in.curY = ny;
+
+        // Visible region in source-coord pixels per scale mode.  Fit
+        // shows everything → no pan.  Fill shows 200 source-x of 320
+        // (Y always full).  Crop shows 128×128 native of 320×200.
+        int vis_w = 320, vis_h = 200;
         if (sm == tsb::platform::ScaleMode::Fill) {
-            int newX = osys.cropX() + dx * kPanPixelsPerFrame;
-            int panMax = 320 - (128 * 200 / 128);  // ≈ 192
-            if (newX < 0) newX = 0;
-            if (newX > panMax) newX = panMax;
-            osys.setCrop(newX, 0);
+            vis_w = 128 * 200 / 128;       // = 200
+            vis_h = 200;
         } else if (sm == tsb::platform::ScaleMode::Crop) {
-            int newX = osys.cropX() + dx * kPanPixelsPerFrame;
-            int newY = osys.cropY() + dy * kPanPixelsPerFrame;
-            if (newX < 0) newX = 0;
-            if (newY < 0) newY = 0;
-            if (newX > 320 - 128) newX = 320 - 128;
-            if (newY > 200 - 128) newY = 200 - 128;
-            osys.setCrop(newX, newY);
+            vis_w = 128;
+            vis_h = 128;
         }
-    } else {
-        // Cursor motion.  Always emit a MOUSEMOVE on dpad change so the
-        // engine wakes its parser even at the screen edges (clamped pos
-        // stays equal to old pos but the event still fires so things like
-        // verb hover state refresh).
-        if (dx || dy) {
-            const auto sm = osys.scaleMode();
-            const int vel = (sm == tsb::platform::ScaleMode::Crop) ? kCursorPxCrop
-                          : (sm == tsb::platform::ScaleMode::Fill) ? kCursorPxFill
-                                                                   : kCursorPxFit;
-            int nx = g_in.curX + dx * vel;
-            int ny = g_in.curY + dy * vel;
-            if (nx < 0)   nx = 0;
-            if (ny < 0)   ny = 0;
-            if (nx > 319) nx = 319;
-            if (ny > 199) ny = 199;
-            g_in.curX = nx;
-            g_in.curY = ny;
-            emit_mousemove();
-        }
+
+        int cx = osys.cropX();
+        int cy = osys.cropY();
+        // Slide the crop window so the cursor stays inside it.
+        if (g_in.curX < cx)              cx = g_in.curX;
+        if (g_in.curX > cx + vis_w - 1)  cx = g_in.curX - vis_w + 1;
+        if (g_in.curY < cy)              cy = g_in.curY;
+        if (g_in.curY > cy + vis_h - 1)  cy = g_in.curY - vis_h + 1;
+        // Clamp crop to source bounds.
+        if (cx < 0)             cx = 0;
+        if (cy < 0)             cy = 0;
+        if (cx > 320 - vis_w)   cx = 320 - vis_w;
+        if (cy > 200 - vis_h)   cy = 200 - vis_h;
+        osys.setCrop(cx, cy);
+
+        emit_mousemove();
     }
 
     // MENU — cycle scale mode on press edge.

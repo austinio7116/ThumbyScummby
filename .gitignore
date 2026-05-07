@@ -7,6 +7,10 @@ data/
 # Build artifacts
 build/
 build_device/
+build_mi1/
+build_atlantis/
+device_pico/build_mi1/
+device_pico/build_atlantis/
 *.o
 *.a
 *.so

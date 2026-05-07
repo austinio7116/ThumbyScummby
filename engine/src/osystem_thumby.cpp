@@ -155,9 +155,13 @@ void OSystem_Thumby::updateScreen() {
     // platform layer render it post-scale also lets us boost cursor size
     // in Fit mode where 0.4× downsample makes the native 16×16 pointer
     // unusably small.
+    // THUMBY-PORT: render the cursor whenever a sprite is uploaded,
+    // ignoring the engine's showMouse(false) hint.  D-pad drives our
+    // cursor-edge pan even during cutscenes, so the user needs to see
+    // where the pointer is to know which direction will scroll.
     platform::CursorInfo cur{};
     platform::CursorInfo *cur_ptr = nullptr;
-    if (_cursorVisible && _cursorW > 0 && _cursorH > 0) {
+    if (_cursorW > 0 && _cursorH > 0) {
         cur.sprite     = _cursorBuf;
         cur.w          = _cursorW;
         cur.h          = _cursorH;
