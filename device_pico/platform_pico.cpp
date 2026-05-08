@@ -161,21 +161,55 @@ static inline uint8_t resolve_src(uint8_t t, uint8_t v) {
     return (t != 0xFD) ? t : v;
 }
 
-// Source-coord → LCD-coord helpers, matching the present() scaling math.
-// Used both for the main blit AND for blit_cursor_overlay so the cursor
-// position lands exactly under the user's logical mouse coord.
-static inline int src_to_lcd_x(int src_x, ScaleMode mode, int crop_x) {
+// Unified LCD layout — verb panel pinned to the LCD bottom in ALL
+// modes so its visual position stays put as the user cycles Fit / Fill
+// / Crop.  Only the SCENE region above changes between modes:
+//
+//   Fit  — top letterbox 24 + scene 58 (Fit Y 0.4×) + gap 10 + verb 36
+//   Fill — scene 92 (isotropic 0.64×, no letterbox) + verb 36
+//   Crop — scene 92 (1:1 native, panned via crop_x/y) + verb 36
+//
+// Verb panel is ALWAYS rendered at Fill verb scale (0.64×, X verb-
+// locked) — same size and position regardless of mode — and verb text
+// always routes through the LCD-overlay path (75% scaled glyph stamps).
+constexpr int kVerbPanelSrcY    = 144;                                // MI1 verb panel start
+constexpr int kVerbSrcRows      = VIRTUAL_SCREEN_H - kVerbPanelSrcY;  // 56
+constexpr int kVerbLcdRows      = 36;                                 // 56 * 128/200
+constexpr int kVerbLcdStartY    = DISPLAY_H - kVerbLcdRows;           // 92
+// Fit-mode scene region is anisotropic 0.4×, sat under a 24 px top
+// letterbox just like the original Fit layout — the gap between scene
+// and verb (LCD 82..91) is intentional black framing.
+constexpr int kFitTopLB         = 24;
+constexpr int kFitSceneLcdRows  = 58;                                 // 144 * 0.4
+constexpr int kFitSceneStartY   = kFitTopLB;
+// Fill / Crop scene region fills LCD 0..(kVerbLcdStartY-1).
+constexpr int kFillCropSceneLcdRows = kVerbLcdStartY;                 // 92
+
+// Source-coord → LCD-coord helpers, matching the present() scaling
+// math.  Verb panel rows (src y ≥ 144) ALWAYS use the verb-locked
+// mapping in all three modes — the verb panel is visually fixed to
+// the LCD bottom, only the scene region above varies by mode.
+static inline int src_to_lcd_x(int src_x, int src_y,
+                                ScaleMode mode, int crop_x,
+                                int verb_crop_x) {
+    if (src_y >= kVerbPanelSrcY)
+        return (src_x - verb_crop_x) * DISPLAY_W / VIRTUAL_SCREEN_H;
     if (mode == ScaleMode::Fill)
-        return (src_x - crop_x) * DISPLAY_H / VIRTUAL_SCREEN_H;
+        return (src_x - crop_x) * DISPLAY_W / VIRTUAL_SCREEN_H;
     if (mode == ScaleMode::Crop)
         return src_x - crop_x;
-    return src_x * DISPLAY_W / VIRTUAL_SCREEN_W;
+    return src_x * DISPLAY_W / VIRTUAL_SCREEN_W;            // Fit scene
 }
 static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y) {
+    if (src_y >= kVerbPanelSrcY) {
+        // Verb panel — fixed LCD region in all modes.
+        return kVerbLcdStartY +
+               (src_y - kVerbPanelSrcY) * kVerbLcdRows / kVerbSrcRows;
+    }
     if (mode == ScaleMode::Crop) return src_y - crop_y;
-    const int dst_h = (mode == ScaleMode::Fill) ? DISPLAY_H : 80;
-    const int top   = (DISPLAY_H - dst_h) / 2;
-    return top + src_y * dst_h / VIRTUAL_SCREEN_H;
+    if (mode == ScaleMode::Fill)
+        return src_y * kFillCropSceneLcdRows / kVerbPanelSrcY;
+    return kFitTopLB + src_y * kFitSceneLcdRows / kVerbPanelSrcY;
 }
 
 // Render the cursor sprite onto the LCD framebuffer in pixel space.
@@ -195,7 +229,8 @@ static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y) {
 //   Crop — 1× source (1:1 native).
 static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
                                 const uint8_t *palette,
-                                ScaleMode mode, int crop_x, int crop_y) {
+                                ScaleMode mode, int crop_x, int crop_y,
+                                int verb_crop_x) {
     using namespace tsb::platform_pico;     // for pal_to_565
     if (!c.sprite || c.w <= 0 || c.h <= 0) return;
 
@@ -208,17 +243,10 @@ static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
     if (cw_lcd < 4) cw_lcd = 4;
     if (ch_lcd < 4) ch_lcd = 4;
 
-    // Cursor over the locked verb panel uses the verb-panel mapping
-    // (no crop_x), matching how present() draws verb pixels — otherwise
-    // the cursor visual position drifts off the rendered verbs whenever
-    // the user has panned the main scene.  144 is MI1's verb-panel
-    // start row in source coords.
-    constexpr int kVerbPanelSrcY = 144;
-    const bool over_verb_panel =
-        (mode == ScaleMode::Fill && c.y >= kVerbPanelSrcY);
-    const int anchor_lcd_x = over_verb_panel
-        ? c.x * DISPLAY_W / VIRTUAL_SCREEN_H        // = src_x * 128/200
-        : src_to_lcd_x(c.x, mode, crop_x);
+    // src_to_lcd_x routes verb-panel coords (src y ≥ 144) through the
+    // locked Fill mapping in BOTH Fit and Fill modes, with the verb
+    // pan applied so the cursor tracks the rendered (panned) verbs.
+    const int anchor_lcd_x = src_to_lcd_x(c.x, c.y, mode, crop_x, verb_crop_x);
     const int anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y);
     const int hsx_lcd = c.hotspot_x * cw_lcd / c.w;
     const int hsy_lcd = c.hotspot_y * ch_lcd / c.h;
@@ -365,32 +393,71 @@ void present(const uint8_t *virt, const uint8_t *text,
              const uint8_t *palette,
              ScaleMode mode, int crop_x, int crop_y,
              const CursorInfo *cursor,
-             const TextStamp *text_stamps, int text_stamp_count) {
+             const TextStamp *text_stamps, int text_stamp_count,
+             int verb_crop_x, bool verb_panel_active) {
     using namespace tsb::platform_pico;
     uint16_t *fb = g_fb;
 
     // The previous DMA push must finish before we touch g_fb.
     lcd_wait_idle();
 
-    if (mode == ScaleMode::Fit || mode == ScaleMode::Fill) {
-        const int dst_h = (mode == ScaleMode::Fill) ? DISPLAY_H : 80;
-        const int letterbox_top = (DISPLAY_H - dst_h) / 2;
-        if (letterbox_top > 0) memset(fb, 0, sizeof(g_fb));
+    memset(fb, 0, sizeof(g_fb));
 
-        // Per-dx source X pair (sx, sx2 = sx+1 clamped). FIT maps the
-        // 320 width onto 128 dst pixels (anisotropic). FILL keeps the
-        // vertical scale ratio in X (isotropic, 200→128) and pans
-        // horizontally via crop_x in source-x pixels (range 0..120).
-        //
-        // FILL also computes a SECOND sx[] pair with crop_x=0 — the
-        // verb panel (MI1 source y >= 144) is sampled from this so it
-        // stays locked at the left of the source regardless of how the
-        // user has panned the main scene.  Verbs always visible.
+    // Verb-locked X mapping (used by both inactive Fill verb-row pixels
+    // AND the active-mode separate verb-panel render pass below).
+    const int vcx_max = VIRTUAL_SCREEN_W - (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H);
+    if (verb_crop_x < 0)        verb_crop_x = 0;
+    if (verb_crop_x > vcx_max)  verb_crop_x = vcx_max;
+    uint16_t sxa_v[DISPLAY_W], sxb_v[DISPLAY_W];
+    for (int dx = 0; dx < DISPLAY_W; dx++) {
+        int svx  = verb_crop_x + (dx * VIRTUAL_SCREEN_H) / DISPLAY_H;
+        int svx2 = svx + 1; if (svx2 >= VIRTUAL_SCREEN_W) svx2 = svx;
+        sxa_v[dx] = (uint16_t)svx;
+        sxb_v[dx] = (uint16_t)svx2;
+    }
+
+    auto blit_row_blend = [&](int lcd_row, int sy, int sy2,
+                              const uint16_t *xa, const uint16_t *xb) {
+        const uint8_t *vrow1 = virt + sy  * VIRTUAL_SCREEN_W;
+        const uint8_t *vrow2 = virt + sy2 * VIRTUAL_SCREEN_W;
+        const uint8_t *trow1 = text ? text + sy  * VIRTUAL_SCREEN_W : nullptr;
+        const uint8_t *trow2 = text ? text + sy2 * VIRTUAL_SCREEN_W : nullptr;
+        uint16_t *drow = fb + lcd_row * DISPLAY_W;
+        for (int dx = 0; dx < DISPLAY_W; dx++) {
+            int sx = xa[dx], sx2 = xb[dx];
+            uint8_t s_a = trow1 ? resolve_src(trow1[sx],  vrow1[sx])  : vrow1[sx];
+            uint8_t s_b = trow1 ? resolve_src(trow1[sx2], vrow1[sx2]) : vrow1[sx2];
+            uint8_t s_c = trow2 ? resolve_src(trow2[sx],  vrow2[sx])  : vrow2[sx];
+            uint8_t s_d = trow2 ? resolve_src(trow2[sx2], vrow2[sx2]) : vrow2[sx2];
+            drow[dx] = blend4_565(
+                pal_to_565(palette, s_a),
+                pal_to_565(palette, s_b),
+                pal_to_565(palette, s_c),
+                pal_to_565(palette, s_d));
+        }
+    };
+
+    // ---------- Scene region ----------
+    // verb_panel_active gates the layout split.  ACTIVE: scene shows
+    // only source rows 0..143; verb panel rendered separately below
+    // at LCD 92..127.  INACTIVE (title / cutscene): scene shows the
+    // full 0..199 source so the title image is intact.
+    if (mode == ScaleMode::Fit || mode == ScaleMode::Fill) {
+        int dst_h, letterbox_top, src_y_max;
+        if (verb_panel_active) {
+            src_y_max     = kVerbPanelSrcY;          // 144
+            dst_h         = (mode == ScaleMode::Fit) ? kFitSceneLcdRows
+                                                     : kVerbLcdStartY;
+            letterbox_top = (mode == ScaleMode::Fit) ? kFitTopLB : 0;
+        } else {
+            src_y_max     = VIRTUAL_SCREEN_H;
+            dst_h         = (mode == ScaleMode::Fit) ? 80 : DISPLAY_H;
+            letterbox_top = (DISPLAY_H - dst_h) / 2;
+        }
+
         uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
-        uint16_t sxa_v[DISPLAY_W], sxb_v[DISPLAY_W];
         if (mode == ScaleMode::Fill) {
-            int pan_max = VIRTUAL_SCREEN_W -
-                          (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H);
+            int pan_max = VIRTUAL_SCREEN_W - (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H);
             if (crop_x < 0)        crop_x = 0;
             if (crop_x > pan_max)  crop_x = pan_max;
             for (int dx = 0; dx < DISPLAY_W; dx++) {
@@ -398,12 +465,8 @@ void present(const uint8_t *virt, const uint8_t *text,
                 int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
                 sxa[dx] = (uint16_t)sx;
                 sxb[dx] = (uint16_t)sx2;
-                int svx  = (dx * VIRTUAL_SCREEN_H) / DISPLAY_H;
-                int svx2 = svx + 1; if (svx2 >= VIRTUAL_SCREEN_W) svx2 = svx;
-                sxa_v[dx] = (uint16_t)svx;
-                sxb_v[dx] = (uint16_t)svx2;
             }
-        } else {
+        } else {  // Fit
             for (int dx = 0; dx < DISPLAY_W; dx++) {
                 int sx  = (dx * VIRTUAL_SCREEN_W) / DISPLAY_W;
                 int sx2 = sx + 1; if (sx2 >= VIRTUAL_SCREEN_W) sx2 = sx;
@@ -412,46 +475,32 @@ void present(const uint8_t *virt, const uint8_t *text,
             }
         }
 
-        // MI1 verb panel starts at source y=144.  In Fill mode (dst_h=128
-        // / VIRTUAL_SCREEN_H=200) that's LCD row 144 * 128/200 ≈ 92.
-        // Hardcoded for now; v5 games may differ.
-        constexpr int kVerbPanelSrcY = 144;
-        const bool   has_verb_lock  = (mode == ScaleMode::Fill);
+        // Inactive Fill keeps its old verb-row X-lock (matches title /
+        // cutscene rendering of the bottom 56 source rows).  Active
+        // path renders the verb panel separately, so this only fires
+        // when verb_panel_active==false.
+        const bool fill_verb_lock_inactive =
+            (!verb_panel_active && mode == ScaleMode::Fill);
 
         for (int dy = 0; dy < dst_h; dy++) {
-            int sy  = (dy * VIRTUAL_SCREEN_H) / dst_h;
-            int sy2 = sy + 1; if (sy2 >= VIRTUAL_SCREEN_H) sy2 = sy;
-            const uint8_t *vrow1 = virt + sy  * VIRTUAL_SCREEN_W;
-            const uint8_t *vrow2 = virt + sy2 * VIRTUAL_SCREEN_W;
-            const uint8_t *trow1 = text ? text + sy  * VIRTUAL_SCREEN_W : nullptr;
-            const uint8_t *trow2 = text ? text + sy2 * VIRTUAL_SCREEN_W : nullptr;
-            uint16_t *drow = fb + (dy + letterbox_top) * DISPLAY_W;
-            const bool verb_row = has_verb_lock && (sy >= kVerbPanelSrcY);
+            int sy  = (dy * src_y_max) / dst_h;
+            int sy2 = sy + 1; if (sy2 >= src_y_max) sy2 = sy;
+            const bool verb_row = fill_verb_lock_inactive && (sy >= kVerbPanelSrcY);
             const uint16_t *xa = verb_row ? sxa_v : sxa;
             const uint16_t *xb = verb_row ? sxb_v : sxb;
-            for (int dx = 0; dx < DISPLAY_W; dx++) {
-                int sx = xa[dx], sx2 = xb[dx];
-                // Text composited per source pixel BEFORE the 2x2 box
-                // blend, so glyph edges anti-alias against the
-                // background. Trade-off: 1-pixel strokes soften, but
-                // overall readability improves at 320->128 downsample.
-                uint8_t s_a = trow1 ? resolve_src(trow1[sx],  vrow1[sx])  : vrow1[sx];
-                uint8_t s_b = trow1 ? resolve_src(trow1[sx2], vrow1[sx2]) : vrow1[sx2];
-                uint8_t s_c = trow2 ? resolve_src(trow2[sx],  vrow2[sx])  : vrow2[sx];
-                uint8_t s_d = trow2 ? resolve_src(trow2[sx2], vrow2[sx2]) : vrow2[sx2];
-                uint16_t pa = pal_to_565(palette, s_a);
-                uint16_t pb = pal_to_565(palette, s_b);
-                uint16_t pc = pal_to_565(palette, s_c);
-                uint16_t pd = pal_to_565(palette, s_d);
-                drow[dx] = blend4_565(pa, pb, pc, pd);
-            }
+            blit_row_blend(letterbox_top + dy, sy, sy2, xa, xb);
         }
-    } else { // Crop — 1:1 native, pannable
+    } else { // Crop — 1:1 native, pans freely.
         if (crop_x < 0) crop_x = 0;
         if (crop_y < 0) crop_y = 0;
-        if (crop_x > VIRTUAL_SCREEN_W - DISPLAY_W) crop_x = VIRTUAL_SCREEN_W - DISPLAY_W;
-        if (crop_y > VIRTUAL_SCREEN_H - DISPLAY_H) crop_y = VIRTUAL_SCREEN_H - DISPLAY_H;
-        for (int dy = 0; dy < DISPLAY_H; dy++) {
+        const int crop_x_max = VIRTUAL_SCREEN_W - DISPLAY_W;
+        const int crop_y_max = verb_panel_active
+                             ? (kVerbPanelSrcY - kVerbLcdStartY)   // 144 - 92 = 52
+                             : (VIRTUAL_SCREEN_H - DISPLAY_H);     // 200 - 128 = 72
+        if (crop_x > crop_x_max) crop_x = crop_x_max;
+        if (crop_y > crop_y_max) crop_y = crop_y_max;
+        const int scene_rows = verb_panel_active ? kVerbLcdStartY : DISPLAY_H;
+        for (int dy = 0; dy < scene_rows; dy++) {
             const uint8_t *srow = virt + (crop_y + dy) * VIRTUAL_SCREEN_W + crop_x;
             const uint8_t *trow = text
                 ? text + (crop_y + dy) * VIRTUAL_SCREEN_W + crop_x
@@ -464,13 +513,23 @@ void present(const uint8_t *virt, const uint8_t *text,
         }
     }
 
+    // ---------- Verb panel (only when active) ----------
+    if (verb_panel_active) {
+        for (int dy = 0; dy < kVerbLcdRows; dy++) {
+            int sy  = kVerbPanelSrcY + dy * kVerbSrcRows / kVerbLcdRows;
+            int sy2 = sy + 1; if (sy2 >= VIRTUAL_SCREEN_H) sy2 = sy;
+            blit_row_blend(kVerbLcdStartY + dy, sy, sy2, sxa_v, sxb_v);
+        }
+    }
+
     // THUMBY-PORT — LCD-native glyph stamps painted post-scene-blit,
     // before the cursor so the pointer stays visible on top of text.
     for (int i = 0; i < text_stamp_count; i++) {
         blit_text_stamp(fb, text_stamps[i], palette);
     }
 
-    if (cursor) blit_cursor_overlay(fb, *cursor, palette, mode, crop_x, crop_y);
+    if (cursor) blit_cursor_overlay(fb, *cursor, palette,
+                                     mode, crop_x, crop_y, verb_crop_x);
 
     lcd_present(fb);
 }

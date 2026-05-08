@@ -970,11 +970,12 @@ void ScummEngine_v2::drawSentence() {
 	_string[2].charset = 1;
 	_string[2].ypos = _virtscr[kVerbVirtScreen].topline + pixelYOffset;
 	_string[2].xpos = 0 + pixelXOffset;
-	// THUMBY-PORT: in Fill mode the verb panel is locked to the left
-	// 200 source-px, so centre the sentence line on x=100 (right edge
-	// 199) instead of the canonical 320-wide centre at x=160.  Other
-	// scale modes still benefit — sentence text stays close to the
-	// verbs you'd be reading along with it.
+	// THUMBY-PORT: left-aligned at xpos=0.  The MI1 boot script SO_CENTERs
+	// the sentence text-slot at game start, which would otherwise render
+	// the sentence centred about xpos=0 (= mostly off-screen).  Force
+	// center=false so the sentence pins to the LCD left edge.  right=199
+	// keeps SCUMM's source-side wrap inside the locked verb-panel width.
+	_string[2].center = false;
 	_string[2].right = 199 + pixelXOffset;
 	if (_game.platform == Common::kPlatformNES) {
 		_string[2].xpos = 16;
@@ -1481,14 +1482,18 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 	}
 
 	// THUMBY-PORT — open a fresh line in the LCD text overlay.
-	// Centre point / left edge is _string[a].xpos in source coords;
-	// per-sub-line LCD centring is computed at flush time from the
-	// line's actual LCD-pixel width (not SCUMM's source-pixel width,
-	// which our 1:1 native-text rendering doesn't honour).
+	// Sentence line (slot 2) is forced left-aligned at xpos=0: the MI1
+	// boot script SO_CENTERs slot 2 in the engine state, but we want
+	// it pinned to the LCD's left edge in the verb panel band.  Other
+	// slots use whatever the script set up.
 	if (_thumbyLcdTextMode) {
-		thumby_lcd_text_begin_line(_string[a].center,
-		                            _string[a].xpos,
-		                            _string[a].ypos,
+		bool ov_center = _string[a].center;
+		int  ov_xpos   = _string[a].xpos;
+		if (a == 2) {
+			ov_center = false;
+			ov_xpos   = 0;
+		}
+		thumby_lcd_text_begin_line(ov_center, ov_xpos, _string[a].ypos,
 		                            /*continuation=*/false);
 	}
 
@@ -1505,9 +1510,12 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 				_charset->_top += fontHeight;
 				// THUMBY-PORT — \n: stack the next LCD sub-line
 				// directly under the prior one, same centring policy.
+				// Slot 2 overrides match the drawString-entry overrides.
 				if (_thumbyLcdTextMode) {
-					thumby_lcd_text_begin_line(_string[a].center,
-					                            _string[a].xpos,
+					bool ov_center = _string[a].center;
+					int  ov_xpos   = _string[a].xpos;
+					if (a == 2) { ov_center = false; ov_xpos = 0; }
+					thumby_lcd_text_begin_line(ov_center, ov_xpos,
 					                            _string[a].ypos,
 					                            /*continuation=*/true);
 				}
@@ -1538,11 +1546,12 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 				} else {
 					_charset->_top += fontHeight;
 				}
-				// THUMBY-PORT — \n: stack the next LCD sub-line
-				// directly under the prior one, same centring policy.
+				// THUMBY-PORT — same slot-2 override as the start.
 				if (_thumbyLcdTextMode) {
-					thumby_lcd_text_begin_line(_string[a].center,
-					                            _string[a].xpos,
+					bool ov_center = _string[a].center;
+					int  ov_xpos   = _string[a].xpos;
+					if (a == 2) { ov_center = false; ov_xpos = 0; }
+					thumby_lcd_text_begin_line(ov_center, ov_xpos,
 					                            _string[a].ypos,
 					                            /*continuation=*/true);
 				}

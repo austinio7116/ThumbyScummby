@@ -510,6 +510,7 @@ extern const char *const insaneKeymapId;
  * Base class for all SCUMM engines.
  */
 class ScummEngine : public Engine, public Common::Serializable {
+	friend void thumby_set_complete_redraw_inner();   // THUMBY-PORT
 	friend class ScummDebugger;
 	friend class CharsetRenderer;
 	friend class CharsetRendererClassic;

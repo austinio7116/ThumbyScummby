@@ -121,10 +121,37 @@
 
 using Common::File;
 
+// THUMBY-PORT: bridges defined in osystem_thumby.cpp.
+extern "C" void thumby_set_verb_panel_active(bool active);
+
 namespace Scumm {
 
 // Use g_scumm from error() ONLY
 ScummEngine *g_scumm = nullptr;
+
+}  // namespace Scumm
+
+// THUMBY-PORT: bridge for OSystem_Thumby to nudge the engine into a
+// full screen + verb-panel re-draw on scale-mode change.  Without this,
+// after the LCD-text overlay clears its stamps, the verb panel goes
+// blank until the cursor hovers a new verb (which fires drawVerb on
+// hover-state change).  extern "C" so OSystem can call it without
+// dragging the Scumm namespace in.
+// Friend access to ScummEngine's protected _completeScreenRedraw via
+// a small in-namespace shim (declared friend in scumm.h), then exposed
+// as extern "C" outside the namespace for OSystem to call.
+namespace Scumm {
+void thumby_set_complete_redraw_inner() {
+    if (g_scumm) {
+        g_scumm->_completeScreenRedraw = true;
+    }
+}
+}
+extern "C" void thumby_force_complete_redraw() {
+    Scumm::thumby_set_complete_redraw_inner();
+}
+
+namespace Scumm {
 
 
 struct dbgChannelDesc {
@@ -3017,6 +3044,14 @@ void ScummEngine_v0::scummLoop(int delta) {
 
 void ScummEngine::scummLoop(int delta) {
 	#define LOOP_CKPT(label, color) ((void)0)
+	// THUMBY-PORT: tell the platform whether a verb panel is rendering
+	// this frame, so present() can split the LCD layout (verb panel
+	// pinned at LCD bottom) in gameplay but render the full source for
+	// title / cutscene screens where rows 144..199 are scene image.
+	{
+		// Declared at file scope below the namespace.
+		thumby_set_verb_panel_active(_currentRoom != 0 && _userPut > 0);
+	}
 	// Notify the script about how much time has passed, in jiffies
 	if (VAR_TIMER != 0xFF)
 		VAR(VAR_TIMER) = delta;

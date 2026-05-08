@@ -14,6 +14,30 @@
 
 namespace tsb {
 
+// THUMBY-PORT bridge — defined in scumm.cpp, sets ScummEngine's
+// _completeScreenRedraw so the engine fully re-renders on its next
+// scummLoop tick after a scale-mode cycle.
+extern "C" void thumby_force_complete_redraw();
+
+// THUMBY-PORT bridge — engine calls this every scummLoop tick to tell
+// us whether the verb panel is currently rendered (gameplay) or not
+// (title / cutscene).  When the flag flips state, clear stale stamps
+// (placed at the OLD sceneToLcd mapping) and force a full redraw so
+// verbs come back at the new mapping on the next tick — without this,
+// the very first verb-panel paint of a session lands at the small
+// scene-mapped LCD position because scummLoop hadn't run yet.
+extern "C" void thumby_set_verb_panel_active(bool active) {
+    if (!g_system) return;
+    auto *t = static_cast<tsb::OSystem_Thumby *>(g_system);
+    const bool was_active = t->verbPanelActive();
+    t->setVerbPanelActive(active);
+    if (active != was_active) {
+        t->clearLcdTextOverlay();
+        t->setVerbCrop(0);
+        thumby_force_complete_redraw();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Minimal Common::MutexInternal — single-threaded engine, so a no-op is fine.
 // ---------------------------------------------------------------------------
@@ -180,7 +204,8 @@ void OSystem_Thumby::updateScreen() {
     flushLcdLine();
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,
-                      _lcdStamps, _lcdStampCount);
+                      _lcdStamps, _lcdStampCount, _verbCropX,
+                      _verbPanelActive);
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM
@@ -224,6 +249,13 @@ void OSystem_Thumby::cycleScaleMode() {
         _cropY = 0;
         break;
     }
+    // Drop any stale LCD-text stamps left over from the previous mode
+    // and nudge the engine into a full redraw so verbs / sentence /
+    // banners re-render at the new LCD positions on the next tick.
+    // Reset the verb pan too so the new mode opens un-scrolled.
+    clearLcdTextOverlay();
+    _verbCropX = 0;
+    thumby_force_complete_redraw();
 }
 
 // Capture the 8bpp cursor sprite scummvm v4 cursor.cpp uploads via
@@ -352,26 +384,44 @@ void OSystem_Thumby::logMessage(LogMessageType::Type /*type*/,
 // Source coord → LCD coord with the active scale mode + crop offsets.
 // Pure mirror of the math used by platform::present() so glyph positions
 // land exactly where the scene blit puts the corresponding source pixel.
-int OSystem_Thumby::sceneToLcdX(int src_x) const {
+int OSystem_Thumby::sceneToLcdX(int src_x, int src_y) const {
+    // When a verb panel is active, src y ≥ 144 maps to the locked
+    // verb-panel mapping (LCD-overlay glyph lands on the LCD-bottom
+    // verb panel band).  When inactive (title / cutscene), source rows
+    // 144..199 are scene continuation — fall through to the per-mode
+    // scene mapping so any LCD-overlay text positions there land on
+    // top of the rendered title image.
+    if (src_y >= 144 && _verbPanelActive) {
+        return (src_x - _verbCropX) * 128 / 200;
+    }
     switch (_scaleMode) {
     case platform::ScaleMode::Fill:
         return (src_x - _cropX) * 128 / 200;
     case platform::ScaleMode::Crop:
         return src_x - _cropX;
-    default:                         // Fit
+    default:                         // Fit scene
         return src_x * 128 / 320;
     }
 }
 int OSystem_Thumby::sceneToLcdY(int src_y) const {
+    // When verb panel is active, src y ≥ 144 maps to the fixed LCD
+    // verb-panel band (rows 92..127).  Otherwise (title, cutscene),
+    // those rows are scene continuation and use the full per-mode
+    // scene mapping.
+    if (src_y >= 144 && _verbPanelActive) {
+        return 92 + (src_y - 144) * 36 / 56;
+    }
     switch (_scaleMode) {
     case platform::ScaleMode::Fill:
-        return src_y * 128 / 200;
+        return _verbPanelActive
+                ? (src_y * 92 / 144)              // scene-only fills LCD 0..91
+                : (src_y * 128 / 200);            // full source 0..199 → LCD 0..127
     case platform::ScaleMode::Crop:
         return src_y - _cropY;
-    default: {                       // Fit, with 24-px letterbox top
-        constexpr int kTopBar = (128 - 80) / 2;
-        return kTopBar + src_y * 80 / 200;
-    }
+    default:                                       // Fit
+        return _verbPanelActive
+                ? (24 + src_y * 58 / 144)         // 24 + scene 0.4× of 144 src
+                : (24 + src_y * 80 / 200);        // 24 + full 0.4× of 200 src
     }
 }
 
@@ -399,11 +449,13 @@ int OSystem_Thumby::computeLineBudget() const {
 
 // Append a stamp to the global list at (dst_x, dst_y) in LCD coords.
 // `width`/`height` carry the SOURCE-px bitmap dimensions so the platform
-// stamp loop can drive its 2×2 downsample to LCD-px.  Drops silently
-// when the list is full.
+// stamp loop can drive its downsample to LCD-px.  Tag = the source
+// (xpos, ypos) of the drawString that emitted this stamp; used by
+// dropStampsByTag for idempotent re-draws.  Drops silently when the
+// list is full.
 void OSystem_Thumby::emitStamp(const LcdGlyph &g, int dst_x, int dst_y) {
     if (_lcdStampCount >= kLcdStampMax) return;
-    platform::TextStamp &s = _lcdStamps[_lcdStampCount++];
+    platform::TextStamp &s = _lcdStamps[_lcdStampCount];
     s.charPtr = g.charPtr;
     s.dst_x   = (int16_t)dst_x;
     s.dst_y   = (int16_t)dst_y;
@@ -415,6 +467,28 @@ void OSystem_Thumby::emitStamp(const LcdGlyph &g, int dst_x, int dst_y) {
     s.cmap[1] = g.cmap[1];
     s.cmap[2] = g.cmap[2];
     s.cmap[3] = g.cmap[3];
+    _lcdStampTags[_lcdStampCount].x = (int16_t)_lcdLineXHint;
+    _lcdStampTags[_lcdStampCount].y = (int16_t)_lcdLineSrcY;
+    _lcdStampCount++;
+}
+
+// Compact the stamp list, dropping every entry tagged with this exact
+// (xpos, ypos).  Called on a fresh beginLcdLine — replaces any prior
+// drawString's stamps at the same source rect.
+void OSystem_Thumby::dropStampsByTag(int tagX, int tagY) {
+    int new_count = 0;
+    for (int i = 0; i < _lcdStampCount; i++) {
+        if (_lcdStampTags[i].x == (int16_t)tagX &&
+            _lcdStampTags[i].y == (int16_t)tagY) {
+            continue;
+        }
+        if (new_count != i) {
+            _lcdStamps[new_count]     = _lcdStamps[i];
+            _lcdStampTags[new_count]  = _lcdStampTags[i];
+        }
+        new_count++;
+    }
+    _lcdStampCount = new_count;
 }
 
 // Compute LCD x at which this line should start, then emit a stamp for
@@ -429,14 +503,24 @@ void OSystem_Thumby::flushLcdLine() {
     if (_lcdLineCount == 0) return;
     int natural_origin;
     if (_lcdLineCenter) {
-        natural_origin = sceneToLcdX(_lcdLineXHint) - _lcdLineWidth / 2;
+        // Anchor on the SCUMM source position — actor talk follows the
+        // actor, sentence/banner text follows its xpos.  When the line
+        // would go off either edge (long line + actor at extreme),
+        // re-centre on the LCD instead of edge-clamping; that avoids
+        // the "always right-justified" effect when an actor is near
+        // the right of frame and the line is wider than the space
+        // between actor-LCD-x and the LCD right edge.
+        natural_origin = sceneToLcdX(_lcdLineXHint, _lcdLineSrcY)
+                        - _lcdLineWidth / 2;
     } else {
-        natural_origin = sceneToLcdX(_lcdLineXHint);
+        natural_origin = sceneToLcdX(_lcdLineXHint, _lcdLineSrcY);
     }
-    // Edge-clamp: line shifts inward to stay on screen.  Width fits
-    // because soft-wrap caps at kLcdOverlayW; if it somehow doesn't,
-    // origin pins to 0 and the right side clips per-pixel in stamp.
     int origin_x = natural_origin;
+    if (_lcdLineCenter &&
+        (origin_x < 0 || origin_x + _lcdLineWidth > kLcdOverlayW)) {
+        origin_x = (kLcdOverlayW - _lcdLineWidth) / 2;
+    }
+    // Final safety clamp (covers non-centred overflows + any residual).
     if (origin_x + _lcdLineWidth > kLcdOverlayW)
         origin_x = kLcdOverlayW - _lcdLineWidth;
     if (origin_x < 0) origin_x = 0;
@@ -459,8 +543,14 @@ void OSystem_Thumby::flushLcdLine() {
 void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
                                    bool continuation) {
     flushLcdLine();
+    if (!continuation) {
+        // New string at this rect — drop the prior drawString's stamps
+        // here so the redraw replaces rather than overlays them.
+        dropStampsByTag(scumm_xpos, scumm_ypos);
+    }
     _lcdLineCenter = center;
     _lcdLineXHint  = scumm_xpos;
+    _lcdLineSrcY   = scumm_ypos;
     if (!continuation || !_lcdLineActive) {
         _lcdLineY = sceneToLcdY(scumm_ypos);
         _lcdLineActive = true;
@@ -598,6 +688,13 @@ void thumby_flush_lcd_text_line() {
 void thumby_clear_lcd_text_overlay() {
     if (!g_system) return;
     static_cast<OSystem_Thumby *>(g_system)->clearLcdTextOverlay();
+    // Engine-triggered clearTextSurface (talk start/end, scene change,
+    // save/load) drops every stamp including the verb panel — original
+    // SCUMM survives this because verbs render into _staging, not into
+    // _textSurface.  Force a complete redraw so the engine re-emits
+    // the verb panel on its next scummLoop tick instead of leaving the
+    // panel blank until the user mouseovers each verb.
+    thumby_force_complete_redraw();
 }
 
 // Charset hook queries this to decide whether to route glyphs through

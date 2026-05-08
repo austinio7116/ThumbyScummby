@@ -150,6 +150,20 @@ public:
     void setCrop(int x, int y) { _cropX = x; _cropY = y; }
     int  cropX() const { return _cropX; }
     int  cropY() const { return _cropY; }
+    // Verb-panel horizontal pan (0..120 source-px, independent of the
+    // scene crop_x).  Lets the user read / click dialog options that
+    // span source-x 200..319 in Fit and Fill modes — without it, the
+    // verb panel rendering is locked at sx 0..199 visible.
+    void setVerbCrop(int x)    { _verbCropX = x; }
+    int  verbCropX() const     { return _verbCropX; }
+    // True when the engine is currently rendering a verb panel (gameplay
+    // in a room).  Engine sets via thumby_set_verb_panel_active() from
+    // scummLoop.  When false (title screen, cutscene, inventory dialog
+    // overlays), present() falls back to full-source rendering so source
+    // rows 144..199 — which on those screens hold scene continuation,
+    // not a verb panel — display correctly.
+    void setVerbPanelActive(bool a) { _verbPanelActive = a; }
+    bool verbPanelActive() const     { return _verbPanelActive; }
 
     // Device input synchronisation: updateScreen() flips _frameDone=true so
     // the device event poller knows a fresh button sample is needed before
@@ -174,6 +188,8 @@ private:
     platform::ScaleMode _scaleMode = platform::ScaleMode::Fit;
     int  _cropX = 0;
     int  _cropY = 0;
+    int  _verbCropX = 0;
+    bool _verbPanelActive = false;
     bool _frameDone = false;
 
     // ---------------------------------------------------------------
@@ -231,13 +247,22 @@ private:
     int  _lcdLineLastBreakWidth = 0;
     bool _lcdLineCenter     = false;
     int  _lcdLineXHint      = 160;  // SCUMM source X (centre or left edge)
+    int  _lcdLineSrcY       = 0;    // SCUMM source Y (decides scene vs verb X mapping)
     int  _lcdLineY          = 0;    // LCD Y where this line will stamp
     bool _lcdLineActive     = false;
 
     // Stamped glyphs — final LCD positions, rendered by platform::present.
+    // Each stamp carries a tag = the SCUMM (xpos, ypos) of its source
+    // drawString call.  beginLcdLine(continuation=false) drops stamps
+    // matching the new tag before appending fresh ones — that's how we
+    // get _textSurface-style idempotency for repeated draws (e.g.
+    // redrawVerbs runs every tick; without dedup the same glyph
+    // accumulates and saturates to solid foreground colour).
+    struct LcdStampTag { int16_t x; int16_t y; };
     static constexpr int kLcdStampMax = 192;
     platform::TextStamp _lcdStamps[kLcdStampMax];
-    int                  _lcdStampCount = 0;
+    LcdStampTag         _lcdStampTags[kLcdStampMax];
+    int                 _lcdStampCount = 0;
 
 public:
     // Begin a fresh logical line.  `continuation == false` means new
@@ -257,10 +282,11 @@ public:
     int                         lcdStampCount() const { return _lcdStampCount; }
 
 private:
-    int sceneToLcdX(int src_x) const;
+    int sceneToLcdX(int src_x, int src_y) const;
     int sceneToLcdY(int src_y) const;
     int  computeLineBudget() const;
     void emitStamp(const LcdGlyph &g, int dst_x, int dst_y);
+    void dropStampsByTag(int tagX, int tagY);
 };
 
 }  // namespace tsb

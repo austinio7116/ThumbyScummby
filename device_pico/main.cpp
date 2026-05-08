@@ -192,51 +192,79 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         g_in.curX = nx;
         g_in.curY = ny;
 
-        // Verb-panel boundary crossing in Fill mode: the verb panel is
-        // rendered without crop_x (locked), but the rest of the scene
-        // pans with crop_x.  Without an adjustment, the cursor visual
-        // position would jump LCD pixels when the user moves into or
-        // out of the verb area.  Shift cursor source-x by ±crop_x so
-        // the visual position stays continuous and the engine receives
-        // the correct source-x for verb hit-testing.
-        if (sm == tsb::platform::ScaleMode::Fill) {
-            constexpr int kVerbPanelSrcY = 144;
-            const bool was_in_verb = (prevY     >= kVerbPanelSrcY);
-            const bool now_in_verb = (g_in.curY >= kVerbPanelSrcY);
-            if (was_in_verb != now_in_verb) {
-                const int cx_now = osys.cropX();
-                if (now_in_verb) g_in.curX -= cx_now;   // entering: drop crop offset
-                else             g_in.curX += cx_now;   // leaving:  re-acquire it
-                if (g_in.curX < 0)   g_in.curX = 0;
-                if (g_in.curX > 319) g_in.curX = 319;
+        // Verb-panel boundary crossing — verb_crop_x is pinned at 0
+        // (no marquee-style verb pan for now; that's deferred so the
+        // verbs render at stable LCD positions every frame).  On
+        // boundary crossing, translate cursor source-x so its visible
+        // LCD position stays continuous between scene mapping and
+        // verb-locked mapping.
+        constexpr int kVerbPanelSrcY = 144;
+        const bool was_in_verb = (prevY     >= kVerbPanelSrcY);
+        const bool now_in_verb = (g_in.curY >= kVerbPanelSrcY);
+        if (was_in_verb != now_in_verb) {
+            int visual_lcd_x;
+            const int cx_now = osys.cropX();
+            switch (sm) {
+            case tsb::platform::ScaleMode::Fit:
+                visual_lcd_x = g_in.curX * 128 / 320;
+                break;
+            case tsb::platform::ScaleMode::Fill:
+                visual_lcd_x = (g_in.curX - cx_now) * 128 / 200;
+                break;
+            default:  // Crop
+                visual_lcd_x = g_in.curX - cx_now;
+                break;
             }
+            if (now_in_verb) {
+                // visual_lcd_x = sx * 128/200  →  sx = visual_lcd_x * 200/128
+                g_in.curX = (visual_lcd_x * 200) / 128;
+            } else {
+                // Leaving: visual_lcd_x = sx * 128/200; map to scene sx.
+                const int verb_lcd_x = (g_in.curX * 128) / 200;
+                switch (sm) {
+                case tsb::platform::ScaleMode::Fit:
+                    g_in.curX = (verb_lcd_x * 320) / 128;
+                    break;
+                case tsb::platform::ScaleMode::Fill:
+                    g_in.curX = (verb_lcd_x * 200) / 128 + cx_now;
+                    break;
+                default:  // Crop
+                    g_in.curX = verb_lcd_x + cx_now;
+                    break;
+                }
+            }
+            if (g_in.curX < 0)   g_in.curX = 0;
+            if (g_in.curX > 319) g_in.curX = 319;
+            osys.setVerbCrop(0);
         }
 
-        // Visible region in source-coord pixels per scale mode.  Fit
-        // shows everything → no pan.  Fill shows 200 source-x of 320
-        // (Y always full).  Crop shows 128×128 native of 320×200.
-        int vis_w = 320, vis_h = 200;
-        if (sm == tsb::platform::ScaleMode::Fill) {
-            vis_w = 128 * 200 / 128;       // = 200
-            vis_h = 200;
-        } else if (sm == tsb::platform::ScaleMode::Crop) {
-            vis_w = 128;
-            vis_h = 128;
+        if (now_in_verb) {
+            // Verb-area: keep verb_crop_x at 0 (no pan).
+            osys.setVerbCrop(0);
+        } else {
+            // Cursor in scene area — slide scene crop to keep it visible.
+            // The full 320×200 source is rendered per mode (no separate
+            // scene/verb LCD split), so scene Y ranges over 0..199.
+            int vis_w = 320, vis_h = 200;
+            if (sm == tsb::platform::ScaleMode::Fill) {
+                vis_w = 200;
+                vis_h = 200;
+            } else if (sm == tsb::platform::ScaleMode::Crop) {
+                vis_w = 128;
+                vis_h = 128;
+            }
+            int cx = osys.cropX();
+            int cy = osys.cropY();
+            if (g_in.curX < cx)              cx = g_in.curX;
+            if (g_in.curX > cx + vis_w - 1)  cx = g_in.curX - vis_w + 1;
+            if (g_in.curY < cy)              cy = g_in.curY;
+            if (g_in.curY > cy + vis_h - 1)  cy = g_in.curY - vis_h + 1;
+            if (cx < 0)             cx = 0;
+            if (cy < 0)             cy = 0;
+            if (cx > 320 - vis_w)   cx = 320 - vis_w;
+            if (cy > 200 - vis_h)   cy = 200 - vis_h;
+            osys.setCrop(cx, cy);
         }
-
-        int cx = osys.cropX();
-        int cy = osys.cropY();
-        // Slide the crop window so the cursor stays inside it.
-        if (g_in.curX < cx)              cx = g_in.curX;
-        if (g_in.curX > cx + vis_w - 1)  cx = g_in.curX - vis_w + 1;
-        if (g_in.curY < cy)              cy = g_in.curY;
-        if (g_in.curY > cy + vis_h - 1)  cy = g_in.curY - vis_h + 1;
-        // Clamp crop to source bounds.
-        if (cx < 0)             cx = 0;
-        if (cy < 0)             cy = 0;
-        if (cx > 320 - vis_w)   cx = 320 - vis_w;
-        if (cy > 200 - vis_h)   cy = 200 - vis_h;
-        osys.setCrop(cx, cy);
 
         emit_mousemove();
     }

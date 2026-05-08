@@ -1240,24 +1240,28 @@ void CharsetRendererClassic::printCharIntern(bool is2byte, const byte *charPtr, 
 	// driven by the per-line buffer in OSystem_Thumby — beginLcdLine()
 	// is called from drawString / CHARSET_1 / newLine() to set origin
 	// and centring; this hook just appends a glyph descriptor.
-	// Three reasons to fall back to SCUMM's scene path (skip LCD overlay):
-	//   - Verb panel: layout is positioned in source-px assuming
-	//     source-scale rendering; LCD-overlay glyphs are too big and
-	//     pile on each other.
-	//   - Crop mode: scene is 1:1 (source-px == LCD-px), so the
-	//     standard scaled rendering already produces readable text
-	//     without our 75% LCD downsample.
-	//   - 2-byte chars: never use the LCD path (CJK font handling is
-	//     done by the original code).
-	if (!is2byte && _vm->_thumbyLcdTextMode &&
-	    vs->number != kVerbVirtScreen &&
-	    thumby_lcd_text_path_active()) {
-		thumby_render_glyph_to_lcd_overlay(
-			charPtr, *_fontPtr,
-			origWidth, origHeight,
-			_offsY, s_thumby_lcd_chr,
-			_vm->_charsetColorMap);
-		return;
+	// Routing rules for LCD-overlay path:
+	//   - Verb panel (kVerbVirtScreen): ALWAYS overlay.  The verb panel
+	//     is pinned to the LCD bottom in every mode at the same scale,
+	//     so its text needs to render at LCD-overlay 75% in Crop too —
+	//     otherwise it'd be invisibly small (scene-path verb pixels are
+	//     drawn at 0.64× by present()'s verb-panel pass, but the text
+	//     ITSELF would only land at 1:1 source-px in Crop without going
+	//     through the overlay).
+	//   - Scene text: overlay in Fit/Fill, scene path in Crop (Crop is
+	//     1:1 source ↔ LCD already, so native rendering is readable).
+	//   - 2-byte chars: never overlay (CJK uses original code).
+	if (!is2byte && _vm->_thumbyLcdTextMode) {
+		const bool route_to_overlay =
+		    (vs->number == kVerbVirtScreen) || thumby_lcd_text_path_active();
+		if (route_to_overlay) {
+			thumby_render_glyph_to_lcd_overlay(
+				charPtr, *_fontPtr,
+				origWidth, origHeight,
+				_offsY, s_thumby_lcd_chr,
+				_vm->_charsetColorMap);
+			return;
+		}
 	}
 
 	byte *dstPtr = nullptr;

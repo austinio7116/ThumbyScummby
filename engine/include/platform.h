@@ -101,7 +101,9 @@ void present(const uint8_t *virt, const uint8_t *text,
              ScaleMode mode, int crop_x, int crop_y,
              const CursorInfo *cursor = nullptr,
              const TextStamp *text_stamps = nullptr,
-             int text_stamp_count = 0);
+             int text_stamp_count = 0,
+             int verb_crop_x = 0,
+             bool verb_panel_active = false);
 
 // ---------------------------------------------------------------------------
 // Input
