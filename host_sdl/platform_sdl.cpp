@@ -296,7 +296,14 @@ static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
     if (cw_lcd < 4) cw_lcd = 4;
     if (ch_lcd < 4) ch_lcd = 4;
 
-    const int anchor_lcd_x = src_to_lcd_x(c.x, mode, crop_x);
+    // Cursor over the locked verb panel uses the verb-panel mapping
+    // (no crop_x), matching how present() draws verb pixels.
+    constexpr int kVerbPanelSrcY = 144;
+    const bool over_verb_panel =
+        (mode == ScaleMode::Fill && c.y >= kVerbPanelSrcY);
+    const int anchor_lcd_x = over_verb_panel
+        ? c.x * DISPLAY_W / VIRTUAL_SCREEN_H
+        : src_to_lcd_x(c.x, mode, crop_x);
     const int anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y);
     const int hsx_lcd = c.hotspot_x * cw_lcd / c.w;
     const int hsy_lcd = c.hotspot_y * ch_lcd / c.h;
@@ -333,10 +340,124 @@ static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
     }
 }
 
+// THUMBY-PORT — paint a glyph stamp at 75% source size (3:4) with an
+// area-weighted blend against the existing framebuffer pixel.  Each
+// LCD output pixel covers a 4/3 × 4/3 block of source-px (16 q-units
+// in the denominator-3 fixed-point grid).  Per LCD pixel: 1–2 source
+// pixels in each axis, weighted by overlap area (sum-of-weights = 16),
+// summed in RGB565 component space and recomposed.
+//
+// First decode the bit-packed glyph into a small palette-index scratch,
+// then walk LCD output pixels and integrate the source samples beneath
+// each.  Foreground pixels resolve via cmap → palette → RGB565;
+// background (color 0) defers to the current framebuffer pixel.
+static inline void blit_text_stamp(uint16_t *fb,
+                                   const TextStamp &s,
+                                   const uint8_t *palette) {
+    using namespace tsb::platform_sdl;       // for pal_to_565
+    if (!s.charPtr) return;
+    if (s.width == 0 || s.height == 0) return;
+    if (s.width > 32 || s.height > 32) return;
+
+    uint8_t glyph[32 * 32];
+    {
+        const uint8_t *src = s.charPtr;
+        uint8_t bits = *src++;
+        int     numbits = 8;
+        const int bpp = s.bpp;
+        for (int y = 0; y < s.height; y++) {
+            for (int x = 0; x < s.width; x++) {
+                glyph[y * 32 + x] = (uint8_t)((bits >> (8 - bpp)) & 0xFF);
+                bits <<= bpp;
+                numbits -= bpp;
+                if (numbits == 0) {
+                    bits = *src++;
+                    numbits = 8;
+                }
+            }
+        }
+    }
+
+    constexpr int kNum = 3, kDen = 4;            // 75% scale
+    const int dst_w = (s.width  * kNum + kDen - 1) / kDen;
+    const int dst_h = (s.height * kNum + kDen - 1) / kDen;
+    // Each LCD pixel covers kDen×kDen = 16 weighted units in the q-grid.
+    constexpr int kWeightTotal = kDen * kDen;
+
+    for (int dy = 0; dy < dst_h; dy++) {
+        const int fb_y = s.dst_y + dy;
+        if (fb_y < 0 || fb_y >= DISPLAY_H) continue;
+        // Source y-range covered by this LCD row (q-units, denominator kNum).
+        const int sy_lo_q = dy * kDen;
+        const int sy_hi_q = sy_lo_q + kDen;
+        const int sy_first =  sy_lo_q / kNum;
+        const int sy_last  = (sy_hi_q - 1) / kNum;
+
+        for (int dx = 0; dx < dst_w; dx++) {
+            const int fb_x = s.dst_x + dx;
+            if (fb_x < 0 || fb_x >= DISPLAY_W) continue;
+            const int sx_lo_q = dx * kDen;
+            const int sx_hi_q = sx_lo_q + kDen;
+            const int sx_first =  sx_lo_q / kNum;
+            const int sx_last  = (sx_hi_q - 1) / kNum;
+
+            // Quick check: are ALL covered source pixels transparent?
+            // If yes, skip the FB write entirely.
+            bool any_ink = false;
+            for (int sy = sy_first; sy <= sy_last && !any_ink; sy++) {
+                if (sy >= s.height) break;
+                for (int sx = sx_first; sx <= sx_last; sx++) {
+                    if (sx >= s.width) break;
+                    if (glyph[sy * 32 + sx]) { any_ink = true; break; }
+                }
+            }
+            if (!any_ink) continue;
+
+            const uint16_t bg = fb[fb_y * DISPLAY_W + fb_x];
+            const int bg_r = (bg >> 11) & 0x1F;
+            const int bg_g = (bg >> 5)  & 0x3F;
+            const int bg_b =  bg        & 0x1F;
+            int sum_r = 0, sum_g = 0, sum_b = 0;
+
+            for (int sy = sy_first; sy <= sy_last; sy++) {
+                if (sy >= s.height) break;
+                const int wy = (sy_hi_q < (sy + 1) * kNum ? sy_hi_q : (sy + 1) * kNum)
+                             - (sy_lo_q > (sy)     * kNum ? sy_lo_q : (sy)     * kNum);
+                for (int sx = sx_first; sx <= sx_last; sx++) {
+                    if (sx >= s.width) break;
+                    const int wx = (sx_hi_q < (sx + 1) * kNum ? sx_hi_q : (sx + 1) * kNum)
+                                 - (sx_lo_q > (sx)     * kNum ? sx_lo_q : (sx)     * kNum);
+                    const int w = wx * wy;
+                    const uint8_t c = glyph[sy * 32 + sx];
+                    int r, g, b;
+                    if (c) {
+                        const int idx = (c < 4) ? s.cmap[c] : 0;
+                        const uint16_t fg = pal_to_565(palette, idx);
+                        r = (fg >> 11) & 0x1F;
+                        g = (fg >> 5)  & 0x3F;
+                        b =  fg        & 0x1F;
+                    } else {
+                        r = bg_r; g = bg_g; b = bg_b;
+                    }
+                    sum_r += r * w;
+                    sum_g += g * w;
+                    sum_b += b * w;
+                }
+            }
+            const int out_r = sum_r / kWeightTotal;
+            const int out_g = sum_g / kWeightTotal;
+            const int out_b = sum_b / kWeightTotal;
+            fb[fb_y * DISPLAY_W + fb_x] =
+                (uint16_t)((out_r << 11) | (out_g << 5) | out_b);
+        }
+    }
+}
+
 void present(const uint8_t *virt, const uint8_t *text,
              const uint8_t *palette,
              ScaleMode mode, int crop_x, int crop_y,
-             const CursorInfo *cursor) {
+             const CursorInfo *cursor,
+             const TextStamp *text_stamps, int text_stamp_count) {
     using namespace tsb::platform_sdl;
     uint16_t *fb = g.framebuffer;
 
@@ -433,6 +554,11 @@ void present(const uint8_t *virt, const uint8_t *text,
                                       (t != 0xFD) ? t : srow[dx]);
             }
         }
+    }
+
+    // THUMBY-PORT — LCD-native glyph stamps painted post-scene-blit.
+    for (int i = 0; i < text_stamp_count; i++) {
+        blit_text_stamp(fb, text_stamps[i], palette);
     }
 
     if (cursor) blit_cursor_overlay(fb, *cursor, palette, mode, crop_x, crop_y);

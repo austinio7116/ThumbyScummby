@@ -29,7 +29,13 @@
 
 namespace Scumm {
 
-
+// THUMBY-PORT — bridges to OSystem_Thumby's per-line LCD-text buffer.
+// drawString / CHARSET_1 / newLine call begin_line at logical-line
+// boundaries (string start + every \n) so the overlay knows when to
+// flush the prior line and where to anchor the next one.  See
+// osystem_thumby.cpp for the layout strategy.
+extern void thumby_lcd_text_begin_line(bool center, int scumm_xpos,
+                                        int scumm_ypos, bool continuation);
 
 #pragma mark -
 #pragma mark --- "High level" message code ---
@@ -651,6 +657,15 @@ bool ScummEngine::newLine() {
 		_charset->_disableOffsX = true;
 	}
 
+	// THUMBY-PORT — actor talk wrapped to a new line: stack the LCD
+	// sub-line below the prior, same centring policy.
+	if (_thumbyLcdTextMode) {
+		thumby_lcd_text_begin_line(_string[0].center,
+		                            _string[0].xpos,
+		                            _string[0].ypos,
+		                            /*continuation=*/true);
+	}
+
 	return true;
 }
 
@@ -1185,6 +1200,15 @@ void ScummEngine::displayDialog() {
 
 	_charset->_disableOffsX = _charset->_firstChar = !_keepText;
 
+	// THUMBY-PORT — when starting a fresh actor line (not "keep text"
+	// repeat redraw), open a new line in the LCD text overlay.
+	if (_thumbyLcdTextMode && _charset->_firstChar) {
+		thumby_lcd_text_begin_line(_string[0].center,
+		                            _string[0].xpos,
+		                            _string[0].ypos,
+		                            /*continuation=*/false);
+	}
+
 	int c = 0;
 
 	if (_isRTL)
@@ -1456,6 +1480,18 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 		}
 	}
 
+	// THUMBY-PORT — open a fresh line in the LCD text overlay.
+	// Centre point / left edge is _string[a].xpos in source coords;
+	// per-sub-line LCD centring is computed at flush time from the
+	// line's actual LCD-pixel width (not SCUMM's source-pixel width,
+	// which our 1:1 native-text rendering doesn't honour).
+	if (_thumbyLcdTextMode) {
+		thumby_lcd_text_begin_line(_string[a].center,
+		                            _string[a].xpos,
+		                            _string[a].ypos,
+		                            /*continuation=*/false);
+	}
+
 	for (i = 0; (c = buf[i++]) != 0;) {
 		if (_game.heversion >= 72 && c == code) {
 			c = buf[i++];
@@ -1467,6 +1503,14 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 					_charset->_left = _charset->_startLeft;
 				}
 				_charset->_top += fontHeight;
+				// THUMBY-PORT — \n: stack the next LCD sub-line
+				// directly under the prior one, same centring policy.
+				if (_thumbyLcdTextMode) {
+					thumby_lcd_text_begin_line(_string[a].center,
+					                            _string[a].xpos,
+					                            _string[a].ypos,
+					                            /*continuation=*/true);
+				}
 				break;
 			default:
 				break;
@@ -1493,6 +1537,14 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 					_nextTop += _string[0].height;
 				} else {
 					_charset->_top += fontHeight;
+				}
+				// THUMBY-PORT — \n: stack the next LCD sub-line
+				// directly under the prior one, same centring policy.
+				if (_thumbyLcdTextMode) {
+					thumby_lcd_text_begin_line(_string[a].center,
+					                            _string[a].xpos,
+					                            _string[a].ypos,
+					                            /*continuation=*/true);
 				}
 				break;
 			case 12:

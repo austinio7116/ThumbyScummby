@@ -71,7 +71,10 @@ struct DeviceInputState {
     bool prev_down = false;
 };
 
-constexpr int kQCap = 16;
+// 8 slots is enough — events are pushed once per frame from the input
+// poller and drained immediately by the engine's event loop on the same
+// tick.  16 was overkill (~1 KB BSS at sizeof(Common::Event)≈64).
+constexpr int kQCap = 8;
 struct EventQueue {
     Common::Event q[kQCap];
     int head = 0;     // pop point
@@ -179,6 +182,7 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         const int vel = (sm == tsb::platform::ScaleMode::Crop) ? kCursorPxCrop
                       : (sm == tsb::platform::ScaleMode::Fill) ? kCursorPxFill
                                                                : kCursorPxFit;
+        const int prevY = g_in.curY;
         int nx = g_in.curX + dx * vel;
         int ny = g_in.curY + dy * vel;
         if (nx < 0)   nx = 0;
@@ -187,6 +191,26 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         if (ny > 199) ny = 199;
         g_in.curX = nx;
         g_in.curY = ny;
+
+        // Verb-panel boundary crossing in Fill mode: the verb panel is
+        // rendered without crop_x (locked), but the rest of the scene
+        // pans with crop_x.  Without an adjustment, the cursor visual
+        // position would jump LCD pixels when the user moves into or
+        // out of the verb area.  Shift cursor source-x by ±crop_x so
+        // the visual position stays continuous and the engine receives
+        // the correct source-x for verb hit-testing.
+        if (sm == tsb::platform::ScaleMode::Fill) {
+            constexpr int kVerbPanelSrcY = 144;
+            const bool was_in_verb = (prevY     >= kVerbPanelSrcY);
+            const bool now_in_verb = (g_in.curY >= kVerbPanelSrcY);
+            if (was_in_verb != now_in_verb) {
+                const int cx_now = osys.cropX();
+                if (now_in_verb) g_in.curX -= cx_now;   // entering: drop crop offset
+                else             g_in.curX += cx_now;   // leaving:  re-acquire it
+                if (g_in.curX < 0)   g_in.curX = 0;
+                if (g_in.curX > 319) g_in.curX = 319;
+            }
+        }
 
         // Visible region in source-coord pixels per scale mode.  Fit
         // shows everything → no pan.  Fill shows 200 source-x of 320

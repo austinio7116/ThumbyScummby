@@ -122,9 +122,11 @@ private:
     // (shadowing breaks getEventManager() etc.).
 
     // Mouse cursor sprite captured from setMouseCursor + composited
-    // during updateScreen.  Up to 64x64 8bpp; clamp larger uploads.
-    static constexpr int kMaxCursorW = 64;
-    static constexpr int kMaxCursorH = 64;
+    // during updateScreen.  SCUMM v4/v5 cursors are 16×16 (see
+    // cursor.cpp: _cursor.width = 16); 32×32 leaves 4× headroom while
+    // halving BSS vs. the original 64×64 cap.  Larger uploads clamp.
+    static constexpr int kMaxCursorW = 32;
+    static constexpr int kMaxCursorH = 32;
     uint8_t _cursorBuf[kMaxCursorW * kMaxCursorH];
     int     _cursorW = 0, _cursorH = 0;
     int     _cursorHotspotX = 0, _cursorHotspotY = 0;
@@ -173,6 +175,92 @@ private:
     int  _cropX = 0;
     int  _cropY = 0;
     bool _frameDone = false;
+
+    // ---------------------------------------------------------------
+    // THUMBY-PORT — LCD-resolution text rendering via glyph list.
+    //
+    // CharsetRendererClassic::printCharIntern is hooked when
+    // ScummEngine::_thumbyLcdTextMode is true; instead of writing glyphs
+    // into _textSurface at scene scale (which our 0.4× / 0.64× present()
+    // then crushes into 2-3 LCD-pixel-tall illegibility) the hook calls
+    // renderGlyphToTextOverlay().  Glyphs are buffered per logical line
+    // for layout (centring / word-break wrap) then "stamped" — appended
+    // to a flat list of (charPtr, dst_x, dst_y, ...) descriptors.  At
+    // present time, platform::present iterates the stamps and paints
+    // each glyph directly into the RGB565 framebuffer at LCD-native 1×.
+    //
+    // The list-of-stamps approach (vs. the v2 128×128 8 bpp overlay
+    // buffer) is what fits this on the RP2350: the overlay alone was
+    // 16 KB BSS, the stamp list is ~3 KB.
+    //
+    // Lifetime: cleared on ScummEngine::clearTextSurface() (the engine
+    // erases banner / dialogue text).
+
+    static constexpr int kLcdOverlayW = 128;   // LCD width  (used for budget)
+    static constexpr int kLcdOverlayH = 128;   // LCD height (used for clip)
+    // Glyphs are downsampled to 75% (3:4) from source-px to LCD-px with
+    // an area-weighted blend, mirroring the scene blit's downsample.
+    // Layout values (line width, pen advance, baseline offsets) are
+    // tracked in LCD-px.  Crop mode bypasses this path entirely — text
+    // there goes through SCUMM's _textSurface compositing and is left
+    // at scene scale (1:1 in Crop).
+    static constexpr int kTextScaleNum = 3;
+    static constexpr int kTextScaleDen = 4;
+
+    // Per-glyph "line buffer" descriptor — used during layout only.
+    // `width` / `height` / `offsY` are LCD-px (halved at append).
+    // `srcW` / `srcH` are the SOURCE-px bitmap dimensions, kept so the
+    // platform stamp loop can drive its 2×2 downsample.
+    struct LcdGlyph {
+        const uint8_t *charPtr;     // bit-packed glyph rows
+        uint8_t  cmap[4];           // snapshot of _charsetColorMap[0..3]
+        uint8_t  width;             // LCD-px, halved
+        uint8_t  height;            // LCD-px, halved
+        uint8_t  srcW;              // source-px (≤ 32)
+        uint8_t  srcH;              // source-px (≤ 32)
+        uint8_t  bpp;               // 1, 2, or 4
+        int8_t   offsY;             // LCD-px, halved
+        bool     isBreak;           // glyph bitmap is all-zero (a space)
+    };
+    static constexpr int kLcdLineMax = 32;
+    LcdGlyph _lcdLine[kLcdLineMax];
+    int  _lcdLineCount      = 0;
+    int  _lcdLineWidth      = 0;    // running LCD-pixel width
+    int  _lcdLineMaxH       = 4;    // max LCD-px (offsY + height) in line
+    int  _lcdLineLastBreakIdx   = 0;  // count just AFTER last word-break glyph
+    int  _lcdLineLastBreakWidth = 0;
+    bool _lcdLineCenter     = false;
+    int  _lcdLineXHint      = 160;  // SCUMM source X (centre or left edge)
+    int  _lcdLineY          = 0;    // LCD Y where this line will stamp
+    bool _lcdLineActive     = false;
+
+    // Stamped glyphs — final LCD positions, rendered by platform::present.
+    static constexpr int kLcdStampMax = 192;
+    platform::TextStamp _lcdStamps[kLcdStampMax];
+    int                  _lcdStampCount = 0;
+
+public:
+    // Begin a fresh logical line.  `continuation == false` means new
+    // string anchor (use scumm_ypos to drive LCD Y).  `continuation ==
+    // true` means SCUMM \n inside an existing string — stack tightly
+    // below the previous LCD line.  Always flushes any pending line
+    // first.
+    void beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
+                      bool continuation);
+    void renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
+                                   int width, int height,
+                                   int offsY,
+                                   const uint8_t *cmap);
+    void flushLcdLine();
+    void clearLcdTextOverlay();
+    const platform::TextStamp *lcdStamps()    const { return _lcdStamps; }
+    int                         lcdStampCount() const { return _lcdStampCount; }
+
+private:
+    int sceneToLcdX(int src_x) const;
+    int sceneToLcdY(int src_y) const;
+    int  computeLineBudget() const;
+    void emitStamp(const LcdGlyph &g, int dst_x, int dst_y);
 };
 
 }  // namespace tsb

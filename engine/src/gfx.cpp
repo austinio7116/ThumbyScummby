@@ -1322,6 +1322,9 @@ void ScummEngine::clearCharsetMask() {
 	memset(getResourceAddress(rtBuffer, 9), 0, _gdi->_imgBufOffs[1]);
 }
 
+// THUMBY-PORT bridge — see osystem_thumby.cpp::clearLcdTextOverlay.
+extern void thumby_clear_lcd_text_overlay();
+
 void ScummEngine::clearTextSurface() {
 	towns_fillTopLayerRect(0, 0, _textSurface.w, _textSurface.h, 0);
 	fill((byte *)_textSurface.getPixels(), _textSurface.pitch,
@@ -1329,6 +1332,12 @@ void ScummEngine::clearTextSurface() {
 		_game.platform == Common::kPlatformFMTowns ? 0 :
 #endif
 		CHARSET_MASK_TRANSPARENCY,  _textSurface.w, _textSurface.h, _textSurface.format.bytesPerPixel);
+
+	// THUMBY-PORT: keep the LCD-resolution text overlay in lockstep
+	// with _textSurface — when the engine clears the latter (banner
+	// expiry, scene change, etc) the LCD glyphs need to disappear too.
+	if (_thumbyLcdTextMode)
+		thumby_clear_lcd_text_overlay();
 }
 
 byte *ScummEngine::getMaskBuffer(int x, int y, int z) {

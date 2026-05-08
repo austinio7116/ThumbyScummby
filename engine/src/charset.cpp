@@ -25,6 +25,19 @@
 
 namespace Scumm {
 
+// THUMBY-PORT — bridges to OSystem_Thumby's LCD-resolution text overlay.
+// printCharIntern routes glyphs through render_glyph below when the LCD
+// path is active; the SCUMM _textSurface path is bypassed.  Layout
+// (centring, soft-wrap, baseline alignment via offsY) is handled inside
+// the overlay; per-glyph hook just forwards bitmap + descender.
+void thumby_render_glyph_to_lcd_overlay(const uint8_t *charPtr, int bpp,
+                                         int width, int height,
+                                         int offsY,
+                                         const uint8_t *cmap);
+// Returns false in Crop mode (scene is 1:1, text looks fine going
+// through the regular _textSurface composite path) and true otherwise.
+bool thumby_lcd_text_path_active();
+
 static const int kMaxRawJpCharNum = 1500;
 
 /*
@@ -1210,6 +1223,32 @@ void CharsetRendererClassic::printChar(int chr, bool ignoreCharsetMask) {
 }
 
 void CharsetRendererClassic::printCharIntern(bool is2byte, const byte *charPtr, int origWidth, int origHeight, int width, int height, VirtScreen *vs, bool ignoreCharsetMask) {
+	// THUMBY-PORT: redirect glyph rasterisation to OSystem_Thumby's
+	// LCD-resolution overlay buffer.  Bypasses the per-pixel writes
+	// into vs / _textSurface that drawBits1/N would do.  Position is
+	// driven by the per-line buffer in OSystem_Thumby — beginLcdLine()
+	// is called from drawString / CHARSET_1 / newLine() to set origin
+	// and centring; this hook just appends a glyph descriptor.
+	// Three reasons to fall back to SCUMM's scene path (skip LCD overlay):
+	//   - Verb panel: layout is positioned in source-px assuming
+	//     source-scale rendering; LCD-overlay glyphs are too big and
+	//     pile on each other.
+	//   - Crop mode: scene is 1:1 (source-px == LCD-px), so the
+	//     standard scaled rendering already produces readable text
+	//     without our 75% LCD downsample.
+	//   - 2-byte chars: never use the LCD path (CJK font handling is
+	//     done by the original code).
+	if (!is2byte && _vm->_thumbyLcdTextMode &&
+	    vs->number != kVerbVirtScreen &&
+	    thumby_lcd_text_path_active()) {
+		thumby_render_glyph_to_lcd_overlay(
+			charPtr, *_fontPtr,
+			origWidth, origHeight,
+			_offsY,
+			_vm->_charsetColorMap);
+		return;
+	}
+
 	byte *dstPtr = nullptr;
 	byte *back = nullptr;
 	int drawTop = _top - vs->topline;

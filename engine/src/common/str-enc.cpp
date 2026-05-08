@@ -976,7 +976,15 @@ encodeUTF16Template(LE, WRITE_LE_UINT16)
 encodeUTF16Template(Native, WRITE_UINT16)
 
 // Upper bound on unicode codepoint in any single-byte encoding. Must be divisible by 0x100 and be strictly above large codepoint
-static const int kMaxCharSingleByte = 0x3000;
+// THUMBY-PORT: shrunk from 0x3000 to 0x100.  Drives the size of
+// reverseTables (single-byte ↔ Unicode reverse-lookup cache used by
+// String::encode/save-game name conversion).  At 0x3000 the table is
+// 4.5 KB BSS for 23 encodings × 48 next-pointers — way over budget on
+// RP2350.  At 0x100 we still cover Latin-1 / Windows-1252 (the dialog
+// code pages used by MI1 floppy DOS); codepoints ≥ 0x100 round-trip
+// through the errorChar fallback (rare, only an issue for save-game
+// names containing CJK/symbol chars).
+static const int kMaxCharSingleByte = 0x100;
 
 static const uint16 *
 getConversionTable(CodePage page) {

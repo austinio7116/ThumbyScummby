@@ -82,10 +82,26 @@ struct CursorInfo {
 // thin glyph features (1-pixel shadows) survive the 320→128 downsample
 // instead of vanishing through nearest-neighbour sampling. The main
 // scene uses the ThumbyNES 2x2 packed-RGB565 box blend (md_core.c:601).
+//
+// THUMBY-PORT — `text_stamps` is an optional list of LCD-native glyph
+// stamps (charPtr + dst_x/dst_y + dimensions + cmap snapshot) painted
+// directly into the RGB565 framebuffer after the scene blit and before
+// the cursor.  Replaces a 128×128 8 bpp overlay buffer (16 KB BSS) — on
+// device the overlay didn't fit in the heap budget.
+struct TextStamp {
+    const uint8_t *charPtr;     // bit-packed glyph rows, MSB-first
+    int16_t  dst_x, dst_y;      // top-left in LCD coords
+    uint8_t  width, height;
+    uint8_t  bpp;               // 1, 2, or 4
+    uint8_t  pad;
+    uint8_t  cmap[4];           // palette indices (snapshot of charsetColorMap)
+};
 void present(const uint8_t *virt, const uint8_t *text,
              const uint8_t *palette,
              ScaleMode mode, int crop_x, int crop_y,
-             const CursorInfo *cursor = nullptr);
+             const CursorInfo *cursor = nullptr,
+             const TextStamp *text_stamps = nullptr,
+             int text_stamp_count = 0);
 
 // ---------------------------------------------------------------------------
 // Input

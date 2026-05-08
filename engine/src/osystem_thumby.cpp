@@ -172,8 +172,15 @@ void OSystem_Thumby::updateScreen() {
         cur.key_color  = _cursorKeyColor;
         cur_ptr        = &cur;
     }
+    // THUMBY-PORT — flush any line still buffered from the last
+    // drawString into the stamp list, then pass the stamp list to
+    // platform::present so glyphs are painted at LCD-native 1× into
+    // the RGB565 framebuffer (after the scaled scene blit, before the
+    // cursor).  This avoids a 16 KB BSS overlay buffer.
+    flushLcdLine();
     platform::present(_staging, nullptr, _palette,
-                      _scaleMode, _cropX, _cropY, cur_ptr);
+                      _scaleMode, _cropX, _cropY, cur_ptr,
+                      _lcdStamps, _lcdStampCount);
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM
@@ -336,6 +343,258 @@ Audio::Mixer *OSystem_Thumby::getMixer() {
 void OSystem_Thumby::logMessage(LogMessageType::Type /*type*/,
                                 const char *message) {
     platform::log("%s", message);
+}
+
+// ---------------------------------------------------------------------------
+// THUMBY-PORT — LCD-resolution text overlay.
+// ---------------------------------------------------------------------------
+//
+// Source coord → LCD coord with the active scale mode + crop offsets.
+// Pure mirror of the math used by platform::present() so glyph positions
+// land exactly where the scene blit puts the corresponding source pixel.
+int OSystem_Thumby::sceneToLcdX(int src_x) const {
+    switch (_scaleMode) {
+    case platform::ScaleMode::Fill:
+        return (src_x - _cropX) * 128 / 200;
+    case platform::ScaleMode::Crop:
+        return src_x - _cropX;
+    default:                         // Fit
+        return src_x * 128 / 320;
+    }
+}
+int OSystem_Thumby::sceneToLcdY(int src_y) const {
+    switch (_scaleMode) {
+    case platform::ScaleMode::Fill:
+        return src_y * 128 / 200;
+    case platform::ScaleMode::Crop:
+        return src_y - _cropY;
+    default: {                       // Fit, with 24-px letterbox top
+        constexpr int kTopBar = (128 - 80) / 2;
+        return kTopBar + src_y * 80 / 200;
+    }
+    }
+}
+
+void OSystem_Thumby::clearLcdTextOverlay() {
+    // Drop the stamp list and any buffered line — SCUMM cleared
+    // _textSurface, so any text we'd queued was meant to be cleared too.
+    _lcdStampCount = 0;
+    _lcdLineCount  = 0;
+    _lcdLineWidth  = 0;
+    _lcdLineMaxH   = 4;
+    _lcdLineLastBreakIdx   = 0;
+    _lcdLineLastBreakWidth = 0;
+    _lcdLineActive = false;
+}
+
+// Maximum LCD-pixel width this line can be before soft-wrap.  Always
+// returns the full LCD width — flushLcdLine clamps the origin so the
+// line shifts inward when its natural position would push it off the
+// edge (the user-visible effect: text near the screen edge becomes
+// effectively left- or right-aligned instead of being centred around
+// a tiny window).
+int OSystem_Thumby::computeLineBudget() const {
+    return kLcdOverlayW;
+}
+
+// Append a stamp to the global list at (dst_x, dst_y) in LCD coords.
+// `width`/`height` carry the SOURCE-px bitmap dimensions so the platform
+// stamp loop can drive its 2×2 downsample to LCD-px.  Drops silently
+// when the list is full.
+void OSystem_Thumby::emitStamp(const LcdGlyph &g, int dst_x, int dst_y) {
+    if (_lcdStampCount >= kLcdStampMax) return;
+    platform::TextStamp &s = _lcdStamps[_lcdStampCount++];
+    s.charPtr = g.charPtr;
+    s.dst_x   = (int16_t)dst_x;
+    s.dst_y   = (int16_t)dst_y;
+    s.width   = g.srcW;
+    s.height  = g.srcH;
+    s.bpp     = g.bpp;
+    s.pad     = 0;
+    s.cmap[0] = g.cmap[0];
+    s.cmap[1] = g.cmap[1];
+    s.cmap[2] = g.cmap[2];
+    s.cmap[3] = g.cmap[3];
+}
+
+// Compute LCD x at which this line should start, then emit a stamp for
+// each buffered glyph (baseline-aligned via per-glyph offsY) and mark
+// the buffer empty.  Y advances for the next sub-line so soft-wrapped
+// continuations stack tightly below.
+//
+// All layout values in this function are LCD-px (already halved at
+// append time).  Glyph stamps still carry the SOURCE-px dimensions so
+// the platform stamp loop can drive its 2×2 box-blend downsample.
+void OSystem_Thumby::flushLcdLine() {
+    if (_lcdLineCount == 0) return;
+    int natural_origin;
+    if (_lcdLineCenter) {
+        natural_origin = sceneToLcdX(_lcdLineXHint) - _lcdLineWidth / 2;
+    } else {
+        natural_origin = sceneToLcdX(_lcdLineXHint);
+    }
+    // Edge-clamp: line shifts inward to stay on screen.  Width fits
+    // because soft-wrap caps at kLcdOverlayW; if it somehow doesn't,
+    // origin pins to 0 and the right side clips per-pixel in stamp.
+    int origin_x = natural_origin;
+    if (origin_x + _lcdLineWidth > kLcdOverlayW)
+        origin_x = kLcdOverlayW - _lcdLineWidth;
+    if (origin_x < 0) origin_x = 0;
+
+    int pen = origin_x;
+    for (int i = 0; i < _lcdLineCount; i++) {
+        const LcdGlyph &g = _lcdLine[i];
+        // Baseline alignment via per-glyph offsY (LCD-px, halved).
+        emitStamp(g, pen, _lcdLineY + g.offsY);
+        pen += g.width;
+    }
+    _lcdLineY            += _lcdLineMaxH;
+    _lcdLineCount         = 0;
+    _lcdLineWidth         = 0;
+    _lcdLineMaxH          = 4;
+    _lcdLineLastBreakIdx   = 0;
+    _lcdLineLastBreakWidth = 0;
+}
+
+void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
+                                   bool continuation) {
+    flushLcdLine();
+    _lcdLineCenter = center;
+    _lcdLineXHint  = scumm_xpos;
+    if (!continuation || !_lcdLineActive) {
+        _lcdLineY = sceneToLcdY(scumm_ypos);
+        _lcdLineActive = true;
+    }
+    // continuation && active: keep _lcdLineY (already advanced by flush).
+}
+
+void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
+                                              int src_width, int src_height,
+                                              int src_offsY,
+                                              const uint8_t *cmap) {
+    if (!charPtr || !cmap || src_width <= 0 || src_height <= 0) return;
+    if (bpp != 1 && bpp != 2 && bpp != 4) return;
+    if (src_width > 32 || src_height > 32) return;   // stamp scratch limit
+    // Defensive: if no beginLcdLine() preceded us, open one at LCD origin.
+    if (!_lcdLineActive) {
+        _lcdLineXHint  = 0;
+        _lcdLineCenter = false;
+        _lcdLineY      = 0;
+        _lcdLineActive = true;
+    }
+
+    // 75% downsample (3:4): source-px → LCD-px for layout.  Round UP
+    // for w/h so we never lose pixels at the right edge of a glyph;
+    // round-down for offsY (positive descender shift) to keep tall
+    // glyphs from drifting off the line top.
+    const int lcd_w = (src_width  * kTextScaleNum + kTextScaleDen - 1) / kTextScaleDen;
+    const int lcd_h = (src_height * kTextScaleNum + kTextScaleDen - 1) / kTextScaleDen;
+    const int lcd_offsY = (src_offsY * kTextScaleNum) / kTextScaleDen;
+
+    // Detect blank glyph (a space): all bitmap bytes zero.  Used as a
+    // word-break candidate — soft-wrap will cut at the last blank seen.
+    const int total_bits  = src_width * src_height * bpp;
+    const int total_bytes = (total_bits + 7) / 8;
+    bool isBlank = true;
+    for (int i = 0; i < total_bytes; i++) {
+        if (charPtr[i] != 0) { isBlank = false; break; }
+    }
+
+    // Soft-wrap if appending this glyph would push line width past the
+    // budget.  Prefer the last word-break point; if there isn't one,
+    // hard-wrap (mid-word).
+    const int budget = computeLineBudget();
+    if (_lcdLineWidth + lcd_w > budget && _lcdLineCount > 0 && budget > 0) {
+        if (_lcdLineLastBreakIdx > 0 && _lcdLineLastBreakIdx < _lcdLineCount) {
+            const int flush_count = _lcdLineLastBreakIdx;
+            const int flush_width = _lcdLineLastBreakWidth;
+            const int tail_count  = _lcdLineCount - flush_count;
+            const int tail_width  = _lcdLineWidth  - flush_width;
+            _lcdLineCount = flush_count;
+            _lcdLineWidth = flush_width;
+            flushLcdLine();
+            for (int i = 0; i < tail_count; i++) {
+                _lcdLine[i] = _lcdLine[flush_count + i];
+            }
+            _lcdLineCount = tail_count;
+            _lcdLineWidth = tail_width;
+            _lcdLineMaxH  = 4;
+            for (int i = 0; i < tail_count; i++) {
+                int h = _lcdLine[i].offsY + _lcdLine[i].height;
+                if (h > _lcdLineMaxH) _lcdLineMaxH = h;
+            }
+            _lcdLineLastBreakIdx   = 0;
+            _lcdLineLastBreakWidth = 0;
+        } else {
+            flushLcdLine();
+        }
+    }
+
+    if (_lcdLineCount >= kLcdLineMax) {
+        flushLcdLine();
+    }
+
+    LcdGlyph &g = _lcdLine[_lcdLineCount++];
+    g.charPtr = charPtr;
+    g.bpp     = (uint8_t)bpp;
+    g.width   = (uint8_t)lcd_w;
+    g.height  = (uint8_t)lcd_h;
+    g.srcW    = (uint8_t)src_width;
+    g.srcH    = (uint8_t)src_height;
+    g.offsY   = (int8_t)lcd_offsY;
+    g.isBreak = isBlank;
+    g.cmap[0] = cmap[0];
+    g.cmap[1] = cmap[1];
+    g.cmap[2] = cmap[2];
+    g.cmap[3] = cmap[3];
+
+    _lcdLineWidth += lcd_w;
+    const int line_h = lcd_offsY + lcd_h;
+    if (line_h > _lcdLineMaxH) _lcdLineMaxH = line_h;
+    if (isBlank) {
+        _lcdLineLastBreakIdx   = _lcdLineCount;
+        _lcdLineLastBreakWidth = _lcdLineWidth;
+    }
+}
+
+// ----- Free-function bridges so charset.cpp / string.cpp / gfx.cpp can
+// dispatch without dragging the OSystem_Thumby type into transcribed
+// scummvm source.
+void thumby_lcd_text_begin_line(bool center, int scumm_xpos, int scumm_ypos,
+                                 bool continuation) {
+    if (!g_system) return;
+    static_cast<OSystem_Thumby *>(g_system)->beginLcdLine(
+        center, scumm_xpos, scumm_ypos, continuation);
+}
+
+void thumby_render_glyph_to_lcd_overlay(const uint8_t *charPtr, int bpp,
+                                         int width, int height,
+                                         int offsY,
+                                         const uint8_t *cmap) {
+    if (!g_system) return;
+    static_cast<OSystem_Thumby *>(g_system)->renderGlyphToTextOverlay(
+        charPtr, bpp, width, height, offsY, cmap);
+}
+
+void thumby_flush_lcd_text_line() {
+    if (!g_system) return;
+    static_cast<OSystem_Thumby *>(g_system)->flushLcdLine();
+}
+
+void thumby_clear_lcd_text_overlay() {
+    if (!g_system) return;
+    static_cast<OSystem_Thumby *>(g_system)->clearLcdTextOverlay();
+}
+
+// Charset hook queries this to decide whether to route glyphs through
+// the LCD overlay or fall back to SCUMM's _textSurface scene path.
+// Crop mode → false, so text renders at native 1:1 scene scale (the
+// source pixels ARE LCD pixels in Crop), which is what looks best
+// without the overlay.
+bool thumby_lcd_text_path_active() {
+    if (!g_system) return false;
+    auto *t = static_cast<OSystem_Thumby *>(g_system);
+    return t->scaleMode() != platform::ScaleMode::Crop;
 }
 
 }  // namespace tsb

@@ -1680,6 +1680,16 @@ public:
 	Graphics::Surface _textSurface;
 	int _textSurfaceMultiplier = 0;
 
+	// THUMBY-PORT: when true (default for our build), CharsetRendererClassic
+	// short-circuits at printCharIntern and routes glyphs through
+	// thumby_render_glyph_to_lcd_overlay() — which stamps them at LCD-1×
+	// (1 source-px = 1 LCD-px) into a 128×128 byte overlay owned by
+	// OSystem_Thumby.  drawStripToScreen's per-pixel _textSurface
+	// composite never runs for those glyphs, so the scene's downsample
+	// no longer crushes text into illegibility.  See the Phase-3 design
+	// notes (or git history of this commit) for rationale.
+	bool _thumbyLcdTextMode = true;
+
 	bool _isModernMacVersion = false;
 	bool _useGammaCorrection = true;
 

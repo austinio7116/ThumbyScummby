@@ -16,7 +16,11 @@
 #define SAMPLE_RATE     22050   /* matches engine audio_mix rate */
 #define PWM_WRAP          4096  /* 12-bit DAC */
 
-#define RING_SIZE 4096
+/* THUMBY-PORT: 2048 samples × 2 bytes = 4 KB BSS, ~93 ms latency at
+ * 22050 Hz.  Halved from 4096 to free RAM for ScummVM's heap; a frame
+ * stall longer than 93 ms would underrun audio (rare in steady-state
+ * play, possible during scene loads). */
+#define RING_SIZE 2048
 #define RING_MASK (RING_SIZE - 1)
 
 static volatile int16_t ring[RING_SIZE];
