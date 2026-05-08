@@ -470,9 +470,14 @@ void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
 
 void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
                                               int src_width, int src_height,
-                                              int src_offsY,
+                                              int src_offsY, int chr,
                                               const uint8_t *cmap) {
-    if (!charPtr || !cmap || src_width <= 0 || src_height <= 0) return;
+    if (!charPtr || !cmap || src_width <= 0) return;
+    // Allow src_height == 0 — SCUMM v4 floppy spaces are encoded as
+    // advance-only glyphs (width but zero height bitmap).  Returning
+    // here used to skip the lastBreak update, which made every wrap
+    // fall through to the hard-wrap fallback.
+    if (src_height < 0) return;
     if (bpp != 1 && bpp != 2 && bpp != 4) return;
     if (src_width > 32 || src_height > 32) return;   // stamp scratch limit
     // Defensive: if no beginLcdLine() preceded us, open one at LCD origin.
@@ -483,29 +488,38 @@ void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
         _lcdLineActive = true;
     }
 
-    // 75% downsample (3:4): source-px → LCD-px for layout.  Round UP
-    // for w/h so we never lose pixels at the right edge of a glyph;
-    // round-down for offsY (positive descender shift) to keep tall
-    // glyphs from drifting off the line top.
-    const int lcd_w = (src_width  * kTextScaleNum + kTextScaleDen - 1) / kTextScaleDen;
-    const int lcd_h = (src_height * kTextScaleNum + kTextScaleDen - 1) / kTextScaleDen;
+    // 75% downsample (3:4): source-px → LCD-px for layout.  Floor
+    // (truncating divide) for the layout advance — cumulative line
+    // width stays close to the exact 75%-scaled source width, so wraps
+    // fire near the SCUMM-intended positions.  The platform stamper
+    // uses ceil(srcW * 3/4) for dst_w to keep all source bits visible;
+    // odd-width glyphs pick up a 1-px overlap with the next glyph,
+    // invisible in practice (chars have whitespace edges).
+    int lcd_w = (src_width  * kTextScaleNum) / kTextScaleDen;
+    int lcd_h = (src_height * kTextScaleNum) / kTextScaleDen;
+    if (lcd_w == 0 && src_width  > 0) lcd_w = 1;     // never advance by 0
     const int lcd_offsY = (src_offsY * kTextScaleNum) / kTextScaleDen;
 
-    // Detect blank glyph (a space): all bitmap bytes zero.  Used as a
-    // word-break candidate — soft-wrap will cut at the last blank seen.
-    const int total_bits  = src_width * src_height * bpp;
-    const int total_bytes = (total_bits + 7) / 8;
-    bool isBlank = true;
-    for (int i = 0; i < total_bytes; i++) {
-        if (charPtr[i] != 0) { isBlank = false; break; }
-    }
+    // Word-break detection driven by the char code (set by printChar
+    // before the printCharIntern hook fires).  Bitmap inspection is
+    // unreliable: SCUMM v4 floppy uses height=0 for spaces, so the
+    // bitmap is empty regardless of what the char actually is.
+    const bool isBlank = (chr == ' ' || chr == '\t');
 
     // Soft-wrap if appending this glyph would push line width past the
     // budget.  Prefer the last word-break point; if there isn't one,
     // hard-wrap (mid-word).
+    //
+    // The `<= count` covers the common case where overflow fires at the
+    // FIRST char of a new word — at that moment _lcdLineLastBreakIdx
+    // equals _lcdLineCount (the space we just appended is at index
+    // count-1, and "next word starts at count").  With `<` we'd miss
+    // it and hard-wrap every word boundary; with `<=` we flush the
+    // current line (trailing space included, but it has no ink) and
+    // start the new word on a fresh sub-line.
     const int budget = computeLineBudget();
     if (_lcdLineWidth + lcd_w > budget && _lcdLineCount > 0 && budget > 0) {
-        if (_lcdLineLastBreakIdx > 0 && _lcdLineLastBreakIdx < _lcdLineCount) {
+        if (_lcdLineLastBreakIdx > 0 && _lcdLineLastBreakIdx <= _lcdLineCount) {
             const int flush_count = _lcdLineLastBreakIdx;
             const int flush_width = _lcdLineLastBreakWidth;
             const int tail_count  = _lcdLineCount - flush_count;
@@ -569,11 +583,11 @@ void thumby_lcd_text_begin_line(bool center, int scumm_xpos, int scumm_ypos,
 
 void thumby_render_glyph_to_lcd_overlay(const uint8_t *charPtr, int bpp,
                                          int width, int height,
-                                         int offsY,
+                                         int offsY, int chr,
                                          const uint8_t *cmap) {
     if (!g_system) return;
     static_cast<OSystem_Thumby *>(g_system)->renderGlyphToTextOverlay(
-        charPtr, bpp, width, height, offsY, cmap);
+        charPtr, bpp, width, height, offsY, chr, cmap);
 }
 
 void thumby_flush_lcd_text_line() {

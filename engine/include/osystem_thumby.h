@@ -249,7 +249,7 @@ public:
                       bool continuation);
     void renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
                                    int width, int height,
-                                   int offsY,
+                                   int offsY, int chr,
                                    const uint8_t *cmap);
     void flushLcdLine();
     void clearLcdTextOverlay();

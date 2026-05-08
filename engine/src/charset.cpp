@@ -29,14 +29,22 @@ namespace Scumm {
 // printCharIntern routes glyphs through render_glyph below when the LCD
 // path is active; the SCUMM _textSurface path is bypassed.  Layout
 // (centring, soft-wrap, baseline alignment via offsY) is handled inside
-// the overlay; per-glyph hook just forwards bitmap + descender.
+// the overlay; per-glyph hook just forwards bitmap + descender + char
+// code (used for word-break detection — bitmap-is-blank inspection is
+// unreliable across SCUMM versions, where space can be encoded as a
+// height=0 advance-only glyph).
 void thumby_render_glyph_to_lcd_overlay(const uint8_t *charPtr, int bpp,
                                          int width, int height,
-                                         int offsY,
+                                         int offsY, int chr,
                                          const uint8_t *cmap);
 // Returns false in Crop mode (scene is 1:1, text looks fine going
 // through the regular _textSurface composite path) and true otherwise.
 bool thumby_lcd_text_path_active();
+
+// Char code stashed by CharsetRendererClassic::printChar just before it
+// calls printCharIntern, so the LCD hook can know whether the glyph is
+// a word-break (space / tab) without having to inspect the bitmap.
+static int s_thumby_lcd_chr = 0;
 
 static const int kMaxRawJpCharNum = 1500;
 
@@ -1200,6 +1208,9 @@ void CharsetRendererClassic::printChar(int chr, bool ignoreCharsetMask) {
 		_cjkSpacing = japWidthCorrection - 16;
 	}
 
+	// THUMBY-PORT: stash chr so the LCD-overlay hook in printCharIntern
+	// can detect spaces / tabs without inspecting the glyph bitmap.
+	s_thumby_lcd_chr = chr;
 	printCharIntern(is2byte, _charPtr, _origWidth, _origHeight, _width, _height, vs, ignoreCharsetMask);
 
 	// Original keeps glyph width and character dimensions separately
@@ -1244,7 +1255,7 @@ void CharsetRendererClassic::printCharIntern(bool is2byte, const byte *charPtr, 
 		thumby_render_glyph_to_lcd_overlay(
 			charPtr, *_fontPtr,
 			origWidth, origHeight,
-			_offsY,
+			_offsY, s_thumby_lcd_chr,
 			_vm->_charsetColorMap);
 		return;
 	}
