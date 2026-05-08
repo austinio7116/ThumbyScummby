@@ -106,11 +106,36 @@ constexpr int kMixChunkSamples = 1024;
 static int16_t s_mix_buf[kMixChunkSamples];
 
 // ---------------------------------------------------------------------------
-// Input edge detection (mirrors the host_sdl path)
+// Input edge detection + debouncing.  poll_input runs once per
+// updateScreen, which fires several times per scummLoop tick during the
+// engine's waitForTimer wait — well over 100 Hz.  Tactile button bounce
+// (5-10 ms typical) fires multiple raw edges per physical press without
+// a stability filter, which the SCUMM engine sees as multiple clicks
+// (e.g. clicking a dialog choice ALSO dismisses the resulting actor
+// speech).  We track raw state changes against a 20 ms stability
+// window: edges fire only on the filtered state.
 // ---------------------------------------------------------------------------
-static struct {
-    bool prev_a, prev_b, prev_lb, prev_rb, prev_menu;
-} g_input_state;
+constexpr uint32_t kDebounceMs = 20;
+
+struct DebouncedButton {
+    bool     last_raw    = false;
+    bool     stable      = false;
+    bool     prev_stable = false;
+    uint32_t last_change = 0;
+};
+
+static DebouncedButton g_db_a, g_db_b, g_db_lb, g_db_rb, g_db_menu;
+static DebouncedButton g_db_up, g_db_down, g_db_left, g_db_right;
+
+static inline void debounce_step(DebouncedButton &b, bool raw, uint32_t now_ms) {
+    if (raw != b.last_raw) {
+        b.last_raw    = raw;
+        b.last_change = now_ms;
+    }
+    if (now_ms - b.last_change >= kDebounceMs) {
+        b.stable = raw;
+    }
+}
 
 }  // namespace tsb::platform_pico
 
@@ -540,34 +565,49 @@ bool poll_input(Input *out) {
     struct buttons_state st{};
     buttons_read(&st);
 
-    out->dpad_up    = st.up;
-    out->dpad_down  = st.down;
-    out->dpad_left  = st.left;
-    out->dpad_right = st.right;
+    const uint32_t now_ms = (uint32_t)millis();
+    debounce_step(g_db_a,     st.a,    now_ms);
+    debounce_step(g_db_b,     st.b,    now_ms);
+    debounce_step(g_db_lb,    st.lb,   now_ms);
+    debounce_step(g_db_rb,    st.rb,   now_ms);
+    debounce_step(g_db_menu,  st.menu, now_ms);
+    debounce_step(g_db_up,    st.up,    now_ms);
+    debounce_step(g_db_down,  st.down,  now_ms);
+    debounce_step(g_db_left,  st.left,  now_ms);
+    debounce_step(g_db_right, st.right, now_ms);
 
-    out->button_a    = st.a;
-    out->button_b    = st.b;
-    out->button_lb   = st.lb;
-    out->button_rb   = st.rb;
-    out->button_menu = st.menu;
+    out->dpad_up    = g_db_up.stable;
+    out->dpad_down  = g_db_down.stable;
+    out->dpad_left  = g_db_left.stable;
+    out->dpad_right = g_db_right.stable;
 
-    out->a_pressed    = st.a    && !g_input_state.prev_a;
-    out->b_pressed    = st.b    && !g_input_state.prev_b;
-    out->lb_pressed   = st.lb   && !g_input_state.prev_lb;
-    out->rb_pressed   = st.rb   && !g_input_state.prev_rb;
-    out->menu_pressed = st.menu && !g_input_state.prev_menu;
+    out->button_a    = g_db_a.stable;
+    out->button_b    = g_db_b.stable;
+    out->button_lb   = g_db_lb.stable;
+    out->button_rb   = g_db_rb.stable;
+    out->button_menu = g_db_menu.stable;
 
-    out->a_released    = !st.a    && g_input_state.prev_a;
-    out->b_released    = !st.b    && g_input_state.prev_b;
-    out->lb_released   = !st.lb   && g_input_state.prev_lb;
-    out->rb_released   = !st.rb   && g_input_state.prev_rb;
-    out->menu_released = !st.menu && g_input_state.prev_menu;
+    out->a_pressed    =  g_db_a.stable    && !g_db_a.prev_stable;
+    out->b_pressed    =  g_db_b.stable    && !g_db_b.prev_stable;
+    out->lb_pressed   =  g_db_lb.stable   && !g_db_lb.prev_stable;
+    out->rb_pressed   =  g_db_rb.stable   && !g_db_rb.prev_stable;
+    out->menu_pressed =  g_db_menu.stable && !g_db_menu.prev_stable;
 
-    g_input_state.prev_a    = st.a;
-    g_input_state.prev_b    = st.b;
-    g_input_state.prev_lb   = st.lb;
-    g_input_state.prev_rb   = st.rb;
-    g_input_state.prev_menu = st.menu;
+    out->a_released    = !g_db_a.stable    &&  g_db_a.prev_stable;
+    out->b_released    = !g_db_b.stable    &&  g_db_b.prev_stable;
+    out->lb_released   = !g_db_lb.stable   &&  g_db_lb.prev_stable;
+    out->rb_released   = !g_db_rb.stable   &&  g_db_rb.prev_stable;
+    out->menu_released = !g_db_menu.stable &&  g_db_menu.prev_stable;
+
+    g_db_a.prev_stable    = g_db_a.stable;
+    g_db_b.prev_stable    = g_db_b.stable;
+    g_db_lb.prev_stable   = g_db_lb.stable;
+    g_db_rb.prev_stable   = g_db_rb.stable;
+    g_db_menu.prev_stable = g_db_menu.stable;
+    g_db_up.prev_stable    = g_db_up.stable;
+    g_db_down.prev_stable  = g_db_down.stable;
+    g_db_left.prev_stable  = g_db_left.stable;
+    g_db_right.prev_stable = g_db_right.stable;
 
     return true;  // device never quits
 }

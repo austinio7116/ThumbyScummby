@@ -33,6 +33,13 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// THUMBY-PORT: bridge defined in osystem_thumby.cpp.  Drops LCD-overlay
+// talk-area stamps when the engine ends a talk — the engine's own
+// restoreCharsetBg path only clears when _charset->_hasMask is true,
+// which our LCD-overlay path never sets, so without this hook talk
+// text lingers visually until the next actor speaks.
+extern "C" void thumby_drop_talk_area_stamps();
+
 namespace Scumm {
 
 byte Actor::kInvalidBox = 0;
@@ -3720,6 +3727,13 @@ void ScummEngine::stopTalk() {
 #endif
 			restoreCharsetBg();
 	}
+
+	// THUMBY-PORT: drop LCD-overlay talk-area stamps unconditionally.
+	// The engine's restoreCharsetBg() above only clears _textSurface
+	// when _charset->_hasMask is true, but our LCD-overlay path skips
+	// _hasMask updates — so without this hook, finished talks linger
+	// visually until the next talker overwrites them.
+	thumby_drop_talk_area_stamps();
 }
 
 

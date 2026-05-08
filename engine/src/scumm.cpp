@@ -123,6 +123,8 @@ using Common::File;
 
 // THUMBY-PORT: bridges defined in osystem_thumby.cpp.
 extern "C" void thumby_set_verb_panel_active(bool active);
+extern "C" void thumby_track_room(int room);
+extern "C" void thumby_track_camera(int x);
 
 namespace Scumm {
 
@@ -3050,7 +3052,18 @@ void ScummEngine::scummLoop(int delta) {
 	// title / cutscene screens where rows 144..199 are scene image.
 	{
 		// Declared at file scope below the namespace.
-		thumby_set_verb_panel_active(_currentRoom != 0 && _userPut > 0);
+		// NOTE: do NOT gate this on vm.cutSceneStackPointer — dialog
+		// response scripts and other in-game flow run inside
+		// beginCutscene/endCutscene blocks; flipping the panel state
+		// each time would clear the LCD text overlay (talk text and all)
+		// every time a script enters a cutscene block.
+		const bool gameplay = (_currentRoom != 0 && _userPut > 0);
+		thumby_set_verb_panel_active(gameplay);
+		// Notify the platform when the room changes so it can re-centre
+		// the cursor (and therefore the scene crop) on the new scene —
+		// without this, a user who'd panned to one edge of the previous
+		// room ends up looking at the far edge of the new one.
+		thumby_track_room(_currentRoom);
 	}
 	// Notify the script about how much time has passed, in jiffies
 	if (VAR_TIMER != 0xFF)
@@ -3239,6 +3252,9 @@ load_game:
 		walkActors();
 		LOOP_CKPT("scummLoop pre-moveCamera",     0x001F);  // blue
 		moveCamera();
+		// THUMBY-PORT: slide _cropX with the camera so the LCD viewport
+		// tracks the engine's camera pan within wide rooms.
+		thumby_track_camera(camera._cur.x);
 		LOOP_CKPT("scummLoop pre-updateObjects",  0xFD20);  // orange
 		updateObjectStates();
 		if (_game.version > 3)

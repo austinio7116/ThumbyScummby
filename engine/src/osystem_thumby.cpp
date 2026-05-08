@@ -32,11 +32,61 @@ extern "C" void thumby_set_verb_panel_active(bool active) {
     const bool was_active = t->verbPanelActive();
     t->setVerbPanelActive(active);
     if (active != was_active) {
-        t->clearLcdTextOverlay();
+        // CRITICAL: drop only verb-area stamps here, NOT all stamps.
+        // _userPut is toggled constantly by SCUMM scripts (every dialog
+        // / action does SO_USERPUT_OFF then SO_USERPUT_ON), which fires
+        // a transition each time.  A wholesale clearLcdTextOverlay()
+        // would wipe an in-progress actor talk on every script that
+        // briefly disables input — that's the root cause of the "first
+        // talk after a click is printed then immediately gone" bug.
+        // Talk-area stamps (tag.y < 144) survive transitions; verb-
+        // area stamps (tag.y >= 144) are re-emitted by the forced
+        // complete-redraw below.
+        t->dropVerbAreaStamps();
         t->setVerbCrop(0);
+        // Black out rows 144..199 of _staging too — those rows
+        // currently hold whatever the engine last drew (title screen
+        // bottom, cutscene, etc.) and would blit through present()'s
+        // verb-panel pass for a few frames otherwise.  The engine
+        // repaints them on the forced complete-redraw below.
+        t->clearVerbBand();
         thumby_force_complete_redraw();
     }
 }
+
+// Bridge — engine calls this each tick with the current room number.
+// On room change, snap the cursor to scene-centre (source 160, 100) so
+// the user starts each new scene looking at the middle, regardless of
+// where their cursor was at the previous room's edge.
+extern "C" void thumby_track_room(int room) {
+    if (!g_system) return;
+    auto *t = static_cast<tsb::OSystem_Thumby *>(g_system);
+    t->onRoomChanged(room);
+}
+
+// Bridge — engine calls this each tick with camera._cur.x after
+// moveCamera().  When the engine pans the camera within a wide room,
+// we slide _cropX by the same delta so the LCD viewport tracks the
+// camera and the action stays in view.
+extern "C" void thumby_track_camera(int x) {
+    if (!g_system) return;
+    auto *t = static_cast<tsb::OSystem_Thumby *>(g_system);
+    t->onCameraMoved(x);
+}
+
+// Bridge — actor.cpp stopTalk() calls this when an actor finishes
+// talking.  The engine's own restoreCharsetBg → clearTextSurface
+// chain only fires when _charset->_hasMask is true, but our LCD
+// overlay path skips setting _hasMask, so the engine's cleanup is a
+// no-op for our overlay.  This explicit hook drops talk-area stamps
+// so a finished talk actually disappears from screen instead of
+// lingering until the next actor speaks.
+extern "C" void thumby_drop_talk_area_stamps() {
+    if (!g_system) return;
+    auto *t = static_cast<tsb::OSystem_Thumby *>(g_system);
+    t->dropTalkAreaStamps();
+}
+
 
 // ---------------------------------------------------------------------------
 // Minimal Common::MutexInternal — single-threaded engine, so a no-op is fine.
@@ -165,6 +215,113 @@ void OSystem_Thumby::fillScreen(const Common::Rect &r, uint32 col) {
     for (int16 y = t; y < b; y++) {
         memset(_staging + y * _w + l, (int)col, (size_t)(ri - l));
     }
+}
+
+void OSystem_Thumby::clearVerbBand() {
+    memset(_staging + 144 * 320, 0, 56 * 320);
+}
+
+void OSystem_Thumby::onRoomChanged(int room) {
+    if (room == _lastRoom) return;
+    _lastRoom = room;
+    // Reset camera tracking too — the new room's first camera reading
+    // is its initial position, not a continuation of the prior room's
+    // delta sequence.
+    _lastCameraX = -1;
+    // Skip the very first call (room transitions from -1 → real room
+    // are boot, not a room change in gameplay terms — we don't want to
+    // warp the cursor on engine init).
+    if (room <= 0) return;
+    // Snap cursor to scene centre and re-anchor the scene crop around
+    // it.  The dpad cursor-edge pan only kicks in on user input, so
+    // without resetting _cropX too the user would start each room
+    // looking at the previous room's right-edge view.
+    _cursorX = 160;
+    _cursorY = 100;
+    // Centre _cropX on the cursor in the modes where the visible scene
+    // window is smaller than 320 source-px (Fill: 200, Crop: 128).
+    int vis_w = 0;
+    if (_scaleMode == platform::ScaleMode::Fill)      vis_w = 200;
+    else if (_scaleMode == platform::ScaleMode::Crop) vis_w = 128;
+    if (vis_w > 0) {
+        int cx = _cursorX - vis_w / 2;
+        const int max_x = 320 - vis_w;
+        if (cx < 0)     cx = 0;
+        if (cx > max_x) cx = max_x;
+        _cropX = cx;
+    } else {
+        _cropX = 0;
+    }
+    _cropY = 0;
+    _verbCropX = 0;
+}
+
+void OSystem_Thumby::onCameraMoved(int x) {
+    if (_lastCameraX < 0) {
+        // First reading (post-boot or post-room-change).  No delta yet.
+        _lastCameraX = x;
+        return;
+    }
+    if (x == _lastCameraX) return;
+    _lastCameraX = x;
+    // Actor-visibility re-anchor: SCUMM's camera follows the ego actor
+    // at source x ≈ 160 (camera-centred).  When the camera pans within
+    // a wide room, if the user had panned their view to one side, the
+    // actor would walk off the visible LCD window.  Re-anchor _cropX
+    // to centre the actor only when he's actually outside the current
+    // viewport — this way manual cursor pan is preserved when there's
+    // no need to override it.
+    int vis_w = 0;
+    if (_scaleMode == platform::ScaleMode::Fill)      vis_w = 200;
+    else if (_scaleMode == platform::ScaleMode::Crop) vis_w = 128;
+    if (vis_w == 0) return;            // Fit shows full source — no crop
+    constexpr int kActorSrcX = 160;
+    const int viewport_left  = _cropX;
+    const int viewport_right = _cropX + vis_w - 1;
+    if (kActorSrcX >= viewport_left && kActorSrcX <= viewport_right) {
+        return;                        // Actor still in view — leave _cropX alone
+    }
+    // Re-anchor the scene crop on the actor.
+    int cx = kActorSrcX - vis_w / 2;
+    const int max_x = 320 - vis_w;
+    if (cx < 0)     cx = 0;
+    if (cx > max_x) cx = max_x;
+    _cropX = cx;
+    // Clamp the cursor into the new viewport so it doesn't end up
+    // off-screen (which would leave sample_frame's edge-pan unable
+    // to push _cropX back without dpad input).  If the user's cursor
+    // was already well outside the new view (e.g. on the right edge
+    // when actor walked into a left-side sub-room), pull it to the
+    // matching edge so it stays visible and stops fighting the
+    // re-anchor next frame.
+    if (_cursorX < cx)              _cursorX = cx;
+    if (_cursorX > cx + vis_w - 1)  _cursorX = cx + vis_w - 1;
+}
+
+void OSystem_Thumby::dropTalkAreaStamps() {
+    int new_count = 0;
+    for (int i = 0; i < _lcdStampCount; i++) {
+        if (_lcdStampTags[i].y < 144) continue;
+        if (new_count != i) {
+            _lcdStamps[new_count]    = _lcdStamps[i];
+            _lcdStampTags[new_count] = _lcdStampTags[i];
+        }
+        new_count++;
+    }
+    _lcdStampCount = new_count;
+}
+
+void OSystem_Thumby::dropVerbAreaStamps() {
+    int new_count = 0;
+    for (int i = 0; i < _lcdStampCount; i++) {
+        if (_lcdStampTags[i].y >= 144) continue;
+        if (new_count != i) {
+            _lcdStamps[new_count]    = _lcdStamps[i];
+            _lcdStampTags[new_count] = _lcdStampTags[i];
+        }
+        new_count++;
+    }
+    _lcdStampCount = new_count;
 }
 
 void OSystem_Thumby::updateScreen() {
@@ -544,8 +701,11 @@ void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
                                    bool continuation) {
     flushLcdLine();
     if (!continuation) {
-        // New string at this rect — drop the prior drawString's stamps
-        // here so the redraw replaces rather than overlays them.
+        // Per-tag dedup only.  Don't drop "all talk-area stamps" here —
+        // that fires whenever drawString() opens a fresh line in the
+        // talk band (e.g. printString case 1 hover-name banners), which
+        // would wipe an in-progress actor talk mid-life.  Multi-talker
+        // overlap is handled by an explicit hook in actorTalk() instead.
         dropStampsByTag(scumm_xpos, scumm_ypos);
     }
     _lcdLineCenter = center;

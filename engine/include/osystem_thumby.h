@@ -164,6 +164,30 @@ public:
     // not a verb panel — display correctly.
     void setVerbPanelActive(bool a) { _verbPanelActive = a; }
     bool verbPanelActive() const     { return _verbPanelActive; }
+    // Black out source rows 144..199 in the 8bpp staging buffer.
+    // Called when the verb panel transitions on so present()'s
+    // verb-panel pass doesn't blit stale title/cutscene pixels for a
+    // few frames before the engine repaints the verb area.
+    void clearVerbBand();
+    // Engine calls this each tick.  On room change, snap cursor source
+    // position back to scene centre so the cursor-edge pan recentres the
+    // crop on the new room's content.
+    void onRoomChanged(int room);
+    // Engine calls this each tick after moveCamera() with the camera's
+    // current world-x.  When the engine pans the camera within a room
+    // (actor walks across), slide _cropX by the same delta so the LCD
+    // viewport tracks the camera and the user doesn't have to manually
+    // re-pan to keep the action in view.
+    void onCameraMoved(int x);
+    // Drop every LCD-overlay stamp whose tag is in the scene/talk area
+    // (tag.y < 144).  Verb panel stamps (tag.y >= 144) are preserved.
+    void dropTalkAreaStamps();
+    // Drop every LCD-overlay stamp whose tag is in the verb panel area
+    // (tag.y >= 144).  Talk-area stamps (tag.y < 144) are preserved.
+    // Called on _verbPanelActive transitions so in-progress actor talk
+    // survives _userPut flips (which fire transitions whenever a SCUMM
+    // script does SO_USERPUT_OFF / SO_USERPUT_ON, e.g. dialog scripts).
+    void dropVerbAreaStamps();
 
     // Device input synchronisation: updateScreen() flips _frameDone=true so
     // the device event poller knows a fresh button sample is needed before
@@ -189,6 +213,8 @@ private:
     int  _cropX = 0;
     int  _cropY = 0;
     int  _verbCropX = 0;
+    int  _lastRoom = -1;
+    int  _lastCameraX = -1;
     bool _verbPanelActive = false;
     bool _frameDone = false;
 

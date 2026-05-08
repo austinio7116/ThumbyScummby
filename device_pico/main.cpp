@@ -175,9 +175,7 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
     if (dx || dy) {
         // Cursor motion in source-coord space.  In Fill / Crop the
         // visible region is smaller than the 320×200 source, so when the
-        // cursor moves past the visible edge we slide the crop with it
-        // — the cursor visually sticks at the LCD edge while the scene
-        // scrolls underneath.  Replaces the old LB+dpad pan chord.
+        // cursor moves past the visible edge we slide the crop with it.
         const auto sm = osys.scaleMode();
         const int vel = (sm == tsb::platform::ScaleMode::Crop) ? kCursorPxCrop
                       : (sm == tsb::platform::ScaleMode::Fill) ? kCursorPxFill
@@ -192,15 +190,20 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         g_in.curX = nx;
         g_in.curY = ny;
 
-        // Verb-panel boundary crossing — verb_crop_x is pinned at 0
-        // (no marquee-style verb pan for now; that's deferred so the
-        // verbs render at stable LCD positions every frame).  On
-        // boundary crossing, translate cursor source-x so its visible
-        // LCD position stays continuous between scene mapping and
-        // verb-locked mapping.
+        // Y-boundary cursor translation — when crossing scene↔verb
+        // panel, translate cursor SOURCE-X so the cursor's LCD column
+        // stays continuous (no visual jump).  The verb panel uses a
+        // locked 0.64× mapping while the scene region uses the active
+        // scale-mode mapping, so a cursor at e.g. source 160 lands at
+        // different LCD x in each region.  We adjust source-x at the
+        // boundary so LCD x matches.  This is NOT panel panning —
+        // verbCropX stays locked at 0 — it's just a coordinate fix-up
+        // that the user has already accepted.  Only fires when a verb
+        // panel is actually rendering.
         constexpr int kVerbPanelSrcY = 144;
-        const bool was_in_verb = (prevY     >= kVerbPanelSrcY);
-        const bool now_in_verb = (g_in.curY >= kVerbPanelSrcY);
+        const bool panel_active = osys.verbPanelActive();
+        const bool was_in_verb = panel_active && (prevY     >= kVerbPanelSrcY);
+        const bool now_in_verb = panel_active && (g_in.curY >= kVerbPanelSrcY);
         if (was_in_verb != now_in_verb) {
             int visual_lcd_x;
             const int cx_now = osys.cropX();
@@ -219,7 +222,7 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
                 // visual_lcd_x = sx * 128/200  →  sx = visual_lcd_x * 200/128
                 g_in.curX = (visual_lcd_x * 200) / 128;
             } else {
-                // Leaving: visual_lcd_x = sx * 128/200; map to scene sx.
+                // Leaving verb area: visual_lcd_x = sx * 128/200; map back to scene sx.
                 const int verb_lcd_x = (g_in.curX * 128) / 200;
                 switch (sm) {
                 case tsb::platform::ScaleMode::Fit:
@@ -235,16 +238,13 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
             }
             if (g_in.curX < 0)   g_in.curX = 0;
             if (g_in.curX > 319) g_in.curX = 319;
-            osys.setVerbCrop(0);
         }
 
-        if (now_in_verb) {
-            // Verb-area: keep verb_crop_x at 0 (no pan).
-            osys.setVerbCrop(0);
-        } else {
-            // Cursor in scene area — slide scene crop to keep it visible.
-            // The full 320×200 source is rendered per mode (no separate
-            // scene/verb LCD split), so scene Y ranges over 0..199.
+        // Scene cursor-edge pan — only updates _cropX when cursor is
+        // in the scene area.  When cursor is in the verb panel band,
+        // scene crop stays put (no scene shift triggered by verb-area
+        // hover).  This is the only place scene crop tracks cursor.
+        if (!now_in_verb) {
             int vis_w = 320, vis_h = 200;
             if (sm == tsb::platform::ScaleMode::Fill) {
                 vis_w = 200;
