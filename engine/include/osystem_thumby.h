@@ -174,11 +174,13 @@ public:
     // crop on the new room's content.
     void onRoomChanged(int room);
     // Engine calls this each tick after moveCamera() with the camera's
-    // current world-x.  When the engine pans the camera within a room
-    // (actor walks across), slide _cropX by the same delta so the LCD
-    // viewport tracks the camera and the user doesn't have to manually
-    // re-pan to keep the action in view.
-    void onCameraMoved(int x);
+    // current world-x and the ego actor's source-x.  When the engine
+    // pans the camera within a room (actor walks across), if the actor
+    // would leave the user's visible viewport we re-anchor _cropX to
+    // centre on him.  We need the actor's actual source-x rather than
+    // assuming source 160 because mid-pan (camera lagging actor) the
+    // actor can be anywhere across 0..319.
+    void onCameraMoved(int camera_x, int actor_src_x);
     // Drop every LCD-overlay stamp whose tag is in the scene/talk area
     // (tag.y < 144).  Verb panel stamps (tag.y >= 144) are preserved.
     void dropTalkAreaStamps();

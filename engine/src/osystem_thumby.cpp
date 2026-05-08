@@ -64,14 +64,14 @@ extern "C" void thumby_track_room(int room) {
     t->onRoomChanged(room);
 }
 
-// Bridge — engine calls this each tick with camera._cur.x after
-// moveCamera().  When the engine pans the camera within a wide room,
-// we slide _cropX by the same delta so the LCD viewport tracks the
-// camera and the action stays in view.
-extern "C" void thumby_track_camera(int x) {
+// Bridge — engine calls this each tick with camera._cur.x and the ego
+// actor's source-x after moveCamera().  When the actor leaves the
+// user's visible viewport during a camera pan, we re-anchor _cropX to
+// centre on him so the action stays in view.
+extern "C" void thumby_track_camera(int camera_x, int actor_src_x) {
     if (!g_system) return;
     auto *t = static_cast<tsb::OSystem_Thumby *>(g_system);
-    t->onCameraMoved(x);
+    t->onCameraMoved(camera_x, actor_src_x);
 }
 
 // Bridge — actor.cpp stopTalk() calls this when an actor finishes
@@ -256,46 +256,49 @@ void OSystem_Thumby::onRoomChanged(int room) {
     _verbCropX = 0;
 }
 
-void OSystem_Thumby::onCameraMoved(int x) {
+void OSystem_Thumby::onCameraMoved(int camera_x, int actor_src_x) {
     if (_lastCameraX < 0) {
         // First reading (post-boot or post-room-change).  No delta yet.
-        _lastCameraX = x;
+        _lastCameraX = camera_x;
         return;
     }
-    if (x == _lastCameraX) return;
-    _lastCameraX = x;
-    // Actor-visibility re-anchor: SCUMM's camera follows the ego actor
-    // at source x ≈ 160 (camera-centred).  When the camera pans within
-    // a wide room, if the user had panned their view to one side, the
-    // actor would walk off the visible LCD window.  Re-anchor _cropX
-    // to centre the actor only when he's actually outside the current
-    // viewport — this way manual cursor pan is preserved when there's
-    // no need to override it.
+    if (camera_x == _lastCameraX) return;
+    _lastCameraX = camera_x;
     int vis_w = 0;
     if (_scaleMode == platform::ScaleMode::Fill)      vis_w = 200;
     else if (_scaleMode == platform::ScaleMode::Crop) vis_w = 128;
     if (vis_w == 0) return;            // Fit shows full source — no crop
-    constexpr int kActorSrcX = 160;
+    // If the ego actor is already in the user's visible viewport,
+    // leave _cropX alone — manual pan is preserved when there's no
+    // reason to override.  Mid-pan (camera lagging actor) the actor's
+    // source-x is wherever the engine has placed him; passed in from
+    // scumm.cpp so the check is accurate.
     const int viewport_left  = _cropX;
     const int viewport_right = _cropX + vis_w - 1;
-    if (kActorSrcX >= viewport_left && kActorSrcX <= viewport_right) {
-        return;                        // Actor still in view — leave _cropX alone
+    if (actor_src_x >= viewport_left && actor_src_x <= viewport_right) {
+        return;
     }
-    // Re-anchor the scene crop on the actor.
-    int cx = kActorSrcX - vis_w / 2;
+    // Actor is outside the viewport.  Slide _cropX toward the centred
+    // target one step per tick rather than snapping — matches the
+    // engine's own 8-px camera step so the LCD viewport eases over to
+    // the action with the camera, no jarring jump.  The slide stops
+    // automatically as soon as the actor enters the viewport (the
+    // early return above).
+    int target_cx = actor_src_x - vis_w / 2;
     const int max_x = 320 - vis_w;
-    if (cx < 0)     cx = 0;
-    if (cx > max_x) cx = max_x;
-    _cropX = cx;
-    // Clamp the cursor into the new viewport so it doesn't end up
-    // off-screen (which would leave sample_frame's edge-pan unable
-    // to push _cropX back without dpad input).  If the user's cursor
-    // was already well outside the new view (e.g. on the right edge
-    // when actor walked into a left-side sub-room), pull it to the
-    // matching edge so it stays visible and stops fighting the
-    // re-anchor next frame.
-    if (_cursorX < cx)              _cursorX = cx;
-    if (_cursorX > cx + vis_w - 1)  _cursorX = cx + vis_w - 1;
+    if (target_cx < 0)     target_cx = 0;
+    if (target_cx > max_x) target_cx = max_x;
+    constexpr int kStepPx = 8;         // matches SCUMM camera step (camera.cpp:149)
+    if (_cropX < target_cx) {
+        _cropX = (_cropX + kStepPx > target_cx) ? target_cx : _cropX + kStepPx;
+    } else {
+        _cropX = (_cropX - kStepPx < target_cx) ? target_cx : _cropX - kStepPx;
+    }
+    // Clamp the cursor into the (sliding) viewport so it doesn't end
+    // up off-screen.  As _cropX advances each tick, the cursor follows
+    // the matching edge — also smooth, no snap.
+    if (_cursorX < _cropX)              _cursorX = _cropX;
+    if (_cursorX > _cropX + vis_w - 1)  _cursorX = _cropX + vis_w - 1;
 }
 
 void OSystem_Thumby::dropTalkAreaStamps() {

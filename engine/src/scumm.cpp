@@ -124,7 +124,7 @@ using Common::File;
 // THUMBY-PORT: bridges defined in osystem_thumby.cpp.
 extern "C" void thumby_set_verb_panel_active(bool active);
 extern "C" void thumby_track_room(int room);
-extern "C" void thumby_track_camera(int x);
+extern "C" void thumby_track_camera(int camera_x, int actor_src_x);
 
 namespace Scumm {
 
@@ -3057,7 +3057,33 @@ void ScummEngine::scummLoop(int delta) {
 		// beginCutscene/endCutscene blocks; flipping the panel state
 		// each time would clear the LCD text overlay (talk text and all)
 		// every time a script enters a cutscene block.
-		const bool gameplay = (_currentRoom != 0 && _userPut > 0);
+		//
+		// DO gate on visible verb count: scenes like the cliff-top
+		// "I am Guybrush Threepwood" lookout have _userPut > 0 but no
+		// verbs populated, so the verb panel band would render empty
+		// (a half-rendered mess at LCD bottom).  Counting verbs whose
+		// curmode/verbid are both non-zero distinguishes "12-verb
+		// interface or dialog responses are showing" from "narrative /
+		// scripted scene with no panel content".
+		// Count verbs that drawVerb() would actually draw — must match
+		// the conditions at verbs.cpp:1130 exactly: !saveid && curmode &&
+		// verbid.  Missing the !saveid bit was why an earlier version
+		// fired the verb-panel split during the cliff-top lookout: the
+		// engine populates verb slots with saveid != 0 there, my count
+		// included them, but drawVerb wouldn't emit any LCD stamps —
+		// so the panel split was active with no actual verb content,
+		// just scene continuation pixels showing in the band.  Mode
+		// cycle "fixed" it because clearLcdTextOverlay() runs but
+		// redrawVerbs() (which would re-emit) does nothing — proving
+		// drawVerb is skipping all of them.
+		int visibleVerbCount = 0;
+		for (int i = 1; i < _numVerbs; i++) {
+			if (!_verbs[i].saveid && _verbs[i].curmode && _verbs[i].verbid) {
+				visibleVerbCount++;
+			}
+		}
+		const bool gameplay = (_currentRoom != 0 && _userPut > 0 &&
+		                       visibleVerbCount > 0);
 		thumby_set_verb_panel_active(gameplay);
 		// Notify the platform when the room changes so it can re-centre
 		// the cursor (and therefore the scene crop) on the new scene —
@@ -3252,9 +3278,25 @@ load_game:
 		walkActors();
 		LOOP_CKPT("scummLoop pre-moveCamera",     0x001F);  // blue
 		moveCamera();
-		// THUMBY-PORT: slide _cropX with the camera so the LCD viewport
-		// tracks the engine's camera pan within wide rooms.
-		thumby_track_camera(camera._cur.x);
+		// THUMBY-PORT: track camera pan so the LCD viewport follows
+		// the action.  Pass the EGO actor's source-x explicitly because
+		// during a long panCameraTo (e.g. SCUMM bar → pirate leaders)
+		// the camera lags the actor; assuming actor at source 160
+		// (camera-centred) is wrong mid-pan and would prevent the
+		// re-anchor from firing when the actor leaves the user's view.
+		{
+			int actor_src_x = 160;        // fallback if ego unset
+			if (VAR_EGO != 0xFF) {
+				int ego_id = VAR(VAR_EGO);
+				if (ego_id > 0 && ego_id < _numActors) {
+					Actor *ego = derefActorSafe(ego_id, "thumby_track_camera");
+					if (ego) {
+						actor_src_x = ego->getPos().x - (camera._cur.x - 160);
+					}
+				}
+			}
+			thumby_track_camera(camera._cur.x, actor_src_x);
+		}
 		LOOP_CKPT("scummLoop pre-updateObjects",  0xFD20);  // orange
 		updateObjectStates();
 		if (_game.version > 3)
