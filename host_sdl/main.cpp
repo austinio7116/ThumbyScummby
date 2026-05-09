@@ -232,6 +232,7 @@ int main(int argc, char **argv) {
     tsb::ScummEngine *eng = (dr.game.version == 4)
         ? (tsb::ScummEngine *)new tsb::ScummEngine_v4(&osys, dr)
         : (tsb::ScummEngine *)new tsb::ScummEngine_v5(&osys, dr);
+    osys.setEngine(eng);
 
     Common::Error err = eng->run();
     if (err.getCode() != Common::kNoError) {

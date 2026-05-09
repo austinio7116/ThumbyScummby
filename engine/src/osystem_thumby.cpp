@@ -6,6 +6,8 @@
 
 #include "osystem_thumby.h"
 #include "platform.h"
+#include "save_menu.h"
+#include "scumm/scumm.h"
 #include "common/mutex.h"
 #include "common/events.h"
 #include "audio/mixer.h"
@@ -418,6 +420,18 @@ void OSystem_Thumby::updateScreen() {
     // Mark frame complete so the device input poller knows it's safe to
     // re-sample buttons on its next pollEvent call.
     _frameDone = true;
+
+    // Hold-LB save/load menu — gated on the engine being at a savable
+    // point (canSaveGameStateCurrently — no cutscene, room ready).
+    // Triggers once per long-hold; the menu run() blocks until the user
+    // picks an option, so the engine is effectively paused for the duration.
+    if (_engine) {
+        const bool lb = platform::is_lb_held();
+        const bool in_control = _engine->canSaveGameStateCurrently();
+        if (save_menu::maybe_trigger(lb, in_control)) {
+            save_menu::run(_engine);
+        }
+    }
 }
 
 // MENU cycles Fit → Fill → Crop → Fit.  When entering a mode whose

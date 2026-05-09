@@ -5,6 +5,7 @@ find_package(SDL2 REQUIRED)
 add_executable(thumbyscummby
     main.cpp
     platform_sdl.cpp
+    save_backend.cpp
 )
 
 target_link_libraries(thumbyscummby

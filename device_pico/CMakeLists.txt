@@ -76,6 +76,7 @@ add_custom_target(tsb_data_blob DEPENDS ${DATA_BLOB})
 add_executable(thumbyscummby
     main.cpp
     platform_pico.cpp
+    save_backend.cpp
     lcd_gc9107.c
     buttons.c
     audio_pwm.c
@@ -129,6 +130,7 @@ target_link_libraries(thumbyscummby PRIVATE
     hardware_clocks
     hardware_sync
     hardware_timer
+    hardware_flash
 )
 
 # Use the SDK-provided float/double implementations. dbopl's

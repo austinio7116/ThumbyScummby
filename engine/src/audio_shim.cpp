@@ -19,6 +19,7 @@
 #include "scumm/sound.h"
 #include "scumm/scumm.h"
 #include "scumm/resource.h"
+#include "common/serializer.h"
 #include "imuse.h"          // our imuse_start_sound / imuse_stop_sound / etc
 
 namespace tsb {
@@ -145,7 +146,14 @@ void Sound::resetSpeechTimer()                          {}
 void Sound::startSpeechTimer()                          {}
 void Sound::stopSpeechTimer()                           {}
 bool Sound::speechIsPlaying()                           { return false; }
-void Sound::saveLoadWithSerializer(Common::Serializer &) {}
+void Sound::saveLoadWithSerializer(Common::Serializer &s) {
+	// Real bodies in scummvm sound.cpp:1247.  _soundCD is nullptr in our
+	// build (no SoundCD), so we sync a literal 0 through the same VER
+	// gate so save layout matches upstream.
+	int16 cd_track = 0;
+	s.syncAsSint16LE(cd_track, VER(35));
+	s.syncAsSint16LE(_currentMusic, VER(35));
+}
 void Sound::restoreAfterLoad()                          {}
 bool Sound::isAudioDisabled()                           { return false; }
 

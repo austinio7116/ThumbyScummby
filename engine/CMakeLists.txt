@@ -92,7 +92,8 @@ add_library(thumbyscummby_engine STATIC
     # src/script_v4.cpp      # depends on script.cpp
     # src/script_v5.cpp      # ~80 v5 opcodes
     # src/scumm.cpp          # ScummEngine::init/go bodies
-    # src/saveload.cpp       # out of MVP
+    src/saveload.cpp       # SCUMM v5 save/load (Phase 8)
+    src/save_menu.cpp      # hold-LB SAVE/LOAD/CANCEL UI
 
     # ---- Bridge implementations (will shrink as pivot completes) ----
     src/osystem_thumby.cpp

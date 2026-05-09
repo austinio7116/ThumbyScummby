@@ -187,6 +187,8 @@ class TimerManager;
 //      via audio_shim.cpp later.
 // ---------------------------------------------------------------------------
 
+namespace Common { class Serializer; }
+
 namespace Scumm {        // == namespace tsb after rewrite
 
 // audio/musicplugin.h MusicEngine — abstract base.  Stubbed for parse only.
@@ -206,6 +208,7 @@ public:
     virtual void toggleMusic(bool) {}
     virtual void toggleSoundEffects(bool) {}
     virtual void restoreAfterLoad() {}
+    virtual void saveLoadWithSerializer(Common::Serializer &) {}
 };
 
 // scummvm-upstream/scumm/imuse/imuse.h.  Replaced by our imuse.cpp;
@@ -228,6 +231,7 @@ public:
         PROP_DIRECT_PASSTHROUGH = 8,
     };
     uint32 property(int, uint32) { return 0; }
+    void saveLoadIMuse(Common::Serializer &, ScummEngine *) {}
 };
 
 // Sysex handlers for SCUMM games (used as function pointers).
@@ -273,6 +277,7 @@ public:
     virtual bool initialize() { return true; }
     virtual void clearTextArea() {}
     virtual void reset() {}
+    virtual void resetAfterLoad() {}
 };
 
 // SoundHE — minimal subclass with playVoice for HE talkie path.

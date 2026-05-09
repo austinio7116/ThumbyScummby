@@ -356,6 +356,7 @@ int main() {
     dr.md5            = "8e4ee4db46954bfcb6d2654dde0aae25";
 
     tsb::ScummEngine *eng = new tsb::ScummEngine_v4(&osys, dr);
+    osys.setEngine(eng);
 
     Common::Error err = eng->init();
     if (err.getCode() == Common::kNoError) {

@@ -1021,6 +1021,16 @@ public:
 	void requestSave(int slot, const Common::String &name);
 	void requestLoad(int slot);
 
+	// ThumbyScummby — synchronous save/load entry points used by the
+	// hold-LB menu (engine/src/save_menu.cpp).  Thin wrappers around
+	// the protected saveState(int,bool,String&) / loadState(int,bool).
+	bool saveSlot0(const Common::String &description) {
+		_saveLoadDescription = description;
+		Common::String fname;
+		return saveState(0, false, fname);
+	}
+	bool loadSlot0() { return loadState(0, false); }
+
 	Common::String getTargetName() const { return _targetName; }
 	bool canPauseSoundsDuringSave() const { return _pauseSoundsDuringSave; }
 

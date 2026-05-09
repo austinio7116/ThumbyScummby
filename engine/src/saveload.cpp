@@ -556,14 +556,23 @@ uint32 *ScummEngine_v8::fetchScummVMSaveStateThumbnail(int slotId, bool isHeapSa
 }
 #endif
 
-Common::SeekableReadStream *ScummEngine::openSaveFileForReading(int slot, bool compat, Common::String &fileName) {
-	fileName = makeSavegameName(slot, compat);
-	return _saveFileMan->openForLoading(fileName);
+// ThumbyScummby — _saveFileMan is nullptr in our build.  We expose a
+// single save slot via save_backend (host: file in cwd; device: top
+// 64 KB of flash).  Slot # is ignored.  Forward-declare so we don't have
+// to nest the save_backend.h include inside the surrounding namespace.
+namespace save_backend {
+	Common::SeekableWriteStream *open_for_writing();
+	Common::SeekableReadStream  *open_for_reading();
 }
 
-Common::SeekableWriteStream *ScummEngine::openSaveFileForWriting(int slot, bool compat, Common::String &fileName) {
-	fileName = makeSavegameName(slot, compat);
-	return _saveFileMan->openForSaving(fileName);
+Common::SeekableReadStream *ScummEngine::openSaveFileForReading(int /*slot*/, bool /*compat*/, Common::String &fileName) {
+	fileName = "thumbyscummby.sav";
+	return save_backend::open_for_reading();
+}
+
+Common::SeekableWriteStream *ScummEngine::openSaveFileForWriting(int /*slot*/, bool /*compat*/, Common::String &fileName) {
+	fileName = "thumbyscummby.sav";
+	return save_backend::open_for_writing();
 }
 
 bool ScummEngine::saveState(Common::SeekableWriteStream *out, bool writeHeader) {
@@ -927,48 +936,17 @@ Common::String ScummEngine::makeSavegameName(const Common::String &target, int s
 }
 
 void ScummEngine::listSavegames(bool *marks, int num) {
+	// ThumbyScummby — no _saveFileMan; listing not used by our UI.
 	assert(marks);
-
-	char slot[3];
-	int slotNum;
-	Common::StringArray files;
-
-	Common::String prefix = makeSavegameName(99, false);
-	prefix.setChar('*', prefix.size() - 2);
-	prefix.setChar(0, prefix.size() - 1);
-	memset(marks, false, num * sizeof(bool));	// Assume no savegames for this title
-	files = _saveFileMan->listSavefiles(prefix);
-
-	for (Common::StringArray::const_iterator file = files.begin(); file != files.end(); ++file) {
-		// Obtain the last 2 digits of the filename, since they correspond to the save slot
-		slot[0] = file->c_str()[file->size() - 2];
-		slot[1] = file->c_str()[file->size() - 1];
-		slot[2] = 0;
-
-		slotNum = atoi(slot);
-		if (slotNum >= 0 && slotNum < num)
-			marks[slotNum] = true;	// Mark this slot as valid
-	}
+	memset(marks, false, num * sizeof(bool));
 }
 
 bool getSavegameName(Common::InSaveFile *in, Common::String &desc, int heversion);
 
 bool ScummEngine::getSavegameName(int slot, Common::String &desc) {
-	Common::InSaveFile *in = nullptr;
-	bool result = false;
-
+	// ThumbyScummby — no _saveFileMan; we never call this from our UI.
 	desc.clear();
-	Common::String filename = makeSavegameName(slot, false);
-	in = _saveFileMan->openForLoading(filename);
-	if (in) {
-		result = Scumm::getSavegameName(in, desc, _game.heversion);
-		delete in;
-	}
-
-	Common::U32String temp(desc.c_str(), Common::kUtf8);
-	desc = temp.encode(getDialogCodePage());
-
-	return result;
+	return false;
 }
 
 bool getSavegameName(Common::InSaveFile *in, Common::String &desc, int heversion) {
@@ -983,41 +961,11 @@ bool getSavegameName(Common::InSaveFile *in, Common::String &desc, int heversion
 }
 
 bool ScummEngine::querySaveMetaInfos(const char *target, int slot, int heversion, Common::String &desc, Graphics::Surface *&thumbnail, SaveStateMetaInfos *&timeInfos) {
-	if (slot < 0) {
-		return false;
-	}
-
-	SaveGameHeader hdr;
-	const Common::String filename = ScummEngine::makeSavegameName(target, slot, false);
-	Common::ScopedPtr<Common::SeekableReadStream> in(g_system->getSavefileManager()->openForLoading(filename));
-
-	if (!in) {
-		return false;
-	}
-
-	if (!loadAndCheckSaveGameHeader(in.get(), heversion, hdr)) {
-		return false;
-	}
-
-	desc = hdr.name;
-
-	if (hdr.ver > VER(52)) {
-		if (Graphics::checkThumbnailHeader(*in)) {
-			if (!Graphics::loadThumbnail(*in, thumbnail)) {
-				return false;
-			}
-		}
-
-		if (hdr.ver > VER(57)) {
-			if (!loadInfos(in.get(), timeInfos)) {
-				return false;
-			}
-		} else {
-			timeInfos = nullptr;
-		}
-	}
-
-	return true;
+	// ThumbyScummby — only the MetaEngine variant is called from our build
+	// (scumm.cpp:getMetaEngine()->querySaveMetaInfos), and that one is
+	// stubbed to return an empty SaveStateDescriptor.  This static
+	// override is dead code; stub it.
+	return false;
 }
 
 bool ScummEngine::loadInfos(Common::SeekableReadStream *file, SaveStateMetaInfos *stuff) {

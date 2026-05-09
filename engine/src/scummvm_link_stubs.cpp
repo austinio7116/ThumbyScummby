@@ -411,6 +411,7 @@ bool Engine::gameTypeHasAddOns() const                  { return false; }
 Common::Error Engine::loadGameStream(Common::SeekableReadStream *) { return Common::kNoError; }
 Common::Error Engine::saveGameStream(Common::WriteStream *, bool) { return Common::kNoError; }
 void Engine::setTotalPlayTime(uint32)                   {}
+uint32 Engine::getTotalPlayTime() const                  { return 0; }
 int  Engine::runDialog(GUI::Dialog &)                   { return 0; }
 void Engine::openMainMenuDialog()                       {}
 
@@ -585,24 +586,9 @@ ActorHE::ActorHE(ScummEngine *vm, int id) : Actor(vm, id) {}
 // ScummEngine — methods whose .cpps we don't compile.
 // ============================================================================
 namespace tsb {
-// Save/load — out of MVP.  Bodies match real signatures in scumm.h.
-Common::Error ScummEngine::loadGameState(int) { return Common::kNoError; }
-Common::Error ScummEngine::saveGameState(int, const Common::String &, bool) { return Common::kNoError; }
-bool ScummEngine::canLoadGameStateCurrently(Common::U32String *) { return false; }
-bool ScummEngine::canSaveGameStateCurrently(Common::U32String *) { return false; }
-bool ScummEngine::loadState(int, bool) { return false; }
-bool ScummEngine::loadState(int, bool, Common::String &) { return false; }
-bool ScummEngine::saveState(int, bool, Common::String &) { return false; }
-bool ScummEngine::saveState(Common::SeekableWriteStream *, bool) { return false; }
-void ScummEngine::requestLoad(int) {}
-bool ScummEngine::changeSavegameName(int, char *) { return false; }
-bool ScummEngine::getSavegameName(int, Common::String &) { return false; }
-Common::String ScummEngine::makeSavegameName(const Common::String &, int, bool) { return Common::String(); }
-void ScummEngine::listSavegames(bool *, int) {}
-Common::SeekableReadStream *ScummEngine::openSaveFileForReading(int, bool, Common::String &) { return nullptr; }
-Common::SeekableWriteStream *ScummEngine::openSaveFileForWriting(int, bool, Common::String &) { return nullptr; }
-int  ScummEngine::checkSoundEngineSaveDataSize(Serializer &) { return 0; }
-void ScummEngine::saveLoadWithSerializer(Common::Serializer &) {}
+// Save/load — real impls in saveload.cpp.  Default openSaveFileForReading/
+// Writing return nullptr; ThumbyScummby UI calls saveState(stream)/loadState(stream)
+// directly with FlashWriteStream/FlashReadStream from osystem_thumby.
 
 // Banner / GUI — out of MVP.  Header signatures use Common::int32 which
 // is `long int` on ARM (int32_t typedef); plain `int` doesn't match
@@ -689,7 +675,7 @@ namespace tsb {
 
 // v0
 bool ScummEngine_v0::areBoxesNeighbors(int, int) { return false; }
-int  ScummEngine_v0::checkSoundEngineSaveDataSize(Serializer &) { return 0; }
+// ScummEngine_v0::checkSoundEngineSaveDataSize — real impl in saveload.cpp.
 void ScummEngine_v0::decodeParseString() {}
 void ScummEngine_v0::drawSentenceLine() {}
 uint ScummEngine_v0::fetchScriptWord() { return 0; }
@@ -697,13 +683,13 @@ int  ScummEngine_v0::getActiveObject() { return 0; }
 int  ScummEngine_v0::getVarOrDirectWord(byte) { return 0; }
 void ScummEngine_v0::o_endCutscene() {}
 void ScummEngine_v0::resetSentence() {}
-void ScummEngine_v0::saveLoadWithSerializer(Common::Serializer &) {}
+// ScummEngine_v0::saveLoadWithSerializer — real impl in saveload.cpp.
 void ScummEngine_v0::setupOpcodes() {}
 
 // v5
-int  ScummEngine_v5::checkSoundEngineSaveDataSize(Serializer &) { return 0; }
+// ScummEngine_v5::checkSoundEngineSaveDataSize — real impl in saveload.cpp.
 // readMAXS lives in resource.cpp.
-void ScummEngine_v5::saveLoadWithSerializer(Common::Serializer &) {}
+// ScummEngine_v5::saveLoadWithSerializer — real impl in saveload.cpp.
 
 // v4 — most bodies in resource_v4.cpp; banner/menu stubs here.
 int  ScummEngine_v4::getBannerColor(int) { return 0; }

@@ -4750,9 +4750,8 @@ void Actor_v0::saveLoadWithSerializer(Common::Serializer &s) {
 }
 #endif
 
-// ThumbyScummby: save/load not supported.  Inherits empty default from
-// Common::Serializable.  Original scummvm body kept #if 0'd for reference.
-#if 0  // TODO: enable when save support lands (out of scope for v0-v5 MVP)
+// ThumbyScummby: enabled for save/load v5 path.  Actor_v0/v3 variants
+// remain disabled (we never instantiate them).
 void Actor::saveLoadWithSerializer(Common::Serializer &s) {
 	if (s.isLoading()) {
 		// Not all actor data is saved; so when loading, we first reset
@@ -4961,12 +4960,6 @@ void Actor_v3::saveLoadWithSerializer(Common::Serializer &s) {
 		s.syncAsUint16LE(_stepThreshold, VER(rev));
 	}
 }
-#endif  // Actor_v3::saveLoadWithSerializer (variant) — closes inner awk wrap
-#endif  // Actor::saveLoadWithSerializer — outer #if 0 open since 4752
-
-// ThumbyScummby: empty bodies for save/load overrides — actor.h declares
-// these with `override`, so the linker needs a definition.  Real bodies
-// land when save support is added (out of scope for v0-v5 MVP).
-void Actor::saveLoadWithSerializer(Common::Serializer & /*s*/) {}
+#endif  // Actor_v3::saveLoadWithSerializer (variant)
 
 } // End of namespace Scumm

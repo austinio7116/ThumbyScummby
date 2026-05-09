@@ -202,4 +202,26 @@ void debug_splash(uint16_t rgb565);
 // with flashed splash builds.
 void checkpoint(const char *label, uint16_t color);
 
+// ---------------------------------------------------------------------------
+// Save/Load menu — minimal direct-LCD draw primitives
+// ---------------------------------------------------------------------------
+// The save menu paints onto the LCD framebuffer directly (bypassing the
+// engine's 320×200 staging) so we don't need a 64 KB scratch buffer for
+// the overlay.  See engine/src/save_menu.cpp.
+
+// Clear the LCD framebuffer to a solid colour.
+void lcd_fill(uint16_t rgb565);
+
+// Plot a single pixel at (x, y) with `rgb565`.  No bounds check —
+// caller must keep coords in [0, 128).
+void lcd_pixel(int x, int y, uint16_t rgb565);
+
+// Push the current framebuffer to the panel and wait for DMA to drain.
+void lcd_present_now();
+
+// Non-destructive: is the LB shoulder currently held?  Used by the
+// hold-LB save/load trigger inside OSystem_Thumby::updateScreen.  Doesn't
+// pump events or consume edges — just reads the live button state.
+bool is_lb_held();
+
 }  // namespace tsb::platform

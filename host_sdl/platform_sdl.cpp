@@ -928,4 +928,37 @@ void checkpoint(const char *label, uint16_t /*color*/) {
 // no per-frame refill needed.
 void audio_pump() {}
 
+// ---------------------------------------------------------------------------
+// Save/Load menu primitives — direct LCD framebuffer paint.
+// ---------------------------------------------------------------------------
+
+void lcd_fill(uint16_t rgb565) {
+    using namespace tsb::platform_sdl;
+    for (int i = 0; i < DISPLAY_W * DISPLAY_H; i++) {
+        g.framebuffer[i] = rgb565;
+    }
+}
+
+void lcd_pixel(int x, int y, uint16_t rgb565) {
+    using namespace tsb::platform_sdl;
+    g.framebuffer[y * DISPLAY_W + x] = rgb565;
+}
+
+void lcd_present_now() {
+    using namespace tsb::platform_sdl;
+    SDL_UpdateTexture(g.tex, nullptr, g.framebuffer, DISPLAY_W * 2);
+    SDL_RenderClear(g.ren);
+    int rw = 0, rh = 0;
+    SDL_GetRendererOutputSize(g.ren, &rw, &rh);
+    SDL_Rect dst{0, 0, rw, rh};
+    SDL_RenderCopy(g.ren, g.tex, nullptr, &dst);
+    SDL_RenderPresent(g.ren);
+}
+
+bool is_lb_held() {
+    SDL_PumpEvents();
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    return keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_Q];
+}
+
 }  // namespace tsb::platform

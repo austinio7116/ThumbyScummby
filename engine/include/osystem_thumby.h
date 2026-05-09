@@ -19,10 +19,18 @@
 
 namespace tsb {
 
+class ScummEngine;
+
 class OSystem_Thumby : public OSystem {
 public:
     OSystem_Thumby();
     ~OSystem_Thumby() override;
+
+    // Set the active engine pointer; main.cpp calls this once after
+    // engine construction.  Used by the hold-LB save menu to call
+    // saveSlot0 / loadSlot0.
+    void setEngine(ScummEngine *e) { _engine = e; }
+    ScummEngine *engine() const { return _engine; }
 
     // ---- Lifecycle ----
     void initBackend() override;
@@ -210,6 +218,7 @@ public:
 private:
     EventPollerFn  _eventPollerFn   = nullptr;
     void          *_eventPollerUser = nullptr;
+    ScummEngine   *_engine          = nullptr;
 
     platform::ScaleMode _scaleMode = platform::ScaleMode::Fit;
     int  _cropX = 0;

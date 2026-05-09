@@ -924,6 +924,36 @@ void checkpoint(const char *label, uint16_t /*color*/) {
     while (1) { __asm volatile("wfi"); }
 }
 
+// ---------------------------------------------------------------------------
+// Save/Load menu primitives — direct LCD framebuffer paint.
+// ---------------------------------------------------------------------------
+
+void lcd_fill(uint16_t rgb565) {
+    using namespace tsb::platform_pico;
+    for (int i = 0; i < DISPLAY_W * DISPLAY_H; i++) {
+        g_fb[i] = rgb565;
+    }
+}
+
+void lcd_pixel(int x, int y, uint16_t rgb565) {
+    using namespace tsb::platform_pico;
+    g_fb[y * DISPLAY_W + x] = rgb565;
+}
+
+void lcd_present_now() {
+    using namespace tsb::platform_pico;
+    lcd_present(g_fb);
+    lcd_wait_idle();
+}
+
+bool is_lb_held() {
+    // Sample LB straight from the button driver — bypasses our debounce
+    // because we want the "is it currently held" signal, not an edge.
+    struct buttons_state st;
+    buttons_read(&st);
+    return st.lb;
+}
+
 }  // namespace tsb::platform
 
 // ---------------------------------------------------------------------------
