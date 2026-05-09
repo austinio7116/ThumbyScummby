@@ -77,6 +77,7 @@ add_executable(thumbyscummby
     main.cpp
     platform_pico.cpp
     save_backend.cpp
+    config_backend.cpp
     lcd_gc9107.c
     buttons.c
     audio_pwm.c

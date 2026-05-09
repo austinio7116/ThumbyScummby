@@ -3,6 +3,8 @@
 
 #include "save_menu.h"
 #include "save_backend.h"
+#include "config_backend.h"
+#include "audio_mix.h"
 #include "platform.h"
 #include "mi_font_render.h"
 #include "osystem_thumby.h"
@@ -10,6 +12,7 @@
 #include "common/serializer.h"
 #include "common/stream.h"
 
+#include <cstdio>
 #include <cstring>
 
 namespace tsb {
@@ -22,15 +25,16 @@ inline void draw_text(int x, int y, const char *str, uint16_t color) {
 }
 
 constexpr uint16_t kBlack = 0x0000;
-// MI1-palette accents — mint green for default text, yellow highlight,
-// dark grey for greyed-out (inaccessible) entries.
-constexpr uint16_t kWhite  = 0x57E5;     // mint green (verb text)
-constexpr uint16_t kHilite = 0xFFE0;     // yellow (selected)
-constexpr uint16_t kDim    = 0x39E7;     // dark grey
+// MI1 palette (RGB888 → RGB565):
+//   verb/response  #008f00 → 0x0460
+//   highlight      #cec760 → 0xCE2C
+constexpr uint16_t kWhite  = 0x0460;
+constexpr uint16_t kHilite = 0xCE2C;
+constexpr uint16_t kDim    = 0x39E7;
 
-constexpr int kMenuItems = 3;
-constexpr const char *kLabels[kMenuItems] = { "SAVE", "LOAD", "CANCEL" };
-enum { CHOICE_SAVE = 0, CHOICE_LOAD = 1, CHOICE_CANCEL = 2 };
+constexpr int kMenuItems = 4;
+constexpr const char *kLabels[kMenuItems] = { "SAVE", "LOAD", "VOLUME", "CANCEL" };
+enum { CHOICE_SAVE = 0, CHOICE_LOAD = 1, CHOICE_VOLUME = 2, CHOICE_CANCEL = 3 };
 
 // Half-screen translucent overlay box rows 60..119 (full LCD width).
 // The sentence strip at rows 120..127 stays visible underneath.
@@ -57,18 +61,16 @@ void paint_menu(OSystem_Thumby *osys, int sel, bool has_save, const char *status
 		tsb::platform::lcd_pixel(kBoxX + kBoxW - 1, kBoxY + y, kDim);
 	}
 
-	// Title in accent yellow, options in white (selected → yellow).
-	draw_text(kBoxX + 38, kBoxY + 4, "SAVE / LOAD", kHilite);
+	draw_text(kBoxX + 4, kBoxY + 3, "MENU", kHilite);
 	for (int i = 0; i < kMenuItems; i++) {
 		const bool greyed = (i == CHOICE_LOAD && !has_save);
 		uint16_t color = greyed ? kDim : kWhite;
 		if (i == sel) color = greyed ? kDim : kHilite;
-		const int y = kBoxY + 18 + i * 10;
-		// Selection is shown by colour; no leading marker.
+		const int y = kBoxY + 14 + i * 9;
 		draw_text(kBoxX + 8, y, kLabels[i], color);
 	}
 	if (status && status[0]) {
-		draw_text(kBoxX + 4, kBoxY + 50, status, kHilite);
+		draw_text(kBoxX + 4, kBoxY + 51, status, kHilite);
 	}
 
 	tsb::platform::lcd_present_now();
@@ -76,6 +78,90 @@ void paint_menu(OSystem_Thumby *osys, int sel, bool has_save, const char *status
 
 uint32_t s_lb_hold_start_ms = 0;
 bool     s_lb_was_held      = false;
+
+void paint_volume(OSystem_Thumby *osys, int level) {
+	if (osys) osys->renderSnapshotToFramebuffer();
+
+	tsb::platform::lcd_dim_box(kBoxX, kBoxY, kBoxW, kBoxH);
+	for (int x = 0; x < kBoxW; x++) {
+		tsb::platform::lcd_pixel(kBoxX + x,         kBoxY,             kDim);
+		tsb::platform::lcd_pixel(kBoxX + x,         kBoxY + kBoxH - 1, kDim);
+	}
+	for (int y = 0; y < kBoxH; y++) {
+		tsb::platform::lcd_pixel(kBoxX,             kBoxY + y, kDim);
+		tsb::platform::lcd_pixel(kBoxX + kBoxW - 1, kBoxY + y, kDim);
+	}
+
+	draw_text(kBoxX + 4, kBoxY + 3, "VOLUME", kHilite);
+
+	// Numeric readout.
+	char num[8];
+	std::snprintf(num, sizeof(num), "%d", level);
+	draw_text(kBoxX + kBoxW - 18, kBoxY + 3, num, kWhite);
+
+	// Bar: kAudioMixVolumeMax cells.  Filled cells in white, empty in
+	// dim grey, current cell in highlight yellow.  Bar lives in the
+	// middle of the box with a 4 px margin per side.
+	constexpr int kBarX  = 4;
+	constexpr int kBarY  = 24;
+	constexpr int kBarW  = 120;
+	constexpr int kBarH  = 8;
+	const int cells     = kAudioMixVolumeMax + 1;          // 0..max inclusive
+	const int cell_w    = kBarW / cells;
+	const int bar_total = cell_w * cells;
+	const int bar_origin_x = kBoxX + (kBoxW - bar_total) / 2;
+	for (int i = 0; i < cells; i++) {
+		const int x0 = bar_origin_x + i * cell_w;
+		const uint16_t fill = (i == level)
+		                          ? kHilite
+		                          : (i <= level ? kWhite : kDim);
+		for (int yy = 0; yy < kBarH; yy++) {
+			for (int xx = 1; xx < cell_w - 1; xx++) {
+				tsb::platform::lcd_pixel(x0 + xx, kBoxY + kBarY + yy, fill);
+			}
+		}
+	}
+	(void)kBarX; (void)kBarY;  // kept for layout reference
+
+	// Hint text.
+	draw_text(kBoxX + 4, kBoxY + 38, "L/R adjust", kDim);
+	draw_text(kBoxX + 4, kBoxY + 47, "A/B accept", kDim);
+
+	tsb::platform::lcd_present_now();
+}
+
+void run_volume(OSystem_Thumby *osys) {
+	int level = audio_mix_get_volume();
+	bool prev_left = false, prev_right = false;
+	while (true) {
+		paint_volume(osys, level);
+
+		tsb::platform::Input in{};
+		if (!tsb::platform::poll_input(&in)) return;
+		if (in.menu_pressed || in.b_pressed || in.a_pressed) {
+			// Persist on exit (also persisted live below — this is the
+			// final sync after any rapid adjustments).
+			config_backend::save_volume(level);
+			return;
+		}
+
+		const bool left_edge  = in.dpad_left  && !prev_left;
+		const bool right_edge = in.dpad_right && !prev_right;
+		prev_left  = in.dpad_left;
+		prev_right = in.dpad_right;
+		if (left_edge && level > 0) {
+			--level;
+			audio_mix_set_volume(level);
+			config_backend::save_volume(level);
+		}
+		if (right_edge && level < kAudioMixVolumeMax) {
+			++level;
+			audio_mix_set_volume(level);
+			config_backend::save_volume(level);
+		}
+		tsb::platform::sleep_ms(16);
+	}
+}
 
 }  // anonymous
 
@@ -162,6 +248,19 @@ void run(ScummEngine *engine) {
 				paint_menu(osys, sel, has, status);
 				tsb::platform::sleep_ms(900);
 				return;
+			}
+
+			if (sel == CHOICE_VOLUME) {
+				// Wait for A release so the sub-screen doesn't see this
+				// edge as an exit.
+				do {
+					tsb::platform::Input drain{};
+					if (!tsb::platform::poll_input(&drain)) return;
+					if (!drain.a_pressed) break;
+					tsb::platform::sleep_ms(16);
+				} while (true);
+				run_volume(osys);
+				continue;  // back to main menu
 			}
 		}
 

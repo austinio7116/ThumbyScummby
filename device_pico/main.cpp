@@ -15,6 +15,7 @@
 #include "imuse.h"
 #include "audio_mix.h"
 #include "opl2.h"
+#include "config_backend.h"
 #include "adlib.h"
 
 extern "C" {
@@ -328,6 +329,13 @@ int main() {
             tsb::opl2_init(actual_rate);
             tsb::adlib_init();
         }
+    }
+
+    // Apply persisted master volume from the config flash sector.
+    {
+        int loaded;
+        if (tsb::config_backend::load_volume(&loaded))
+            tsb::audio_mix_set_volume(loaded);
     }
 
     static tsb::OSystem_Thumby osys;        // static — lives in BSS, not stack.

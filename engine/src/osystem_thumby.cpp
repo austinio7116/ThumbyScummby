@@ -1200,15 +1200,15 @@ void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
     // bitmap is empty regardless of what the char actually is.
     const bool isBlank = (chr == ' ' || chr == '\t');
 
-    // Wrap policy: in the verb panel band (any panel content) and on
-    // the currently-highlighted line, soft-wrap is suppressed.  Panel
-    // area wrap would emit the wrapped portion on top of the next
-    // verb / dialog option's row (every option has its own scumm_ypos
-    // but the engine flushes them via beginLcdLine, leaving the
-    // wrap-tail at an LCD y that overlaps the next option).
-    // Highlighted lines marquee-scroll at present time instead.
-    // Glyphs that would land off the LCD right edge just clip.
-    const bool inhibit_wrap = _lcdLineHighlighted || (_lcdLineSrcY >= 144);
+    // Wrap policy: highlighted (mouseover marquee) lines never wrap —
+    // they marquee-scroll at present time instead.  Everything else
+    // soft-wraps on word breaks.  The old y>=144 inhibit was for
+    // legacy verb-panel content (dialog options living in the panel
+    // band), but those are now slot=4 and fully suppressed up in
+    // beginLcdLine, so the y check would only catch banner / modal
+    // text that happens to live at high source-y (MI1 title
+    // sequence "Deep in the Caribbean" is rendered around y=140).
+    const bool inhibit_wrap = _lcdLineHighlighted;
 
     // Soft-wrap if appending this glyph would push line width past the
     // budget.  Prefer the last word-break point; if there isn't one,

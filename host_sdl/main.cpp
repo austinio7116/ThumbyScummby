@@ -25,6 +25,7 @@
 #include "imuse.h"
 #include "audio_mix.h"
 #include "opl2.h"
+#include "config_backend.h"
 #include "adlib.h"
 
 #include <stdio.h>
@@ -190,6 +191,14 @@ int main(int argc, char **argv) {
             tsb::adlib_init();
         }
         tsb::platform::log("audio: %d Hz mono\n", actual_rate);
+    }
+
+    // Apply persisted master volume if a config exists.  No config →
+    // audio_mix.cpp default (level 10 = unity gain) stays in effect.
+    {
+        int loaded;
+        if (tsb::config_backend::load_volume(&loaded))
+            tsb::audio_mix_set_volume(loaded);
     }
 
     // OSystem subclass that bridges to tsb::platform::*.  Lives on the stack
