@@ -3213,14 +3213,21 @@ void ScummEngine_v5::o5_verbOps() {
 			vs->center = 0;
 			vs->imgindex = 0;
 			// THUMBY-PORT: flag this slot as a dialog response only
-			// while the response-window is open (i.e. the engine is
-			// in the post-talk pause where dialog options spawn —
-			// see ScummEngine::setTalkingActor).  This excludes
-			// SO_VERB_NEW for inventory arrows, save-screen widgets,
-			// banner text, and any other in-game verbs created
-			// while no NPC has just stopped speaking.
+			// when BOTH temporal and geometric signals agree.  The
+			// temporal window opens when the talking actor stops
+			// (setTalkingActor edge to 0/255).  The geometric check
+			// requires the verb's curRect to span >= 160 source-px
+			// — dialog options always occupy a full panel-width row
+			// via SO_VERB_AT, while the standard 12 verbs each
+			// occupy a 40..80-px column.  A skipped conversation
+			// leaves the temporal window open while the engine
+			// restores the standard 12 verbs; geometric AND
+			// excludes them so the verb picker doesn't auto-open
+			// onto the standard set after a skip.
 			if (slot < (int)(sizeof(_verbIsDialogResponse) / sizeof(_verbIsDialogResponse[0]))) {
-				_verbIsDialogResponse[slot] = _dialogResponseWindowOpen;
+				const int width = vs->curRect.right - vs->curRect.left;
+				_verbIsDialogResponse[slot] =
+				    _dialogResponseWindowOpen && (width >= 160);
 			}
 			break;
 

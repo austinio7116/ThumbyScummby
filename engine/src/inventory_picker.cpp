@@ -25,7 +25,7 @@ constexpr int kBoxY = 60;
 constexpr int kBoxW = 128;
 constexpr int kBoxH = 60;
 
-struct Entry { int slot_index; const char *name; };
+struct Entry { int slot_index; char name[24]; };
 
 int gather_inventory(ScummEngine *eng, Entry *out, int max) {
 	// Read the engine's authoritative inventory array — _inventory[i]
@@ -43,8 +43,26 @@ int gather_inventory(ScummEngine *eng, Entry *out, int max) {
 		if (eng->publicGetActorOwner(obj) != ego) continue;  // not held by player
 		const byte *name = eng->publicGetObjOrActorName(obj);
 		if (!name || !name[0]) continue;
-		out[n].slot_index = obj;                   // object id, not verb slot
-		out[n].name       = reinterpret_cast<const char *>(name);
+		// MI1 v4 OBCD names are stored inline in the resource and
+		// may not be strictly null-terminated for the rendering
+		// purposes we want — adjacent bytes (padding / next field)
+		// can include 0x2D ('-') or '@' (SCUMM space-pad).  Copy
+		// only printable 7-bit ASCII (32..126) and stop at the
+		// first '@' (SCUMM end-of-string fill), 0xFF (SCUMM
+		// markup escape), or non-printable byte.  Trim trailing
+		// spaces too.
+		out[n].slot_index = obj;
+		int dst = 0;
+		for (int j = 0; j < (int)sizeof(out[n].name) - 1 && name[j]; ++j) {
+			const byte b = name[j];
+			if (b == 0xFF) break;          // SCUMM control-code escape
+			if (b == '@')  break;          // SCUMM end-of-string padding
+			if (b < 32 || b > 126) break;  // non-printable
+			out[n].name[dst++] = (char)b;
+		}
+		while (dst > 0 && out[n].name[dst - 1] == ' ') --dst;
+		out[n].name[dst] = 0;
+		if (dst == 0) continue;            // nothing renderable
 		++n;
 	}
 	return n;
@@ -125,14 +143,38 @@ void run(ScummEngine *engine) {
 		if (down_edge) sel = (sel + 1) % count;
 
 		if (in.a_pressed) {
-			// slot_index in this picker is the OBJECT ID, not a verb
-			// slot.  Fire runInputScript(kInventoryClickArea, obj, 0)
-			// — same path the engine takes when the user clicks an
-			// inventory ImageVerb in the panel.  Bypasses the
-			// synthesized-click route since there's no on-screen
-			// inventory grid for the cursor to "click".
-			engine->publicRunInputScript(kInventoryClickArea,
-			                             entries[sel].slot_index, 0);
+			// MI1 v5 inventory: items render as kTextVerbType verbs
+			// in the panel.  Visible item slots have verbid 101..104,
+			// curmode=1.  The slot's resource name is a SCUMM control
+			// sequence (0xff 0x06 ...) that resolves to the object
+			// name only at draw time — we can't compare names from
+			// the resource directly.  Instead, the sel-th picker
+			// entry corresponds to the sel-th visible inventory slot
+			// (both are in inventory order).
+			//
+			// Find the sel-th visible inventory verb, then dispatch
+			// its verbid via runInputScript directly.  This matches
+			// the engine's checkExecVerbs path
+			// (verbs.cpp:689 runInputScript(kVerbClickArea,
+			// _verbs[over].verbid, code)) but skips findVerbAtPos —
+			// we already know the verbid.  The verb-script reads
+			// only `val` for kVerbClickArea handling, so _mouse
+			// state doesn't need setup.
+			int target_verbid = 0;
+			int idx = 0;
+			for (int v = 1; v < engine->numVerbs(); ++v) {
+				const VerbSlot &vs = engine->_verbs[v];
+				if (vs.saveid || !vs.curmode || !vs.verbid) continue;
+				if (vs.verbid < 101 || vs.verbid > 104) continue;
+				if (idx == sel) { target_verbid = vs.verbid; break; }
+				++idx;
+			}
+			if (target_verbid > 0) {
+				engine->publicRunInputScript(kVerbClickArea,
+				                             target_verbid, 1);
+			}
+			// Items outside the visible 4-slot window need scroll
+			// first — TODO via verbid 107/108 (scroll arrows).
 			return;
 		}
 		tsb::platform::sleep_ms(16);

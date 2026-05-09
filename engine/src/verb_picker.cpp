@@ -124,6 +124,13 @@ void paint(OSystem_Thumby *osys, ScummEngine *eng,
 // while the engine is still in the same verb state.
 static uint32_t s_dismissed_fingerprint = 0;
 
+// Track the name of the verb the user most-recently picked from the
+// verb picker.  inventory_picker reads this to compose a partial
+// sentence ("Use fish ...") in the LCD strip when the engine's own
+// sentence-rendering path doesn't fire on our synthesized click.
+static char s_last_verb_name[24] = {0};
+const char *last_picked_verb_name() { return s_last_verb_name; }
+
 uint32_t verb_set_fingerprint(ScummEngine *engine) {
 	if (!engine) return 0;
 	uint32_t h = 5381;
@@ -200,21 +207,33 @@ void run(ScummEngine *engine) {
 
 		if (in.a_pressed) {
 			const VerbSlot &vs = engine->_verbs[entries[sel].slot_index];
-			const int cx = (vs.curRect.left + vs.curRect.right) / 2;
-			const int cy = (vs.curRect.top + vs.curRect.bottom) / 2;
 			const bool was_dialog = dialog_mode_active(engine);
-			if (osys) {
-				osys->synthesizeLeftClick(cx, cy);
-				// Clear the sentence strip after a dialog response so
-				// the player doesn't see their just-spoken line still
-				// marquee-scrolling while the NPC's reply renders in
-				// the scene.  Cleared only for dialog mode — normal
-				// verb picks update the sentence via the engine's
-				// usual path.
-				if (was_dialog) {
-					osys->captureSentence(nullptr);
-					osys->captureNpcQuestion(nullptr);
-				}
+			// Remember the verb's text so inventory_picker (or
+			// any future overlay) can read it.
+			{
+				int i = 0;
+				for (; i < (int)sizeof(s_last_verb_name) - 1 &&
+				       entries[sel].text[i]; ++i)
+					s_last_verb_name[i] = entries[sel].text[i];
+				s_last_verb_name[i] = 0;
+			}
+			// Direct verb-script dispatch — same call the engine
+			// makes when checkExecVerbs resolves a real mouse
+			// click via findVerbAtPos.  We already know the
+			// verbid; skip findVerbAtPos.  The verb-script reads
+			// only `val` (the verbid) for kVerbClickArea handling
+			// — _mouse / _virtualMouse don't need to be set.
+			//
+			// Synth-click was unreliable: scaled mouse coords in
+			// some build paths (textSurfaceMultiplier=2) caused
+			// findVerbAtPos to miss / route to wrong virtscreen.
+			engine->publicRunInputScript(kVerbClickArea, vs.verbid, 1);
+			// Clear the sentence strip after a dialog response so
+			// the player doesn't see their just-spoken line still
+			// marquee-scrolling while the NPC's reply renders.
+			if (osys && was_dialog) {
+				osys->captureSentence(nullptr);
+				osys->captureNpcQuestion(nullptr);
 			}
 			// Close the temporal response window — the user just
 			// answered.  New verbs created during the next NPC line

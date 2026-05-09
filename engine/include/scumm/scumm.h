@@ -1066,6 +1066,9 @@ public:
 	int           publicGetEgoVar() {
 		return (VAR_EGO != 0xFF) ? VAR(VAR_EGO) : 0;
 	}
+	int           publicGetTalkingActor() {
+		return getTalkingActor();
+	}
 	// Public bridge to runInputScript — used by the inventory picker
 	// to fire the engine's inventory-click handler directly with the
 	// chosen object id, mirroring what verbs.cpp does when the user
@@ -1117,6 +1120,19 @@ public:
 		if (slot < 0 || slot >= max) return false;
 		return _verbIsDialogResponse[slot];
 	}
+
+	// THUMBY-PORT — fire a verb click as if the user had mouse-clicked
+	// on the verb's curRect in the panel.  Exact mirror of what
+	// processInput + checkExecVerbs do for a real click: set _mouse /
+	// _virtualMouse / VAR_VIRT_MOUSE_X/Y to the click point, then call
+	// runInputScript(kVerbClickArea, verbid, 1).  Definition is in
+	// script.cpp where VerbSlot is fully defined.
+	bool publicClickVerbAt(int verb_slot);
+
+	// THUMBY-PORT — dump every loadable script's bytecode to a directory.
+	// Called from go() when THUMBY_DUMP_SCRIPTS is set; writes
+	// <dir>/script_NNN.bin (raw) + <dir>/SCRIPTS_INDEX.txt.
+	void publicDumpAllScripts(const char *output_dir);
 
 	Common::String getTargetName() const { return _targetName; }
 	bool canPauseSoundsDuringSave() const { return _pauseSoundsDuringSave; }

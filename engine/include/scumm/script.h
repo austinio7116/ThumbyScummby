@@ -30,15 +30,9 @@ typedef Common::Functor0<void> Opcode;
 
 struct OpcodeEntry : Common::NonCopyable {
 	Opcode *proc;
-#ifndef REDUCE_MEMORY_USAGE
 	const char *desc;
-#endif
 
-#ifndef REDUCE_MEMORY_USAGE
 	OpcodeEntry() : proc(0), desc(0) {}
-#else
-	OpcodeEntry() : proc(0) {}
-#endif
 	~OpcodeEntry() {
 		setProc(0, 0);
 	}
@@ -48,20 +42,15 @@ struct OpcodeEntry : Common::NonCopyable {
 			delete proc;
 			proc = p;
 		}
-#ifndef REDUCE_MEMORY_USAGE
 		desc = d;
-#endif
 	}
 };
 
-
-// This is to help devices with small memory (PDA, smartphones, ...)
-// to save abit of memory used by opcode names in the Scumm engine.
-#ifndef REDUCE_MEMORY_USAGE
-#	define _OPCODE(ver, x)	setProc(new Common::Functor0Mem<void, ver>(this, &ver::x), #x)
-#else
-#	define _OPCODE(ver, x)	setProc(new Common::Functor0Mem<void, ver>(this, &ver::x), "")
-#endif
+// THUMBY-PORT: opcode name strings unconditionally kept (was previously
+// gated by REDUCE_MEMORY_USAGE for memory savings on PDA-class devices).
+// We keep them so traces / disassembly are readable; cost is ~256 string
+// pointers + the .rodata strings — tiny next to the engine.
+#define _OPCODE(ver, x)	setProc(new Common::Functor0Mem<void, ver>(this, &ver::x), #x)
 
 /**
  * The number of script slots, which determines the maximal number

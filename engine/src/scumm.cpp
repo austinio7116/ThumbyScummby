@@ -2690,6 +2690,19 @@ Common::Error ScummEngine::go() {
 
 	_lastWaitTime = _system->getMillis();
 
+	// THUMBY-PORT script-dump mode.  When THUMBY_DUMP_SCRIPTS=<dir> is
+	// set, run the boot script (so the index is populated and any
+	// initial resources are loaded), then iterate every script id and
+	// dump its bytecode as <dir>/script_NNN.bin.  Also writes
+	// SCRIPTS_INDEX.txt with size/script-number mapping.  Used by
+	// tools/scumm_v5_dasm.py to disassemble offline — no need to play
+	// the game to see what a script does.
+	if (const char *dump_dir = std::getenv("THUMBY_DUMP_SCRIPTS")) {
+		runBootscript();
+		publicDumpAllScripts(dump_dir);
+		return Common::kNoError;
+	}
+
 	// If requested, load a save game instead of running the boot script
 	if (_saveLoadFlag != 2 || !loadState(_saveLoadSlot, _saveTemporaryState)) {
 		_saveLoadFlag = 0;
@@ -3076,28 +3089,38 @@ void ScummEngine::scummLoop(int delta) {
 		// cycle "fixed" it because clearLcdTextOverlay() runs but
 		// redrawVerbs() (which would re-emit) does nothing — proving
 		// drawVerb is skipping all of them.
-		int visibleVerbCount = 0;
+		// "Standard verb panel present" signal: any of the 12 standard
+		// verbs (verbid 1..12 in MI1 / v5 SCUMM) currently visible.
+		// Map screens / save menu / inventory-only UI replace the
+		// panel entirely — they show NO standard verbs.  Inventory
+		// image verbs and dialog-response text verbs (verbid > 12)
+		// don't qualify.  Hysteresis: once we've seen the standard
+		// panel, treat it as present for ~30 ticks of grace so
+		// brief verb-rebuild transitions during room change don't
+		// flicker the LCD scaling.
+		int standardVerbCount = 0;
 		for (int i = 1; i < _numVerbs; i++) {
-			if (!_verbs[i].saveid && _verbs[i].curmode && _verbs[i].verbid) {
-				visibleVerbCount++;
-			}
+			const VerbSlot &vs = _verbs[i];
+			if (vs.saveid || !vs.curmode || !vs.verbid) continue;
+			if (vs.type != kTextVerbType) continue;
+			if (vs.verbid < 1 || vs.verbid > 12) continue;
+			standardVerbCount++;
 		}
+		static int s_standard_verb_grace = 0;
+		if (standardVerbCount > 0) s_standard_verb_grace = 30;
+		else if (s_standard_verb_grace > 0) --s_standard_verb_grace;
+		const int visibleVerbCount = (s_standard_verb_grace > 0) ? 1 : 0;
 		// THUMBY-PORT — panel_active = "should the LCD scene blit hide
-		// source rows 144..199 (the legacy verb panel area)".  Either
-		// of two engine signals turns it on:
-		//   _userPut > 0           → player has scene control (verbs
-		//                             belong on screen even if a frame
-		//                             of transition has visibleVerbCount
-		//                             == 0)
-		//   visibleVerbCount > 0   → engine is rendering verbs RIGHT
-		//                             NOW (cook walk-in cutscene with
-		//                             _userPut already 0 but verbs
-		//                             still visible)
-		// Only when BOTH are false (true cutscene with no panel UI) do
-		// we reveal source 144..199 so banner / map / title screens
-		// render their full image.
+		// source rows 144..199 (the legacy verb panel area)".  Driven
+		// solely by visibleVerbCount (with grace-period hysteresis
+		// above): the panel is "present" exactly when the standard
+		// 12 verbs are or recently were drawn.  Map / save UI / title
+		// screens spend extended time without standard verbs and are
+		// allowed to render their full source 0..199.  _userPut alone
+		// is no longer a signal — the user's clickable on the map but
+		// the map itself is full-screen.
 		const bool panel_in_use = (_currentRoom != 0) &&
-		                          ((_userPut > 0) || (visibleVerbCount > 0));
+		                          (visibleVerbCount > 0);
 		thumby_set_verb_panel_active(panel_in_use);
 		// Note: dialog-options vs standard 12-verb scale is decided
 		// per-verb in drawVerb (verbs.cpp) using curRect width — this

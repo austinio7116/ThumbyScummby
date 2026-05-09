@@ -30,5 +30,10 @@ bool dialog_mode_active(ScummEngine *engine);
 // synthesizes a click on the chosen verb and returns.
 void run(ScummEngine *engine);
 
+// The text of the verb most recently picked.  Empty until the user
+// has used the verb picker once.  inventory_picker uses this to
+// compose "<verb> <item>" on the LCD sentence strip.
+const char *last_picked_verb_name();
+
 }  // namespace verb_picker
 }  // namespace tsb

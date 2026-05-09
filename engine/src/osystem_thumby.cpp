@@ -34,6 +34,17 @@ extern "C" void thumby_force_complete_redraw();
 // scene-mapped LCD position because scummLoop hadn't run yet.
 void OSystem_Thumby::captureSentence(const char *s) {
     if (!s) { _sentenceBuf[0] = 0; return; }
+    // SCUMM debug error output ("Script 214 ending without ScriptEnd",
+    // "ERROR: ...") sometimes routes through drawString slot 2 in our
+    // capture hook and would otherwise overwrite the proper sentence
+    // line.  Reject anything starting with the engine's debug prefixes
+    // so the strip stays game text only.
+    if ((s[0] == 'S' && s[1] == 'c' && s[2] == 'r' && s[3] == 'i' &&
+         s[4] == 'p' && s[5] == 't' && s[6] == ' ') ||
+        (s[0] == 'E' && s[1] == 'R' && s[2] == 'R' && s[3] == 'O' &&
+         s[4] == 'R')) {
+        return;
+    }
     int i = 0;
     for (; i < kSentenceMax - 1 && s[i]; i++) _sentenceBuf[i] = s[i];
     _sentenceBuf[i] = 0;
@@ -104,7 +115,16 @@ void OSystem_Thumby::renderSnapshotToFramebuffer() {
     // the game cursor under the menu would be visual noise.
     const bool dialog_active = _engine &&
                                verb_picker::dialog_mode_active(_engine);
-    const char *strip_text = dialog_active ? _npcQuestionBuf : _sentenceBuf;
+    // Suppress the sentence strip while the player-actor (ego) is
+    // speaking — that's when the engine briefly writes the player's
+    // response into the sentence slot.  Hiding it during ego-talk is
+    // what the user wants: the response line itself plays out as
+    // actor-talk text in the scene, the strip shouldn't double it up.
+    const bool ego_talking = _engine &&
+                             _engine->publicGetTalkingActor() == _engine->publicGetEgoVar() &&
+                             _engine->publicGetEgoVar() != 0;
+    const char *strip_text = dialog_active ? _npcQuestionBuf
+                            : (ego_talking ? "" : _sentenceBuf);
     int verb_prefix_len = 0;
     if (!dialog_active && _engine && strip_text[0]) {
         for (int v = 1; v < _engine->numVerbs(); ++v) {
@@ -535,11 +555,18 @@ void OSystem_Thumby::updateScreen() {
     flushLcdLine();
 
     // Pick which text the sentence strip shows this frame:
-    //   normal play → composed cursor sentence ("Walk to bartender")
-    //   dialog mode → NPC's last spoken line, captured in actorTalk
+    //   normal play  → composed cursor sentence ("Walk to bartender")
+    //   dialog mode  → NPC's last spoken line (captured in actorTalk)
+    //   ego speaking → blank (the player's response renders in scene
+    //                  as actor-talk; doubling it on the strip is
+    //                  visual noise)
     const bool dialog_active = _engine &&
                                verb_picker::dialog_mode_active(_engine);
-    const char *strip_text = dialog_active ? _npcQuestionBuf : _sentenceBuf;
+    const bool ego_talking = _engine &&
+                             _engine->publicGetTalkingActor() == _engine->publicGetEgoVar() &&
+                             _engine->publicGetEgoVar() != 0;
+    const char *strip_text = dialog_active ? _npcQuestionBuf
+                            : (ego_talking ? "" : _sentenceBuf);
 
     // Detect verb-prefix length for cursor-sentence highlighting only;
     // NPC questions are painted entirely in body colour (no prefix
@@ -561,52 +588,15 @@ void OSystem_Thumby::updateScreen() {
         }
     }
 
-    // Cursor tooltip = the auto-default verb for the hovered object,
-    // computed by shadow-executing VAR(VAR_VERB_SCRIPT) with right-
-    // click args.  See ScummEngine::publicPreviewDefaultVerb.  Cached
-    // per (room, object) so we run the script only when hover changes.
+    // Cursor tooltip is currently disabled.  The shadow-execute
+    // approach (publicPreviewDefaultVerb) was fundamentally unsafe:
+    // the verb-script does walkActorTo / startSound / setCursor /
+    // startScript BEFORE doSentence — even with doSentence
+    // intercepted in preview mode, those side effects fire and the
+    // hover behaves as if a real click happened.  Leaving the
+    // tooltip empty until a side-effect-free implementation
+    // (bytecode walker over the verb-script) is in place.
     const char *cursor_tooltip = nullptr;
-    char tooltip_buf[32] = {0};
-    static int s_last_hover_obj = 0;
-    static int s_last_hover_room = -1;
-    static int s_cached_verb_id = 0;
-    if (_engine && _engine->canSaveGameStateCurrently()) {
-        const int hover = _engine->hoveredObject();
-        const int room  = _engine->_currentRoom;
-        if (hover > 0) {
-            int verb_id;
-            if (hover == s_last_hover_obj && room == s_last_hover_room) {
-                verb_id = s_cached_verb_id;
-            } else {
-                verb_id = _engine->publicPreviewDefaultVerb(hover);
-                s_last_hover_obj  = hover;
-                s_last_hover_room = room;
-                s_cached_verb_id  = verb_id;
-            }
-            if (verb_id > 0) {
-                // Resolve verb name via the visible verb slots.  In MI1
-                // standard verbs always have a slot allocated (1..12).
-                const VerbSlot *verbs = _engine->publicGetVerbs();
-                for (int v = 1; v < _engine->numVerbs() && !cursor_tooltip; ++v) {
-                    const VerbSlot &vs = verbs[v];
-                    if (vs.type != kTextVerbType) continue;
-                    if (vs.verbid != verb_id)     continue;
-                    const byte *name = _engine->getResourceAddress(rtVerb, v);
-                    if (!name || !name[0]) continue;
-                    int i = 0;
-                    for (; i < (int)sizeof(tooltip_buf) - 1 && name[i]; ++i)
-                        tooltip_buf[i] = (char)name[i];
-                    tooltip_buf[i] = 0;
-                    cursor_tooltip = tooltip_buf;
-                }
-            }
-            // If verb_id is 0 OR the verb has no resolvable name, leave
-            // cursor_tooltip null — render no tooltip rather than fall
-            // back to noun-only (per user's explicit guidance).
-        } else {
-            s_last_hover_obj = 0;
-        }
-    }
 
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,

@@ -24,6 +24,8 @@
 #include "platform.h"
 #include "scumm/actor.h"
 #include "scumm/resource.h"
+#include <cstdio>
+#include <cstdlib>
 
 namespace Scumm {
 
@@ -503,6 +505,17 @@ void ScummEngine::executeScript() {
 				(uint)(_scriptPointer - _scriptOrgPointer),
 				_opcode,
 				getOpcodeDesc(_opcode));
+		// THUMBY-PORT trace: when THUMBY_TRACE_SCRIPTS env var is set,
+		// log every opcode + offset to stderr.  Used by the dump tool
+		// to capture the executed path of the verb-script for a
+		// synthetic inventory click.
+		if (std::getenv("THUMBY_TRACE_SCRIPTS")) {
+			std::fprintf(stderr, "[trace s=%d] off=0x%04x op=0x%02x %s\n",
+			    vm.slot[_currentScript].number,
+			    (uint)(_scriptPointer - _scriptOrgPointer - 1),
+			    _opcode,
+			    getOpcodeDesc(_opcode));
+		}
 		if (_hexdumpScripts == true) {
 			for (c = -1; c < 15; c++) {
 				debugN(" %02x", *(_scriptPointer + c));
@@ -524,11 +537,7 @@ void ScummEngine::executeOpcode(byte i) {
 }
 
 const char *ScummEngine::getOpcodeDesc(byte i) {
-#ifndef REDUCE_MEMORY_USAGE
-	return _opcodes[i].desc;
-#else
-	return "";
-#endif
+	return _opcodes[i].desc ? _opcodes[i].desc : "";
 }
 
 byte ScummEngine::fetchScriptByte() {
@@ -1525,11 +1534,24 @@ void ScummEngine::runInputScript(int clickArea, int val, int mode) {
 // Returns the captured verb id, or 0 if the script didn't reach
 // doSentence (e.g. the object has no default action).
 int ScummEngine::publicPreviewDefaultVerb(int obj) {
-	if (!obj || _game.version != 5 || VAR_VERB_SCRIPT == 0xFF)
-		return 0;
+	// Gate on VAR_VERB_SCRIPT being declared (set in vars.cpp for v3+
+	// games).  We don't gate on _game.version explicitly: MI1 floppy is
+	// version=4 but runs on the v5 codepath.  Any game whose verb-script
+	// is the right-click decision tree works here.
+	if (!obj || VAR_VERB_SCRIPT == 0xFF) return 0;
 	const int verbScript = VAR(VAR_VERB_SCRIPT);
 	if (!verbScript)
 		return 0;
+	// Refuse to preview while a real cutscene is in flight: the
+	// preview's runScript can call beginCutscene which would push onto
+	// vm.cutScene* and increment cutsceneOverride on a real running
+	// slot.  Even with full snapshot/restore there are subtle ordering
+	// risks; safest is to skip the tooltip during cutscenes (tooltip
+	// just stays empty for that frame).
+	if (vm.cutSceneStackPointer != 0) return 0;
+	// Same for any currently-running script: the preview shouldn't
+	// nest into a real script's execution context.
+	if (_currentScript != 0xFF) return 0;
 
 	int *savedVars = (int *)malloc(_numVariables * sizeof(int));
 	if (!savedVars) return 0;
@@ -1540,12 +1562,39 @@ int ScummEngine::publicPreviewDefaultVerb(int obj) {
 	const int   savedNumNested      = vm.numNestedScripts;
 	const Common::Point savedVirtMouse = _virtualMouse;
 
+	// Snapshot per-slot mutable state.  We snapshot cutsceneOverride
+	// for ALL slots, not just the ones we'll allocate: a child script
+	// started during preview might increment cutsceneOverride on its
+	// own slot, complete to ssDead, and look "unchanged" afterwards
+	// — but the increment lingers.  Next time that slot id is
+	// re-allocated for a real script (which happens often: getScriptSlot
+	// reuses dead slots), the real script's stopObjectCode sees a
+	// non-zero cutsceneOverride and fires "Script N ending with active
+	// cutscene/override".  Restoring cutsceneOverride for every slot
+	// makes the preview a true no-op for cutscene accounting.
 	uint8 slotStatus[NUM_SCRIPT_SLOT];
 	uint8 slotFreeze[NUM_SCRIPT_SLOT];
+	uint8 slotCsOverride[NUM_SCRIPT_SLOT];
 	for (int i = 0; i < NUM_SCRIPT_SLOT; i++) {
-		slotStatus[i] = vm.slot[i].status;
-		slotFreeze[i] = vm.slot[i].freezeCount;
+		slotStatus[i]     = vm.slot[i].status;
+		slotFreeze[i]     = vm.slot[i].freezeCount;
+		slotCsOverride[i] = vm.slot[i].cutsceneOverride;
 	}
+
+	// Snapshot global cutscene state.  beginCutscene increments
+	// cutSceneStackPointer + writes cutScenePtr/cutSceneScript/
+	// cutSceneData entries.  endCutscene decrements.  If the preview
+	// script imbalances these, real scripts later corrupt their own
+	// state (see "Script 214 ending with active cutscene/override"
+	// regression).
+	const byte savedCutScenePtr_count = vm.cutSceneStackPointer;
+	uint32 savedCutScenePtr   [kMaxCutsceneNum];
+	byte   savedCutSceneScript[kMaxCutsceneNum];
+	int16  savedCutSceneData  [kMaxCutsceneNum];
+	memcpy(savedCutScenePtr,    vm.cutScenePtr,    sizeof(savedCutScenePtr));
+	memcpy(savedCutSceneScript, vm.cutSceneScript, sizeof(savedCutSceneScript));
+	memcpy(savedCutSceneData,   vm.cutSceneData,   sizeof(savedCutSceneData));
+	const int16 savedCutSceneScriptIndex = vm.cutSceneScriptIndex;
 
 	int ox = 0, oy = 0;
 	getObjectXYPos(obj, ox, oy);
@@ -1568,6 +1617,10 @@ int ScummEngine::publicPreviewDefaultVerb(int obj) {
 	const int captured = _previewVerbCapture;
 	_previewMode = false;
 
+	// Kill any newly-running slots; restore status/freeze for slots
+	// that were already running; restore cutsceneOverride for ALL
+	// slots regardless of running-state transition (see snapshot
+	// comment above for why every slot needs this).
 	for (int i = 0; i < NUM_SCRIPT_SLOT; i++) {
 		if (slotStatus[i] != ssRunning && vm.slot[i].status == ssRunning) {
 			vm.slot[i].status      = ssDead;
@@ -1576,9 +1629,18 @@ int ScummEngine::publicPreviewDefaultVerb(int obj) {
 			vm.slot[i].status      = slotStatus[i];
 			vm.slot[i].freezeCount = slotFreeze[i];
 		}
+		vm.slot[i].cutsceneOverride = slotCsOverride[i];
 	}
 	vm.numNestedScripts = savedNumNested;
 	_currentScript      = savedCurrentScript;
+
+	// Restore cutscene state.  Anything beginCutscene pushed during
+	// preview is rewound; the array entries are restored bytewise.
+	vm.cutSceneStackPointer = savedCutScenePtr_count;
+	memcpy(vm.cutScenePtr,    savedCutScenePtr,    sizeof(savedCutScenePtr));
+	memcpy(vm.cutSceneScript, savedCutSceneScript, sizeof(savedCutSceneScript));
+	memcpy(vm.cutSceneData,   savedCutSceneData,   sizeof(savedCutSceneData));
+	vm.cutSceneScriptIndex = savedCutSceneScriptIndex;
 
 	memcpy(_scummVars, savedVars, _numVariables * sizeof(int));
 	free(savedVars);
@@ -1587,6 +1649,182 @@ int ScummEngine::publicPreviewDefaultVerb(int obj) {
 	_virtualMouse   = savedVirtMouse;
 
 	return captured;
+}
+
+void ScummEngine::publicDumpAllScripts(const char *output_dir) {
+	std::fprintf(stderr, "[dump-scripts] writing to %s/\n", output_dir);
+
+	// Best-effort mkdir.  Ignored if it exists.
+	{
+		char buf[1024];
+		std::snprintf(buf, sizeof(buf), "mkdir -p %s", output_dir);
+		(void)std::system(buf);
+	}
+
+	char index_path[1024];
+	std::snprintf(index_path, sizeof(index_path), "%s/SCRIPTS_INDEX.txt", output_dir);
+	FILE *idx = std::fopen(index_path, "w");
+	if (!idx) {
+		std::fprintf(stderr, "[dump-scripts] cannot open %s\n", index_path);
+		return;
+	}
+
+	std::fprintf(idx,
+	    "# THUMBY-PORT script index — MI1 / SCUMM v5\n"
+	    "# format: <script_num> <size_bytes> <annotation>\n");
+
+	const int verb_script      = (VAR_VERB_SCRIPT      != 0xFF) ? VAR(VAR_VERB_SCRIPT)      : -1;
+	const int sentence_script  = (VAR_SENTENCE_SCRIPT  != 0xFF) ? VAR(VAR_SENTENCE_SCRIPT)  : -1;
+	const int inventory_script = (VAR_INVENTORY_SCRIPT != 0xFF) ? VAR(VAR_INVENTORY_SCRIPT) : -1;
+	std::fprintf(idx,
+	    "# VAR_VERB_SCRIPT = %d, VAR_SENTENCE_SCRIPT = %d, VAR_INVENTORY_SCRIPT = %d\n",
+	    verb_script, sentence_script, inventory_script);
+
+	auto dump_one = [&](int s, const char *note) -> bool {
+		if (s <= 0) return false;
+		if ((int)_res->_types[rtScript].size() <= s) return false;
+		if (_res->_types[rtScript][s]._roomoffs == RES_INVALID_OFFSET) return false;
+		const byte *res = _res->_types[rtScript][s]._address;
+		if (!res) return false;  // only dump ALREADY-loaded scripts; loading
+		                         // unloaded ones crashes on missing room data
+		const uint32 sz = _res->_types[rtScript][s]._size;
+		if (sz == 0) return false;
+		char bin_path[1024];
+		std::snprintf(bin_path, sizeof(bin_path), "%s/script_%03d.bin",
+		              output_dir, s);
+		FILE *f = std::fopen(bin_path, "wb");
+		if (!f) return false;
+		std::fwrite(res, 1, sz, f);
+		std::fclose(f);
+		std::fprintf(idx, "%d %u%s\n", s, sz, note);
+		return true;
+	};
+
+	int dumped = 0;
+	// Try the named scripts first.
+	if (dump_one(verb_script,      " VERB_SCRIPT"))      ++dumped;
+	if (dump_one(sentence_script,  " SENTENCE_SCRIPT"))  ++dumped;
+	if (dump_one(inventory_script, " INVENTORY_SCRIPT")) ++dumped;
+	// Then everything else already loaded post-boot.
+	for (int s = 1; s < _numGlobalScripts; ++s) {
+		if (s == verb_script || s == sentence_script || s == inventory_script) continue;
+		if ((int)_res->_types[rtScript].size() <= s) break;
+		if (_res->_types[rtScript][s]._roomoffs == RES_INVALID_OFFSET) continue;
+		const byte *res = _res->_types[rtScript][s]._address;
+		if (!res) continue;
+		const uint32 sz = _res->_types[rtScript][s]._size;
+		if (sz == 0) continue;
+
+		char bin_path[1024];
+		std::snprintf(bin_path, sizeof(bin_path), "%s/script_%03d.bin", output_dir, s);
+		FILE *f = std::fopen(bin_path, "wb");
+		if (!f) continue;
+		std::fwrite(res, 1, sz, f);
+		std::fclose(f);
+
+		const char *note = "";
+		if (s == verb_script)     note = " VERB_SCRIPT";
+		if (s == sentence_script) note = " SENTENCE_SCRIPT";
+		std::fprintf(idx, "%d %u%s\n", s, sz, note);
+		++dumped;
+	}
+
+	std::fclose(idx);
+	std::fprintf(stderr, "[dump-scripts] dumped %d scripts\n", dumped);
+
+	// If THUMBY_TRACE_SCRIPTS is also set, force-run the verb-script
+	// with a synthetic inventory-click args triple and let the engine's
+	// own executeScript log every opcode it visits.  No new
+	// disassembler needed — we reuse the engine's parameter parsing
+	// because the handlers know exactly how many bytes each opcode
+	// consumes.  Side effects don't matter — we're about to exit.
+	if (std::getenv("THUMBY_TRACE_SCRIPTS") && verb_script > 0) {
+		// Walk all kImageVerbType slots: log their verbid+imgindex so
+		// we know what to feed in.
+		std::fprintf(stderr, "[trace] kImageVerbType slots:\n");
+		for (int v = 1; v < _numVerbs; ++v) {
+			const VerbSlot &vs = _verbs[v];
+			if (vs.type != kImageVerbType) continue;
+			std::fprintf(stderr,
+			    "  slot=%d verbid=%d imgindex=%d curRect=(%d,%d,%d,%d) curmode=%d\n",
+			    v, (int)vs.verbid, (int)vs.imgindex,
+			    (int)vs.curRect.left, (int)vs.curRect.top,
+			    (int)vs.curRect.right, (int)vs.curRect.bottom,
+			    (int)vs.curmode);
+		}
+
+		// Run the verb-script with several synthetic args to trace
+		// each input dispatch branch.  Even with no inventory items
+		// at boot, the script's BRANCH logic (which VARs / which
+		// classes / which verbids) will execute and the trace shows
+		// us exactly what state it reads to decide what to do.
+		auto trace_run = [&](int a0, int a1, int a2, const char *label) {
+			std::fprintf(stderr,
+			    "\n[trace] === %s : verb-script %d args=[%d, %d, %d] ===\n",
+			    label, verb_script, a0, a1, a2);
+			int args[NUM_SCRIPT_LOCAL];
+			memset(args, 0, sizeof(args));
+			args[0] = a0;
+			args[1] = a1;
+			args[2] = a2;
+			runScript(verb_script, 0, 0, args);
+		};
+
+		// Standard verb click (e.g. "Use" — verbid 7 in MI1).
+		trace_run(1, 7, 1,   "kVerbClickArea / Use / left");
+		// Inventory verbid range — common in MI1 is 101..104.
+		trace_run(1, 101, 1, "kVerbClickArea / inventory slot 1 / left");
+		trace_run(1, 102, 1, "kVerbClickArea / inventory slot 2 / left");
+		// Scene click left + right.
+		trace_run(2, 0, 1,   "kSceneClickArea / left");
+		trace_run(2, 0, 2,   "kSceneClickArea / right");
+		// Inventory area click (v0/v2 path; v5 may ignore).
+		trace_run(3, 100, 0, "kInventoryClickArea / obj=100");
+
+		// Trace the inventory display script too — its verbOps calls
+		// reveal what verbids the inventory image-slots actually use,
+		// which is the only way to dispatch a click to them.
+		if (inventory_script > 0) {
+			std::fprintf(stderr,
+			    "\n[trace] === inventory-script %d args=[1, 0, 0] ===\n",
+			    inventory_script);
+			int args[NUM_SCRIPT_LOCAL];
+			memset(args, 0, sizeof(args));
+			args[0] = 1;
+			runScript(inventory_script, 0, 0, args);
+
+			std::fprintf(stderr,
+			    "[trace] kImageVerbType slots after inventory-script:\n");
+			for (int v = 1; v < _numVerbs; ++v) {
+				const VerbSlot &vs = _verbs[v];
+				if (vs.type != kImageVerbType) continue;
+				std::fprintf(stderr,
+				    "  slot=%d verbid=%d imgindex=%d curRect=(%d,%d,%d,%d) curmode=%d\n",
+				    v, (int)vs.verbid, (int)vs.imgindex,
+				    (int)vs.curRect.left, (int)vs.curRect.top,
+				    (int)vs.curRect.right, (int)vs.curRect.bottom,
+				    (int)vs.curmode);
+			}
+		}
+	}
+}
+
+bool ScummEngine::publicClickVerbAt(int verb_slot) {
+	if (verb_slot <= 0 || verb_slot >= _numVerbs) return false;
+	const VerbSlot &vs = _verbs[verb_slot];
+	if (vs.saveid || !vs.curmode || !vs.verbid) return false;
+	const int cx = (vs.curRect.left + vs.curRect.right) / 2;
+	const int cy = (vs.curRect.top + vs.curRect.bottom) / 2;
+	_mouse.x        = cx;
+	_mouse.y        = cy;
+	_virtualMouse.x = cx;
+	_virtualMouse.y = cy;
+	if (VAR_VIRT_MOUSE_X != 0xFF) VAR(VAR_VIRT_MOUSE_X) = cx;
+	if (VAR_VIRT_MOUSE_Y != 0xFF) VAR(VAR_VIRT_MOUSE_Y) = cy;
+	runInputScript(kVerbClickArea, vs.verbid, 1);
+	// _redrawSentenceLine is v0-only; v5+ relies on the verb-script
+	// to drawString slot 2 itself when it needs the sentence updated.
+	return true;
 }
 
 void ScummEngine::decreaseScriptDelay(int amount) {
