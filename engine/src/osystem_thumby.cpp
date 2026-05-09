@@ -561,14 +561,33 @@ void OSystem_Thumby::updateScreen() {
         }
     }
 
-    // Cursor tooltip = the currently-highlighted verb name (the SCUMM
-    // sentence-script highlights the verb whose action would fire on
-    // right-click; that's exactly the "default action" the user sees
-    // glowing in the original game's verb panel).  Empty if no verb
-    // is highlighted (cursor over empty space).
-    const char *cursor_tooltip =
-        (_highlightedVerb[0] && _engine && _engine->hoveredObject() > 0)
-        ? _highlightedVerb : nullptr;
+    // Cursor tooltip = the auto-default verb for the hovered object.
+    // We compute it the same way MI1's right-click dispatch does:
+    // walk the standard verb slots (verbid 1..12) in order, and pick
+    // the first one whose OBCD has a non-zero script entry for the
+    // hovered object.  That's the verb right-click would fire.
+    const char *cursor_tooltip = nullptr;
+    char tooltip_buf[32] = {0};
+    if (_engine && _engine->canSaveGameStateCurrently()) {
+        const int hover = _engine->hoveredObject();
+        if (hover > 0) {
+            const VerbSlot *verbs = _engine->publicGetVerbs();
+            for (int v = 1; v < _engine->numVerbs() && !cursor_tooltip; ++v) {
+                const VerbSlot &vs = verbs[v];
+                if (vs.saveid || !vs.curmode || !vs.verbid) continue;
+                if (vs.type != kTextVerbType) continue;
+                if (vs.verbid > 12) continue;     // skip dialog responses
+                if (_engine->publicGetVerbEntrypoint(hover, vs.verbid) == 0) continue;
+                const byte *name = _engine->getResourceAddress(rtVerb, v);
+                if (!name || !name[0]) continue;
+                int i = 0;
+                for (; i < (int)sizeof(tooltip_buf) - 1 && name[i]; ++i)
+                    tooltip_buf[i] = (char)name[i];
+                tooltip_buf[i] = 0;
+                cursor_tooltip = tooltip_buf;
+            }
+        }
+    }
 
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,

@@ -137,23 +137,27 @@ uint32_t verb_set_fingerprint(ScummEngine *engine) {
 
 bool dialog_mode_active(ScummEngine *engine) {
 	if (!engine) return false;
-	// Authoritative engine signal — set by o5_verbOps's SO_VERB_NEW
-	// for slots created mid-gameplay (i.e., after _userPut > 0).
-	// Boot-time creates (standard 12 verbs, inventory arrows) leave
-	// the flag clear, so they're never mistaken for dialog responses.
+	// Geometry signal: in MI1 (and other v5 SCUMM games) dialog-response
+	// verbs are positioned with full-panel-width curRects via SO_VERB_AT.
+	// Standard verbs occupy narrow columns (~40-80 src-px wide) and
+	// inventory arrows are narrower still (~16 src-px).  A visible
+	// TextVerb whose curRect spans >= 160 source pixels is unambiguously
+	// a dialog response — no engine state from prior boot needed.
 	for (int v = 1; v < engine->numVerbs(); ++v) {
 		const VerbSlot &vs = engine->_verbs[v];
 		if (!vs.curmode || vs.saveid) continue;
 		if (vs.type != kTextVerbType) continue;
-		if (engine->_verbIsDialogResponse[v]) {
-			// "Dismissed" fingerprint suppresses re-auto-open.  Cleared
-			// once the verb set changes (new dialog enters / current
-			// one ends).
-			if (verb_set_fingerprint(engine) == s_dismissed_fingerprint) {
-				return false;
-			}
-			return true;
+		if (vs.curRect.top < 144) continue;
+		const int width = vs.curRect.right - vs.curRect.left;
+		if (width < 160) continue;
+		// Dismiss-fingerprint: B (or A) press snapshots the verb set.
+		// While the snapshot matches, suppress re-auto-open so the
+		// engine has time to consume our synthesized click and update
+		// the dialog state.
+		if (verb_set_fingerprint(engine) == s_dismissed_fingerprint) {
+			return false;
 		}
+		return true;
 	}
 	return false;
 }
@@ -197,15 +201,24 @@ void run(ScummEngine *engine) {
 			const VerbSlot &vs = engine->_verbs[entries[sel].slot_index];
 			const int cx = (vs.curRect.left + vs.curRect.right) / 2;
 			const int cy = (vs.curRect.top + vs.curRect.bottom) / 2;
-			if (osys) osys->synthesizeLeftClick(cx, cy);
+			if (osys) {
+				osys->synthesizeLeftClick(cx, cy);
+				// Clear the sentence strip after a dialog response so
+				// the player doesn't see their just-spoken line still
+				// marquee-scrolling while the NPC's reply renders in
+				// the scene.  Cleared only for dialog mode — normal
+				// verb picks update the sentence via the engine's
+				// usual path.
+				if (dialog_mode_active(engine)) {
+					osys->captureSentence(nullptr);
+					osys->captureNpcQuestion(nullptr);
+				}
+			}
 			// Lock dismiss-fingerprint on the verb-set the user just
 			// picked from.  Engine takes a tick or two to consume the
 			// click and update the verb set; without this the auto-open
 			// sees "dialog still active" on the next frame and re-pops
-			// the picker — the "two-attempts-per-pick" bug.  When the
-			// engine actually mutates the verb set (response script
-			// runs, dialog closes / advances), the fingerprint stops
-			// matching and auto-open is allowed again.
+			// the picker.
 			s_dismissed_fingerprint = verb_set_fingerprint(engine);
 			return;
 		}

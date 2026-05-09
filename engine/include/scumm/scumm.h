@@ -1043,6 +1043,15 @@ public:
 	// Class-bit query for the hovered object.  Used by the cursor
 	// tooltip to pick "Talk to" (kObjectClassPlayer) vs "Look at".
 	bool publicGetClass(int obj, int cls) { return getClass(obj, cls); }
+	// OBCD verb-entry lookup.  Returns the byte offset of the script
+	// for `verb_id` on `obj`, or 0 if the object has no entry for
+	// that verb.  Used to find the auto-default verb for the cursor
+	// tooltip — iterate the standard verbs and pick the first one the
+	// hovered object has a script for.
+	int publicGetVerbEntrypoint(int obj, int verb_id) {
+		return getVerbEntrypoint(obj, verb_id);
+	}
+	const VerbSlot *publicGetVerbs() { return _verbs; }
 	// THUMBY-PORT: dialog-response slot flag set by o5_verbOps's
 	// SO_VERB_NEW when the script creates a verb during gameplay
 	// (_userPut > 0).  Boot-time and cutscene-time verb additions
