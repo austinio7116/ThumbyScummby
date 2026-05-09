@@ -91,11 +91,20 @@ struct CursorInfo {
 struct TextStamp {
     const uint8_t *charPtr;     // bit-packed glyph rows, MSB-first
     int16_t  dst_x, dst_y;      // top-left in LCD coords
-    uint8_t  width, height;
+    uint8_t  width, height;     // SOURCE-px dimensions (≤ 32)
     uint8_t  bpp;               // 1, 2, or 4
-    uint8_t  pad;
+    uint8_t  flags;             // see kTextStampFlag* below
     uint8_t  cmap[4];           // palette indices (snapshot of charsetColorMap)
 };
+// Bit 0: line is currently scrolling (marquee).  present() shifts the
+// stamp's dst_x by lcd_scroll_offset.  Set on stamps that belong to
+// the highlighted dialog option / hovered verb when the line is wider
+// than the LCD.
+constexpr uint8_t kTextStampFlagScroll    = 0x01;
+// Bit 1: render this stamp at full-scale (1:1 source → LCD).  Default
+// is 75% (3:4) for verb-panel content where columns are tight; dialog
+// options (wide curRect verbs) flag this for legibility.
+constexpr uint8_t kTextStampFlagFullScale = 0x02;
 void present(const uint8_t *virt, const uint8_t *text,
              const uint8_t *palette,
              ScaleMode mode, int crop_x, int crop_y,
@@ -103,7 +112,8 @@ void present(const uint8_t *virt, const uint8_t *text,
              const TextStamp *text_stamps = nullptr,
              int text_stamp_count = 0,
              int verb_crop_x = 0,
-             bool verb_panel_active = false);
+             bool verb_panel_active = false,
+             int lcd_scroll_offset = 0);
 
 // ---------------------------------------------------------------------------
 // Input

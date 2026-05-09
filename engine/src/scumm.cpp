@@ -3085,6 +3085,10 @@ void ScummEngine::scummLoop(int delta) {
 		const bool gameplay = (_currentRoom != 0 && _userPut > 0 &&
 		                       visibleVerbCount > 0);
 		thumby_set_verb_panel_active(gameplay);
+		// Note: dialog-options vs standard 12-verb scale is decided
+		// per-verb in drawVerb (verbs.cpp) using curRect width — this
+		// works regardless of how many options the dialog has, so it
+		// also handles the swordmaster (8-12+ attack moves).
 		// Notify the platform when the room changes so it can re-centre
 		// the cursor (and therefore the scene crop) on the new scene —
 		// without this, a user who'd panned to one edge of the previous

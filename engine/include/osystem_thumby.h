@@ -242,14 +242,13 @@ private:
 
     static constexpr int kLcdOverlayW = 128;   // LCD width  (used for budget)
     static constexpr int kLcdOverlayH = 128;   // LCD height (used for clip)
-    // Glyphs are downsampled to 75% (3:4) from source-px to LCD-px with
-    // an area-weighted blend, mirroring the scene blit's downsample.
-    // Layout values (line width, pen advance, baseline offsets) are
-    // tracked in LCD-px.  Crop mode bypasses this path entirely — text
-    // there goes through SCUMM's _textSurface compositing and is left
-    // at scene scale (1:1 in Crop).
-    static constexpr int kTextScaleNum = 3;
-    static constexpr int kTextScaleDen = 4;
+    // Per-line text scale.  Talk-area text (src_y < 144) renders at
+    // full 1:1 scale for legibility; verb-panel content (src_y >= 144)
+    // stays at 75% (3:4) so the 12-verb columns don't overlap each
+    // other on the LCD.  The decision is per-line based on
+    // _lcdLineSrcY at flush time.
+    static constexpr int kTextScalePanelNum = 3;
+    static constexpr int kTextScalePanelDen = 4;
 
     // Per-glyph "line buffer" descriptor — used during layout only.
     // `width` / `height` / `offsY` are LCD-px (halved at append).
@@ -279,20 +278,46 @@ private:
     int  _lcdLineY          = 0;    // LCD Y where this line will stamp
     bool _lcdLineActive     = false;
 
+    // Per-stamp tag.  Identifies which source rect (xpos, ypos) the
+    // stamp came from.  Used by dropStampsByTag for idempotent
+    // re-emission (verbs redraw every tick).
+    struct LcdStampTag { int16_t x; int16_t y; };
+
+    // Marquee scroll state for the currently-highlighted dialog option /
+    // verb.  drawVerb sets _lcdNextHighlighted via setNextHighlighted()
+    // before its drawString for hicolor verbs; beginLcdLine transfers
+    // it to _lcdLineHighlighted for the line being assembled.  A
+    // highlighted line skips soft-wrap so the full string emits as one
+    // row, even beyond 128 LCD-px; emitStamp marks each stamp with the
+    // scroll flag.  updateScreen advances _lcdScrollFrame; present()
+    // shifts scrolling stamps left by the derived offset so the line
+    // scans horizontally.
+    bool _lcdNextHighlighted = false;
+    bool _lcdLineHighlighted = false;
+    bool _lcdNextFullScale   = false;
+    bool _lcdLineFullScale   = false;
+    LcdStampTag _lcdHighlightedTag = { -1, -1 };  // resets offset on change
+    int  _lcdHighlightedLineWidth  = 0;           // captured at flush time
+    int  _lcdScrollFrame           = 0;
+
     // Stamped glyphs — final LCD positions, rendered by platform::present.
     // Each stamp carries a tag = the SCUMM (xpos, ypos) of its source
     // drawString call.  beginLcdLine(continuation=false) drops stamps
-    // matching the new tag before appending fresh ones — that's how we
-    // get _textSurface-style idempotency for repeated draws (e.g.
-    // redrawVerbs runs every tick; without dedup the same glyph
-    // accumulates and saturates to solid foreground colour).
-    struct LcdStampTag { int16_t x; int16_t y; };
+    // matching the new tag before appending fresh ones.
     static constexpr int kLcdStampMax = 192;
     platform::TextStamp _lcdStamps[kLcdStampMax];
     LcdStampTag         _lcdStampTags[kLcdStampMax];
     int                 _lcdStampCount = 0;
 
 public:
+    // drawVerb signals "next drawString is the hovered (hicolor) verb".
+    // Used so the LCD overlay can mark its stamps for marquee scroll.
+    void setNextHighlighted(bool h) { _lcdNextHighlighted = h; }
+    // drawVerb signals "next drawString is a dialog option" (wide
+    // curRect, single-column row).  Triggers 100% scale on stamps
+    // for legibility.  Standard 12-verb interface entries leave it
+    // false → 75% scale → columns fit without overlap.
+    void setNextFullScale(bool f) { _lcdNextFullScale = f; }
     // Begin a fresh logical line.  `continuation == false` means new
     // string anchor (use scumm_ypos to drive LCD Y).  `continuation ==
     // true` means SCUMM \n inside an existing string — stack tightly

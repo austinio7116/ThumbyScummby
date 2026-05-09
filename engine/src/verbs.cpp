@@ -25,6 +25,13 @@
 #include "scumm/resource.h"
 #include "scumm/verbs.h"
 
+// THUMBY-PORT: bridges defined in osystem_thumby.cpp.  drawVerb signals
+// per-verb hints to the LCD overlay so it can decide scroll behaviour
+// (highlighted = hover, marquee scroll) and scale (full-scale = wide
+// single-column dialog option).
+extern "C" void thumby_lcd_text_set_next_highlighted(bool);
+extern "C" void thumby_lcd_text_set_next_full_scale(bool);
+
 namespace Scumm {
 
 enum {
@@ -1173,7 +1180,22 @@ void ScummEngine::drawVerb(int verb, int mode, Common::TextToSpeechManager::Acti
 #endif
 
 		tmp = _charset->_center;
+		// THUMBY-PORT: when this verb is being drawn in hicolor mode
+		// (mouse-over) the LCD overlay should marquee-scroll its line
+		// so long dialog options become readable.  Cleared after the
+		// drawString consumes it.
+		thumby_lcd_text_set_next_highlighted((mode && vs->hicolor) != 0);
+		// THUMBY-PORT: full-scale (100%) for wide verbs.  Dialog
+		// options typically render 10+ characters (≥ 80 source-px);
+		// standard 12-verb entries are 4-9 characters (≤ ~70 src-px).
+		// Compute width from the message itself via the charset
+		// renderer — using vs->curRect.right would be stale on the
+		// first draw (drawString below is what populates it).
+		const int verb_width_src = _charset->getStringWidth(4, msg);
+		thumby_lcd_text_set_next_full_scale(verb_width_src > 80);
 		drawString(4, msg, ttsAction);
+		thumby_lcd_text_set_next_highlighted(false);
+		thumby_lcd_text_set_next_full_scale(false);
 		_charset->_center = tmp;
 
 		if (isRtl)

@@ -87,6 +87,27 @@ extern "C" void thumby_drop_talk_area_stamps() {
     t->dropTalkAreaStamps();
 }
 
+// Bridge — drawVerb sets this immediately before its drawString call
+// when the verb being drawn is the hovered (hicolor) one.  The LCD
+// overlay marks the resulting stamps for marquee scroll so long
+// dialog options / verb labels become readable without overlapping
+// the next row.
+extern "C" void thumby_lcd_text_set_next_highlighted(bool highlighted) {
+    if (!g_system) return;
+    auto *t = static_cast<tsb::OSystem_Thumby *>(g_system);
+    t->setNextHighlighted(highlighted);
+}
+
+// Bridge — drawVerb sets this when the verb being drawn has a wide
+// curRect (single-column dialog option), so the LCD overlay renders
+// it at 100% scale.  Standard 12-verb entries leave it false →
+// 75% scale, which keeps the four columns from overlapping.
+extern "C" void thumby_lcd_text_set_next_full_scale(bool full) {
+    if (!g_system) return;
+    auto *t = static_cast<tsb::OSystem_Thumby *>(g_system);
+    t->setNextFullScale(full);
+}
+
 
 // ---------------------------------------------------------------------------
 // Minimal Common::MutexInternal — single-threaded engine, so a no-op is fine.
@@ -362,10 +383,32 @@ void OSystem_Thumby::updateScreen() {
     // the RGB565 framebuffer (after the scaled scene blit, before the
     // cursor).  This avoids a 16 KB BSS overlay buffer.
     flushLcdLine();
+    // Marquee scroll for the highlighted dialog option / verb.  Cycle
+    // the scroll frame when the line is wider than the LCD; ping-pong
+    // with brief pauses at each end so the user can read both halves.
+    int scroll_offset = 0;
+    const int max_scroll = _lcdHighlightedLineWidth - kLcdOverlayW;
+    if (max_scroll > 0) {
+        constexpr int kPauseFrames = 24;        // ~0.8s at 30 FPS hold each end
+        const int cycle = (max_scroll + kPauseFrames) * 2;
+        const int phase = _lcdScrollFrame % cycle;
+        if (phase < kPauseFrames) {
+            scroll_offset = 0;
+        } else if (phase < kPauseFrames + max_scroll) {
+            scroll_offset = phase - kPauseFrames;
+        } else if (phase < kPauseFrames + max_scroll + kPauseFrames) {
+            scroll_offset = max_scroll;
+        } else {
+            scroll_offset = max_scroll - (phase - kPauseFrames - max_scroll - kPauseFrames);
+        }
+        _lcdScrollFrame++;
+    } else {
+        _lcdScrollFrame = 0;
+    }
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,
                       _lcdStamps, _lcdStampCount, _verbCropX,
-                      _verbPanelActive);
+                      _verbPanelActive, scroll_offset);
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM
@@ -622,7 +665,13 @@ void OSystem_Thumby::emitStamp(const LcdGlyph &g, int dst_x, int dst_y) {
     s.width   = g.srcW;
     s.height  = g.srcH;
     s.bpp     = g.bpp;
-    s.pad     = 0;
+    // Flags:
+    //   FullScale: dialog-option line, 100% scale (else 75%).
+    //   Scroll: highlighted line, marquee-animated by present().
+    uint8_t flags = 0;
+    if (_lcdLineFullScale)    flags |= platform::kTextStampFlagFullScale;
+    if (_lcdLineHighlighted)  flags |= platform::kTextStampFlagScroll;
+    s.flags   = flags;
     s.cmap[0] = g.cmap[0];
     s.cmap[1] = g.cmap[1];
     s.cmap[2] = g.cmap[2];
@@ -680,10 +729,14 @@ void OSystem_Thumby::flushLcdLine() {
         (origin_x < 0 || origin_x + _lcdLineWidth > kLcdOverlayW)) {
         origin_x = (kLcdOverlayW - _lcdLineWidth) / 2;
     }
-    // Final safety clamp (covers non-centred overflows + any residual).
-    if (origin_x + _lcdLineWidth > kLcdOverlayW)
-        origin_x = kLcdOverlayW - _lcdLineWidth;
-    if (origin_x < 0) origin_x = 0;
+    // Final safety clamp.  Highlighted lines are allowed to extend past
+    // the right edge — present() will marquee-shift them so the user
+    // can read the whole line.
+    if (!_lcdLineHighlighted) {
+        if (origin_x + _lcdLineWidth > kLcdOverlayW)
+            origin_x = kLcdOverlayW - _lcdLineWidth;
+        if (origin_x < 0) origin_x = 0;
+    }
 
     int pen = origin_x;
     for (int i = 0; i < _lcdLineCount; i++) {
@@ -692,16 +745,41 @@ void OSystem_Thumby::flushLcdLine() {
         emitStamp(g, pen, _lcdLineY + g.offsY);
         pen += g.width;
     }
+    // For highlighted (marquee-scroll) lines, capture the full line
+    // width and reset the scroll animation when the highlighted source
+    // rect changes (different verb / dialog option hovered).
+    if (_lcdLineHighlighted) {
+        const LcdStampTag tag = { (int16_t)_lcdLineXHint, (int16_t)_lcdLineSrcY };
+        if (tag.x != _lcdHighlightedTag.x || tag.y != _lcdHighlightedTag.y) {
+            _lcdHighlightedTag = tag;
+            _lcdScrollFrame    = 0;
+        }
+        _lcdHighlightedLineWidth = _lcdLineWidth;
+    }
     _lcdLineY            += _lcdLineMaxH;
     _lcdLineCount         = 0;
     _lcdLineWidth         = 0;
     _lcdLineMaxH          = 4;
     _lcdLineLastBreakIdx   = 0;
     _lcdLineLastBreakWidth = 0;
+    _lcdLineHighlighted    = false;
+    _lcdLineFullScale      = false;
 }
 
 void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
                                    bool continuation) {
+    // Continuation suppression: when SCUMM emits an explicit \n
+    // (control code 0x01 / 0xFE 0x08 / 0xFF 0x6E) inside a string,
+    // ignore it.  Our own soft-wrap in renderGlyphToTextOverlay
+    // handles line breaks correctly for the LCD width, so the engine's
+    // explicit newlines (sized for 320×200 source) just confuse layout
+    // — in panel area they'd land the wrap-tail on top of the next
+    // option's row, and in talk area they'd produce double line
+    // spacing.  Treat all chars from one drawString as a single
+    // logical run.
+    if (continuation) {
+        return;
+    }
     flushLcdLine();
     if (!continuation) {
         // Per-tag dedup only.  Don't drop "all talk-area stamps" here —
@@ -714,8 +792,26 @@ void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
     _lcdLineCenter = center;
     _lcdLineXHint  = scumm_xpos;
     _lcdLineSrcY   = scumm_ypos;
+    // Transfer the engine's "next is highlighted" / "next is full-
+    // scale" hints to this line.  Consumed at the new-string boundary
+    // so the engine has to re-set them before each new drawString.
+    if (!continuation) {
+        _lcdLineHighlighted = _lcdNextHighlighted;
+        _lcdNextHighlighted = false;
+        _lcdLineFullScale   = _lcdNextFullScale;
+        _lcdNextFullScale   = false;
+    }
     if (!continuation || !_lcdLineActive) {
-        _lcdLineY = sceneToLcdY(scumm_ypos);
+        if (_lcdLineFullScale && scumm_ypos >= 144) {
+            // Dialog-option full-scale: 1:1 source-Y → LCD-Y so each
+            // option occupies its own LCD row without overlap.  The
+            // platform's present() computes vertical scroll on the fly
+            // from the cursor source-y so options past the LCD bottom
+            // slide up into view — no extra BSS required.
+            _lcdLineY = 92 + (scumm_ypos - 144);
+        } else {
+            _lcdLineY = sceneToLcdY(scumm_ypos);
+        }
         _lcdLineActive = true;
     }
     // continuation && active: keep _lcdLineY (already advanced by flush).
@@ -741,17 +837,20 @@ void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
         _lcdLineActive = true;
     }
 
-    // 75% downsample (3:4): source-px → LCD-px for layout.  Floor
-    // (truncating divide) for the layout advance — cumulative line
-    // width stays close to the exact 75%-scaled source width, so wraps
-    // fire near the SCUMM-intended positions.  The platform stamper
-    // uses ceil(srcW * 3/4) for dst_w to keep all source bits visible;
-    // odd-width glyphs pick up a 1-px overlap with the next glyph,
-    // invisible in practice (chars have whitespace edges).
-    int lcd_w = (src_width  * kTextScaleNum) / kTextScaleDen;
-    int lcd_h = (src_height * kTextScaleNum) / kTextScaleDen;
+    // Per-line scale: default is 75% (3:4) — matches the scene-blit
+    // downsample, fits the standard 12-verb interface columns, and
+    // keeps talk text at the size the user originally accepted.
+    // Lines flagged full-scale by drawVerb (wide curRect = single-
+    // column dialog option) bump to 100% for legibility.  This is
+    // per-line via setNextFullScale, so it works regardless of how
+    // many options the dialog has (handles the swordmaster case
+    // where there can be 8-12+ attack moves).
+    const int scaleNum = _lcdLineFullScale ? 1 : kTextScalePanelNum;
+    const int scaleDen = _lcdLineFullScale ? 1 : kTextScalePanelDen;
+    int lcd_w = (src_width  * scaleNum) / scaleDen;
+    int lcd_h = (src_height * scaleNum) / scaleDen;
     if (lcd_w == 0 && src_width  > 0) lcd_w = 1;     // never advance by 0
-    const int lcd_offsY = (src_offsY * kTextScaleNum) / kTextScaleDen;
+    const int lcd_offsY = (src_offsY * scaleNum) / scaleDen;
 
     // Word-break detection driven by the char code (set by printChar
     // before the printCharIntern hook fires).  Bitmap inspection is
@@ -759,19 +858,22 @@ void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
     // bitmap is empty regardless of what the char actually is.
     const bool isBlank = (chr == ' ' || chr == '\t');
 
+    // Wrap policy: in the verb panel band (any panel content) and on
+    // the currently-highlighted line, soft-wrap is suppressed.  Panel
+    // area wrap would emit the wrapped portion on top of the next
+    // verb / dialog option's row (every option has its own scumm_ypos
+    // but the engine flushes them via beginLcdLine, leaving the
+    // wrap-tail at an LCD y that overlaps the next option).
+    // Highlighted lines marquee-scroll at present time instead.
+    // Glyphs that would land off the LCD right edge just clip.
+    const bool inhibit_wrap = _lcdLineHighlighted || (_lcdLineSrcY >= 144);
+
     // Soft-wrap if appending this glyph would push line width past the
     // budget.  Prefer the last word-break point; if there isn't one,
     // hard-wrap (mid-word).
-    //
-    // The `<= count` covers the common case where overflow fires at the
-    // FIRST char of a new word — at that moment _lcdLineLastBreakIdx
-    // equals _lcdLineCount (the space we just appended is at index
-    // count-1, and "next word starts at count").  With `<` we'd miss
-    // it and hard-wrap every word boundary; with `<=` we flush the
-    // current line (trailing space included, but it has no ink) and
-    // start the new word on a fresh sub-line.
     const int budget = computeLineBudget();
-    if (_lcdLineWidth + lcd_w > budget && _lcdLineCount > 0 && budget > 0) {
+    if (!inhibit_wrap &&
+        _lcdLineWidth + lcd_w > budget && _lcdLineCount > 0 && budget > 0) {
         if (_lcdLineLastBreakIdx > 0 && _lcdLineLastBreakIdx <= _lcdLineCount) {
             const int flush_count = _lcdLineLastBreakIdx;
             const int flush_width = _lcdLineLastBreakWidth;

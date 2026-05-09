@@ -300,13 +300,27 @@ static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y) {
     return kFitTopLB + src_y * kFitSceneLcdRows / kVerbPanelSrcY;
 }
 
+// Variant for cursor in panel area: when full-scale dialog mode is
+// active, use 1:1 source-Y → LCD-Y mapping with vertical scroll so the
+// cursor visually aligns with full-scale dialog option text (which
+// also uses 1:1 with the same scroll offset).
+static inline int src_to_lcd_y_panel(int src_y, bool panel_full_scale,
+                                      int panel_scroll_y) {
+    if (panel_full_scale) {
+        return kVerbLcdStartY + (src_y - kVerbPanelSrcY) - panel_scroll_y;
+    }
+    return kVerbLcdStartY +
+           (src_y - kVerbPanelSrcY) * kVerbLcdRows / kVerbSrcRows;
+}
+
 // Render the cursor sprite onto the LCD framebuffer in pixel space.
 // See device_pico/platform_pico.cpp for the design rationale — kept
 // identical between hosts so behaviour matches between SDL and device.
 static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
                                 const uint8_t *palette,
                                 ScaleMode mode, int crop_x, int crop_y,
-                                int verb_crop_x) {
+                                int verb_crop_x,
+                                int panel_scroll_y, bool panel_full_scale) {
     if (!c.sprite || c.w <= 0 || c.h <= 0) return;
 
     // Same size in all modes — see device_pico/platform_pico.cpp comment.
@@ -320,7 +334,12 @@ static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
     // locked Fill mapping with verb_crop_x applied so the cursor
     // tracks the panned verb panel.
     const int anchor_lcd_x = src_to_lcd_x(c.x, c.y, mode, crop_x, verb_crop_x);
-    const int anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y);
+    int anchor_lcd_y;
+    if (c.y >= kVerbPanelSrcY) {
+        anchor_lcd_y = src_to_lcd_y_panel(c.y, panel_full_scale, panel_scroll_y);
+    } else {
+        anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y);
+    }
     const int hsx_lcd = c.hotspot_x * cw_lcd / c.w;
     const int hsy_lcd = c.hotspot_y * ch_lcd / c.h;
     const int origin_x = anchor_lcd_x - hsx_lcd;
@@ -394,7 +413,27 @@ static inline void blit_text_stamp(uint16_t *fb,
         }
     }
 
-    constexpr int kNum = 3, kDen = 4;            // 75% scale
+    // Full-scale (1:1) path for talk-area stamps: each source pixel is
+    // one LCD pixel.  Skipping the area-weighted downsample preserves
+    // sharp glyph edges, which is the whole point of running talk text
+    // larger than the verb panel.
+    if (s.flags & kTextStampFlagFullScale) {
+        for (int sy = 0; sy < s.height; sy++) {
+            const int fb_y = s.dst_y + sy;
+            if (fb_y < 0 || fb_y >= DISPLAY_H) continue;
+            for (int sx = 0; sx < s.width; sx++) {
+                const int fb_x = s.dst_x + sx;
+                if (fb_x < 0 || fb_x >= DISPLAY_W) continue;
+                const uint8_t c = glyph[sy * 32 + sx];
+                if (c == 0) continue;        // transparent
+                const int idx = (c < 4) ? s.cmap[c] : 0;
+                fb[fb_y * DISPLAY_W + fb_x] = pal_to_565(palette, idx);
+            }
+        }
+        return;
+    }
+
+    constexpr int kNum = 3, kDen = 4;            // 75% scale (verb-panel default)
     const int dst_w = (s.width  * kNum + kDen - 1) / kDen;
     const int dst_h = (s.height * kNum + kDen - 1) / kDen;
     // Each LCD pixel covers kDen×kDen = 16 weighted units in the q-grid.
@@ -474,7 +513,34 @@ void present(const uint8_t *virt, const uint8_t *text,
              ScaleMode mode, int crop_x, int crop_y,
              const CursorInfo *cursor,
              const TextStamp *text_stamps, int text_stamp_count,
-             int verb_crop_x, bool verb_panel_active) {
+             int verb_crop_x, bool verb_panel_active,
+             int lcd_scroll_offset) {
+    // Compute panel vertical scroll on the fly — no persistent state
+    // needed, hence no extra BSS.  Scan stamps for any full-scale
+    // panel-area entry → "full-scale dialog mode active".  Then derive
+    // scroll-y from cursor source-y so options past the LCD bottom
+    // slide up as the cursor advances.  Same scroll applies to both
+    // panel stamps and the cursor sprite for visual alignment.
+    bool panel_full_scale = false;
+    for (int i = 0; i < text_stamp_count; i++) {
+        if ((text_stamps[i].flags & kTextStampFlagFullScale) &&
+            text_stamps[i].dst_y >= kVerbLcdStartY) {
+            panel_full_scale = true;
+            break;
+        }
+    }
+    int panel_scroll_y = 0;
+    if (panel_full_scale && cursor && cursor->y >= kVerbPanelSrcY) {
+        // 1:1 mapping puts cursor at LCD y = 92 + (cur_y - 144).
+        // Visible band is LCD 92..127 = 36 rows = source y 144..179.
+        // If cursor source-y exceeds 179, scroll the panel up so the
+        // cursor's row stays at LCD bottom.
+        const int over = cursor->y - (kVerbPanelSrcY + (DISPLAY_H - kVerbLcdStartY) - 1);
+        if (over > 0) panel_scroll_y = over;
+        // Max scroll: source 199 - 36 visible rows = 20 from top edge.
+        const int max_scroll = kVerbSrcRows - (DISPLAY_H - kVerbLcdStartY);
+        if (panel_scroll_y > max_scroll) panel_scroll_y = max_scroll;
+    }
     using namespace tsb::platform_sdl;
     uint16_t *fb = g.framebuffer;
 
@@ -590,12 +656,65 @@ void present(const uint8_t *virt, const uint8_t *text,
     }
 
     // THUMBY-PORT — LCD-native glyph stamps painted post-scene-blit.
+    //   kTextStampFlagScroll: shift dst_x left by lcd_scroll_offset for
+    //                         marquee scroll of hovered option line.
+    //   stamps in panel band (dst_y >= kVerbLcdStartY) shift by
+    //                         -panel_scroll_y for vertical scroll of
+    //                         long dialog option lists.
     for (int i = 0; i < text_stamp_count; i++) {
-        blit_text_stamp(fb, text_stamps[i], palette);
+        TextStamp s = text_stamps[i];
+        if (s.flags & kTextStampFlagScroll) {
+            s.dst_x = (int16_t)(s.dst_x - lcd_scroll_offset);
+        }
+        if (s.dst_y >= kVerbLcdStartY) {
+            s.dst_y = (int16_t)(s.dst_y - panel_scroll_y);
+        }
+        blit_text_stamp(fb, s, palette);
     }
 
     if (cursor) blit_cursor_overlay(fb, *cursor, palette,
-                                     mode, crop_x, crop_y, verb_crop_x);
+                                     mode, crop_x, crop_y, verb_crop_x,
+                                     panel_scroll_y, panel_full_scale);
+
+    // DEBUG: periodic PPM dump for offline inspection.  Set env var
+    // THUMBY_DUMP_DIR to a directory; every Nth frame (default 30,
+    // override with THUMBY_DUMP_EVERY) is written as PPM.
+    {
+        static int s_dump_frame_count = 0;
+        static const char *s_dump_dir = nullptr;
+        static int s_dump_every = 0;
+        static bool s_init_done = false;
+        if (!s_init_done) {
+            s_init_done = true;
+            s_dump_dir = getenv("THUMBY_DUMP_DIR");
+            const char *every = getenv("THUMBY_DUMP_EVERY");
+            s_dump_every = every ? atoi(every) : 30;
+            if (s_dump_every <= 0) s_dump_every = 30;
+        }
+        if (s_dump_dir) {
+            if ((s_dump_frame_count % s_dump_every) == 0) {
+                char path[512];
+                snprintf(path, sizeof(path), "%s/frame_%06d.ppm",
+                         s_dump_dir, s_dump_frame_count);
+                FILE *f = fopen(path, "wb");
+                if (f) {
+                    fprintf(f, "P6\n%d %d\n255\n", DISPLAY_W, DISPLAY_H);
+                    for (int p = 0; p < DISPLAY_W * DISPLAY_H; p++) {
+                        const uint16_t px = fb[p];
+                        const uint8_t r5 = (px >> 11) & 0x1F;
+                        const uint8_t g6 = (px >> 5)  & 0x3F;
+                        const uint8_t b5 =  px        & 0x1F;
+                        const uint8_t r8 = (uint8_t)((r5 << 3) | (r5 >> 2));
+                        const uint8_t g8 = (uint8_t)((g6 << 2) | (g6 >> 4));
+                        const uint8_t b8 = (uint8_t)((b5 << 3) | (b5 >> 2));
+                        fputc(r8, f); fputc(g8, f); fputc(b8, f);
+                    }
+                    fclose(f);
+                }
+            }
+            s_dump_frame_count++;
+        }
+    }
 
     SDL_UpdateTexture(g.tex, nullptr, fb, DISPLAY_W * 2);
     SDL_RenderClear(g.ren);
@@ -612,19 +731,57 @@ bool poll_input(Input *out) {
     SDL_PumpEvents();
     const Uint8 *keys = SDL_GetKeyboardState(nullptr);
 
+    // DEBUG: scripted input driver.  Set THUMBY_INPUT_SCRIPT to a
+    // semicolon-separated list of "<delay_ms>:<key>" entries (key one
+    // of: esc, b, a, menu, m).  When the elapsed time since boot
+    // exceeds the entry's delay, that key is held for one poll cycle.
+    // Useful for unattended SDL runs that need to skip past intro
+    // screens to reach a target scene before frame-dumping.
+    static Uint32 s_boot_ms = 0;
+    static const char *s_script = nullptr;
+    static bool s_script_init = false;
+    if (!s_script_init) {
+        s_script_init = true;
+        s_script = getenv("THUMBY_INPUT_SCRIPT");
+        s_boot_ms = SDL_GetTicks();
+    }
+    bool scripted_esc = false, scripted_b = false, scripted_a = false;
+    bool scripted_menu = false;
+    if (s_script) {
+        const Uint32 now = SDL_GetTicks() - s_boot_ms;
+        const char *p = s_script;
+        while (*p) {
+            int delay = atoi(p);
+            const char *colon = strchr(p, ':');
+            if (!colon) break;
+            const char *next = strchr(colon + 1, ';');
+            const size_t key_len = next ? (size_t)(next - colon - 1) : strlen(colon + 1);
+            // Fire while in a small post-delay window (250 ms) so the
+            // engine catches it as a single press+release.
+            if (now >= (Uint32)delay && now < (Uint32)(delay + 250)) {
+                if (key_len == 3 && !strncmp(colon + 1, "esc", 3))   scripted_esc = true;
+                if (key_len == 1 && colon[1] == 'b')                  scripted_b = true;
+                if (key_len == 1 && colon[1] == 'a')                  scripted_a = true;
+                if (key_len == 4 && !strncmp(colon + 1, "menu", 4))   scripted_menu = true;
+            }
+            if (!next) break;
+            p = next + 1;
+        }
+    }
+
     out->dpad_up    = keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP];
     out->dpad_down  = keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN];
     out->dpad_left  = keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT];
     out->dpad_right = keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT];
 
-    bool a    = keys[SDL_SCANCODE_PERIOD] || keys[SDL_SCANCODE_J];
-    bool b    = keys[SDL_SCANCODE_COMMA]  || keys[SDL_SCANCODE_K];
+    bool a    = keys[SDL_SCANCODE_PERIOD] || keys[SDL_SCANCODE_J] || scripted_a;
+    bool b    = keys[SDL_SCANCODE_COMMA]  || keys[SDL_SCANCODE_K] || scripted_b;
     bool lb   = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_Q];
     bool rb   = keys[SDL_SCANCODE_SPACE]  || keys[SDL_SCANCODE_E];
     // RETURN / M map to MENU (cycle scale mode). ESC is its own input,
     // delivered through Input.escape_pressed (cutscene-exit on host).
-    bool menu = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_M];
-    bool esc  = keys[SDL_SCANCODE_ESCAPE];
+    bool menu = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_M] || scripted_menu;
+    bool esc  = keys[SDL_SCANCODE_ESCAPE] || scripted_esc;
 
     out->button_a = a;       out->button_b = b;
     out->button_lb = lb;     out->button_rb = rb;
