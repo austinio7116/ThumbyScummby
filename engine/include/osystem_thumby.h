@@ -226,6 +226,12 @@ private:
     uint32_t _ovMenuDownAt = 0;
     bool     _ovMenuConsumed = false;
     bool     _ovEscFired     = false;
+    // After a picker dispatches a synthesized click, suppress auto-
+    // open of the verb picker for a few frames.  The engine takes a
+    // tick or two to consume the click and clear dialog mode; without
+    // a cooldown the auto-open fires immediately and the picker
+    // bounces back open before the response script runs.
+    int      _pickerCooldown = 0;
 
 public:
     // THUMBY-PORT — captured sentence text (slot 2 of drawString).
@@ -234,7 +240,9 @@ public:
     // "Walk to bartender" / "Use rubber chicken with broken rope".
     static constexpr int kSentenceMax = 64;
     char _sentenceBuf[kSentenceMax] = { 0 };
+    char _npcQuestionBuf[kSentenceMax] = { 0 };
     void captureSentence(const char *s);
+    void captureNpcQuestion(const char *s);
 
     // Re-render the most recent engine frame (scene + sentence strip)
     // into the LCD framebuffer WITHOUT pushing to the panel — used by

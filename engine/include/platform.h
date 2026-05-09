@@ -135,7 +135,21 @@ void present(const uint8_t *virt, const uint8_t *text,
              // translucent box on top before sending the composite
              // frame.  After painting the overlay, the caller invokes
              // lcd_present_now() to flush.
-             bool send_to_lcd = true);
+             bool send_to_lcd = true,
+             // True while the engine is rendering a verb panel into
+             // source rows 144..199 (gameplay with player control).
+             // When TRUE, present() blits only source rows 0..143 to
+             // the LCD; rows 144..199 are hidden because they hold the
+             // legacy panel UI we replaced with overlay menus.  When
+             // FALSE (cutscenes, title screens, the Melee Island map),
+             // present() blits the full 320×200 source so banner text
+             // and full-screen scenes display correctly.
+             bool panel_active = false,
+             // Floating "auto-verb" tooltip rendered next to the
+             // cursor sprite (e.g. "bartender" or "Talk to bartender"
+             // when the cursor is over an actor).  Empty string or
+             // nullptr → nothing painted.
+             const char *cursor_tooltip = nullptr);
 
 // ---------------------------------------------------------------------------
 // Input

@@ -285,11 +285,23 @@ static inline int src_to_lcd_x(int src_x, ScaleMode mode, int crop_x) {
         return src_x - crop_x;
     return src_x * DISPLAY_W / VIRTUAL_SCREEN_W;            // Fit
 }
-static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y) {
+// Cursor's source-y → LCD-y must match the scene-blit math in
+// present().  Scene blit uses src_y_max = panel_active ? 144 : 200, so
+// the cursor formula has to use the same denominator — otherwise the
+// cursor sprite drifts ~10-20 LCD pixels off the engine's hotspot
+// position when panel_active flips.
+static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y,
+                                bool panel_active) {
+    const int src_y_max = panel_active ? kSceneSrcRows : VIRTUAL_SCREEN_H;
     if (mode == ScaleMode::Crop) return src_y - crop_y;
-    if (mode == ScaleMode::Fill)
-        return src_y * kSceneLcdRows / kSceneSrcRows;
-    return kFitTopLB + src_y * kFitSceneLcdRows / kSceneSrcRows;  // Fit
+    const int fit_rows  = (src_y_max * DISPLAY_W) / VIRTUAL_SCREEN_W;
+    const int fill_rows = (src_y_max * DISPLAY_H) / VIRTUAL_SCREEN_H;
+    int dst_h = (mode == ScaleMode::Fit) ? fit_rows : fill_rows;
+    if (dst_h > kSceneLcdRows) dst_h = kSceneLcdRows;
+    const int letterbox_top = (mode == ScaleMode::Fit)
+                              ? (kSceneLcdRows - dst_h) / 2
+                              : 0;
+    return letterbox_top + src_y * dst_h / src_y_max;
 }
 
 // Render the cursor sprite onto the LCD framebuffer in pixel space.
@@ -297,7 +309,8 @@ static inline int src_to_lcd_y(int src_y, ScaleMode mode, int crop_y) {
 // identical between hosts so behaviour matches between SDL and device.
 static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
                                 const uint8_t *palette,
-                                ScaleMode mode, int crop_x, int crop_y) {
+                                ScaleMode mode, int crop_x, int crop_y,
+                                bool panel_active) {
     if (!c.sprite || c.w <= 0 || c.h <= 0) return;
 
     int cw_lcd = c.w;
@@ -307,7 +320,7 @@ static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
     if (ch_lcd < 4) ch_lcd = 4;
 
     const int anchor_lcd_x = src_to_lcd_x(c.x, mode, crop_x);
-    const int anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y);
+    const int anchor_lcd_y = src_to_lcd_y(c.y, mode, crop_y, panel_active);
     const int hsx_lcd = c.hotspot_x * cw_lcd / c.w;
     const int hsy_lcd = c.hotspot_y * ch_lcd / c.h;
     const int origin_x = anchor_lcd_x - hsx_lcd;
@@ -484,7 +497,12 @@ void present(const uint8_t *virt, const uint8_t *text,
              const CursorInfo *cursor,
              const TextStamp *text_stamps, int text_stamp_count,
              const char *sentence, int verb_prefix_len,
-             bool send_to_lcd) {
+             bool send_to_lcd, bool panel_active,
+             const char *cursor_tooltip) {
+    // Source-row count visible this frame.  Panel-active gameplay
+    // hides rows 144..199 (legacy panel area, now in overlay UI);
+    // cutscene / map / title screens show the full 0..199 source.
+    const int src_y_max = panel_active ? kSceneSrcRows : VIRTUAL_SCREEN_H;
     using namespace tsb::platform_sdl;
     uint16_t *fb = g.framebuffer;
 
@@ -511,17 +529,23 @@ void present(const uint8_t *virt, const uint8_t *text,
         }
     };
 
-    // ---------- Scene region (LCD rows 0..119, source 0..143) ----------
-    //   Fit:   width-fit isotropic 0.4× → 57 LCD rows centred-letterbox
-    //   Fill:  legacy "medium zoom" — 0.64× vertical (matches the OLD
-    //          200-row Fill's vertical scale), pinned to LCD top so the
-    //          black gap below the scene sits where the verb panel
-    //          used to be (overlay menus paint into that gap).
-    //   Crop:  1:1 native pannable
+    // ---------- Scene region (LCD rows 0..119) ----------
+    //   Panel-active (gameplay): show source 0..143
+    //   Panel-inactive (cutscene/map/title): show source 0..199
+    //
+    //   Fit:   width-fit isotropic 0.4× — 57 (panel) / 80 (full) LCD rows
+    //          centred-letterboxed in the 120-row scene area
+    //   Fill:  0.64× vertical (legacy ratio) — 92 (panel) / 128-clipped
+    //          (full) LCD rows pinned to LCD top
+    //   Crop:  1:1 native, pannable
     if (mode == ScaleMode::Fit || mode == ScaleMode::Fill) {
-        const int dst_h         = (mode == ScaleMode::Fit) ? kFitSceneLcdRows
-                                                           : kFillSceneLcdRows;
-        const int letterbox_top = (mode == ScaleMode::Fit) ? kFitTopLB : 0;
+        const int fit_rows  = (src_y_max * DISPLAY_W) / VIRTUAL_SCREEN_W;  // 57 or 80
+        const int fill_rows = (src_y_max * DISPLAY_H) / VIRTUAL_SCREEN_H;  // 92 or 128
+        int dst_h           = (mode == ScaleMode::Fit) ? fit_rows : fill_rows;
+        if (dst_h > kSceneLcdRows) dst_h = kSceneLcdRows;   // never overrun strip
+        const int letterbox_top = (mode == ScaleMode::Fit)
+                                  ? (kSceneLcdRows - dst_h) / 2
+                                  : 0;
         uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
         if (mode == ScaleMode::Fill) {
             int pan_max = VIRTUAL_SCREEN_W - (DISPLAY_W * VIRTUAL_SCREEN_H / DISPLAY_H);
@@ -542,15 +566,15 @@ void present(const uint8_t *virt, const uint8_t *text,
             }
         }
         for (int dy = 0; dy < dst_h; dy++) {
-            int sy  = (dy * kSceneSrcRows) / dst_h;
-            int sy2 = sy + 1; if (sy2 >= kSceneSrcRows) sy2 = sy;
+            int sy  = (dy * src_y_max) / dst_h;
+            int sy2 = sy + 1; if (sy2 >= src_y_max) sy2 = sy;
             blit_row_blend(letterbox_top + dy, sy, sy2, sxa, sxb);
         }
-    } else { // Crop — 1:1 native, scene window 128×120, source 320×144
+    } else { // Crop — 1:1 native, scene window 128×120
         if (crop_x < 0) crop_x = 0;
         if (crop_y < 0) crop_y = 0;
-        const int crop_x_max = VIRTUAL_SCREEN_W - DISPLAY_W;          // 192
-        const int crop_y_max = kSceneSrcRows - kSceneLcdRows;          // 24
+        const int crop_x_max = VIRTUAL_SCREEN_W - DISPLAY_W;
+        const int crop_y_max = src_y_max - kSceneLcdRows;     // 24 (panel) or 80 (full)
         if (crop_x > crop_x_max) crop_x = crop_x_max;
         if (crop_y > crop_y_max) crop_y = crop_y_max;
         for (int dy = 0; dy < kSceneLcdRows; dy++) {
@@ -577,7 +601,25 @@ void present(const uint8_t *virt, const uint8_t *text,
 
     // ---------- Cursor (clipped to scene area) ----------
     if (cursor) blit_cursor_overlay(fb, *cursor, palette,
-                                     mode, crop_x, crop_y);
+                                     mode, crop_x, crop_y, panel_active);
+
+    // ---------- Cursor tooltip (auto-verb hover label) ----------
+    if (cursor && cursor_tooltip && cursor_tooltip[0]) {
+        const int anchor_x = src_to_lcd_x(cursor->x, mode, crop_x);
+        const int anchor_y = src_to_lcd_y(cursor->y, mode, crop_y, panel_active);
+        const int tw = tsb::mi_font::text_width(cursor_tooltip);
+        constexpr uint16_t kTipColor = 0xFFE0;     // yellow
+        // Default position: just below-right of the cursor.  Flip to
+        // left of cursor if it'd run off the right edge; flip above
+        // if it'd hit the sentence strip.
+        int tx = anchor_x + 6;
+        int ty = anchor_y + 4;
+        if (tx + tw > DISPLAY_W - 1) tx = anchor_x - tw - 4;
+        if (ty + 8 > kSentenceLcdY)  ty = anchor_y - 9;
+        if (tx < 1) tx = 1;
+        if (ty < 1) ty = 1;
+        tsb::mi_font::draw(tx, ty, cursor_tooltip, kTipColor);
+    }
 
     // ---------- Sentence strip (LCD rows 120..127) ----------
     // Always painted last so it sits on top of anything that strayed
@@ -587,17 +629,20 @@ void present(const uint8_t *virt, const uint8_t *text,
         for (int x = 0; x < DISPLAY_W; x++) fb[y * DISPLAY_W + x] = 0;
     }
     if (sentence && sentence[0]) {
-        constexpr uint16_t kAccent = 0xFD60;   // amber
-        constexpr uint16_t kBody   = 0xFFFF;
-        // Two passes share the same pen origin — draw_substr advances
-        // pen through every character but paints only chars in the
-        // [start, end) range, so the prefix and body land at their
-        // natural left-justified positions.
+        // MI1 sentence-line palette: yellow verb prefix, light blue noun body.
+        constexpr uint16_t kAccent = 0xFFE0;     // yellow
+        constexpr uint16_t kBody   = 0x57FF;     // light blue
+        constexpr int kMargin = 2;
         int total_len = 0;
         for (const char *p = sentence; *p; p++) total_len++;
-        tsb::mi_font::draw_substr(2, kSentenceLcdY, sentence,
+        const int text_w = tsb::mi_font::text_width(sentence);
+        static uint32_t s_frame = 0; ++s_frame;
+        const int scroll = tsb::mi_font::marquee_offset(
+            text_w, DISPLAY_W - kMargin * 2, s_frame);
+        const int origin_x = kMargin - scroll;
+        tsb::mi_font::draw_substr(origin_x, kSentenceLcdY, sentence,
                                   0, verb_prefix_len, kAccent);
-        tsb::mi_font::draw_substr(2, kSentenceLcdY, sentence,
+        tsb::mi_font::draw_substr(origin_x, kSentenceLcdY, sentence,
                                   verb_prefix_len, total_len, kBody);
     }
 
@@ -868,6 +913,8 @@ void lcd_fill(uint16_t rgb565) {
 
 void lcd_pixel(int x, int y, uint16_t rgb565) {
     using namespace tsb::platform_sdl;
+    if ((unsigned)x >= (unsigned)DISPLAY_W) return;
+    if ((unsigned)y >= (unsigned)DISPLAY_H) return;
     g.framebuffer[y * DISPLAY_W + x] = rgb565;
 }
 

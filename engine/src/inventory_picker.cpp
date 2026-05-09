@@ -13,8 +13,8 @@ namespace tsb {
 namespace inventory_picker {
 namespace {
 
-constexpr uint16_t kWhite  = 0xFFFF;
-constexpr uint16_t kHilite = 0xFD60;
+constexpr uint16_t kWhite  = 0x57E5;     // mint green — MI1 verb text
+constexpr uint16_t kHilite = 0xFFE0;     // yellow — MI1 highlight
 constexpr uint16_t kDim    = 0x39E7;
 
 constexpr int kBoxX = 0;
@@ -66,12 +66,20 @@ void paint(OSystem_Thumby *osys, const Entry *entries, int count, int sel) {
 	if (top + max_visible > count) top = count - max_visible;
 	if (top < 0) top = 0;
 
+	constexpr int kRowX    = kBoxX + 2;
+	constexpr int kRowMaxW = kBoxW - 4;
+	static uint32_t s_marquee_frame = 0; ++s_marquee_frame;
+
 	for (int i = 0; i < max_visible && top + i < count; i++) {
 		const int idx = top + i;
 		const int y = kBoxY + 14 + i * 7;
 		const uint16_t color = (idx == sel) ? kHilite : kWhite;
-		if (idx == sel) tsb::mi_font::draw(kBoxX + 2, y, ">", kHilite);
-		tsb::mi_font::draw(kBoxX + 9, y, entries[idx].name, color);
+		const int text_w = tsb::mi_font::text_width(entries[idx].name);
+		const int scroll = (idx == sel)
+		    ? tsb::mi_font::marquee_offset(text_w, kRowMaxW, s_marquee_frame)
+		    : 0;
+		tsb::mi_font::draw_clipped(kRowX - scroll, y, entries[idx].name,
+		                           color, kRowX, kRowX + kRowMaxW);
 	}
 
 	tsb::platform::lcd_present_now();

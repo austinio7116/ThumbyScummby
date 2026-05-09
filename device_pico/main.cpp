@@ -164,12 +164,16 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         if (nx < 0)   nx = 0;
         if (ny < 0)   ny = 0;
         if (nx > 319) nx = 319;
-        // Clamp to scene area — source rows 144..199 are the legacy
-        // verb panel which we no longer render.  Cursor stays in scene
-        // (0..143); verb / inventory clicks at panel-area coords are
+        // Cursor source-Y range:
+        //   panel_active (gameplay)         → 0..143 (scene only)
+        //   panel_inactive (cutscene/map)   → 0..199 (full source)
+        // The latter lets the player click hotspots that span the full
+        // 320×200 source on map / inventory / title screens.  Verb /
+        // inventory clicks at panel-area coords during gameplay are
         // synthesized by the picker overlays directly into the
         // EventManager queue, bypassing this clamp.
-        if (ny > 143) ny = 143;
+        const int max_src_y = osys.verbPanelActive() ? 143 : 199;
+        if (ny > max_src_y) ny = max_src_y;
         g_in.curX = nx;
         g_in.curY = ny;
 
@@ -228,13 +232,18 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         // scene crop stays put (no scene shift triggered by verb-area
         // hover).  This is the only place scene crop tracks cursor.
         if (!now_in_verb) {
-            int vis_w = 320, vis_h = 200;
+            // vis_h = SOURCE rows visible in the scene area.  Crop is
+            // 1:1 native, so vis_h = 120 (LCD scene = 0..119).  Fit and
+            // Fill compress vertically and show the full source height
+            // for the active panel mode (200 inactive / 144 active).
+            const int src_h = osys.verbPanelActive() ? 144 : 200;
+            int vis_w = 320, vis_h = src_h;
             if (sm == tsb::platform::ScaleMode::Fill) {
                 vis_w = 200;
-                vis_h = 200;
+                vis_h = src_h;
             } else if (sm == tsb::platform::ScaleMode::Crop) {
                 vis_w = 128;
-                vis_h = 128;
+                vis_h = 120;
             }
             int cx = osys.cropX();
             int cy = osys.cropY();
@@ -245,7 +254,8 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
             if (cx < 0)             cx = 0;
             if (cy < 0)             cy = 0;
             if (cx > 320 - vis_w)   cx = 320 - vis_w;
-            if (cy > 200 - vis_h)   cy = 200 - vis_h;
+            const int cy_max = src_h - vis_h;
+            if (cy > cy_max)        cy = cy_max;
             osys.setCrop(cx, cy);
         }
 

@@ -22,9 +22,11 @@ inline void draw_text(int x, int y, const char *str, uint16_t color) {
 }
 
 constexpr uint16_t kBlack = 0x0000;
-constexpr uint16_t kWhite = 0xFFFF;
-constexpr uint16_t kHilite = 0xFD60;     // amber
-constexpr uint16_t kDim = 0x39E7;        // dark grey
+// MI1-palette accents — mint green for default text, yellow highlight,
+// dark grey for greyed-out (inaccessible) entries.
+constexpr uint16_t kWhite  = 0x57E5;     // mint green (verb text)
+constexpr uint16_t kHilite = 0xFFE0;     // yellow (selected)
+constexpr uint16_t kDim    = 0x39E7;     // dark grey
 
 constexpr int kMenuItems = 3;
 constexpr const char *kLabels[kMenuItems] = { "SAVE", "LOAD", "CANCEL" };
@@ -62,8 +64,8 @@ void paint_menu(OSystem_Thumby *osys, int sel, bool has_save, const char *status
 		uint16_t color = greyed ? kDim : kWhite;
 		if (i == sel) color = greyed ? kDim : kHilite;
 		const int y = kBoxY + 18 + i * 10;
-		if (i == sel) draw_text(kBoxX + 8, y, ">", kHilite);
-		draw_text(kBoxX + 16, y, kLabels[i], color);
+		// Selection is shown by colour; no leading marker.
+		draw_text(kBoxX + 8, y, kLabels[i], color);
 	}
 	if (status && status[0]) {
 		draw_text(kBoxX + 4, kBoxY + 50, status, kHilite);

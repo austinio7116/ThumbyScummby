@@ -71,5 +71,46 @@ void draw(int x, int y, const char *str, uint16_t fg) {
 	draw_substr(x, y, str, 0, len, fg);
 }
 
+void draw_clipped(int x, int y, const char *str, uint16_t fg,
+                  int clip_min, int clip_max) {
+	if (!str) return;
+	int pen = x;
+	for (; *str; ++str) {
+		const int i = idx(*str);
+		if (i < 0) { pen += 4; continue; }
+		const Glyph &g = kGlyphs[i];
+		if (g.width > 0 && g.bitmap_offset != 0xFFFF) {
+			const uint8_t *bm = &kBitmaps[g.bitmap_offset];
+			int bit = 0;
+			for (int gy = 0; gy < g.height; ++gy) {
+				for (int gx = 0; gx < g.width; ++gx) {
+					if (bm[bit >> 3] & (0x80 >> (bit & 7))) {
+						const int px = pen + gx + g.offsX;
+						if (px >= clip_min && px < clip_max) {
+							tsb::platform::lcd_pixel(px, y + gy + g.offsY, fg);
+						}
+					}
+					++bit;
+				}
+			}
+		}
+		pen += advance(g);
+	}
+}
+
+int marquee_offset(int text_w, int lcd_w, uint32_t frame) {
+	if (text_w <= lcd_w) return 0;
+	const int over = text_w - lcd_w;
+	// Pause frames at each end (~0.8 s at 30 FPS) + 1 frame per
+	// pixel of scroll.  Cycle = pause + scroll + pause + scroll-back.
+	constexpr int kPause = 24;
+	const int cycle = (kPause + over) * 2;
+	const int phase = static_cast<int>(frame % static_cast<uint32_t>(cycle));
+	if (phase < kPause)             return 0;
+	if (phase < kPause + over)      return phase - kPause;
+	if (phase < kPause * 2 + over)  return over;
+	return over - (phase - kPause * 2 - over);
+}
+
 }  // namespace mi_font
 }  // namespace tsb

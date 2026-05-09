@@ -3582,10 +3582,18 @@ void ScummEngine_v7::actorTalk(const byte *msg) {
 #endif
 #endif
 
+extern "C" void thumby_capture_npc_question(const unsigned char *buf);
+
 void ScummEngine::actorTalk(const byte *msg) {
 	Actor *a;
 
 	convertMessageToString(msg, _charsetBuffer, sizeof(_charsetBuffer));
+
+	// THUMBY-PORT — capture the NPC's last spoken line so the LCD
+	// sentence strip can show it during dialog mode (when the user is
+	// picking a response and the original on-screen talk text might
+	// have already cleared).
+	thumby_capture_npc_question(_charsetBuffer);
 
 	// I have commented out this workaround, since it did cause another
 	// bug (#11480). It is not okay to skip the stopTalk() calls here.

@@ -1349,6 +1349,11 @@ void ScummEngine::killVerb(int slot) {
 		verbMouseOver(0);
 	}
 	vs->saveid = 0;
+	// THUMBY-PORT: clear dialog-response flag so a recycled slot
+	// doesn't carry the previous dialog's flag.
+	if (slot < (int)(sizeof(_verbIsDialogResponse) / sizeof(_verbIsDialogResponse[0]))) {
+		_verbIsDialogResponse[slot] = false;
+	}
 }
 
 void ScummEngine::setVerbObject(uint room, uint object, uint verb) {

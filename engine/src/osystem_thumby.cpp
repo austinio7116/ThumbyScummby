@@ -11,6 +11,7 @@
 #include "inventory_picker.h"
 #include "scumm/scumm.h"
 #include "scumm/verbs.h"
+#include "scumm/object.h"
 #include "common/mutex.h"
 #include "common/events.h"
 #include "audio/mixer.h"
@@ -38,8 +39,25 @@ void OSystem_Thumby::captureSentence(const char *s) {
     _sentenceBuf[i] = 0;
 }
 
+void OSystem_Thumby::captureNpcQuestion(const char *s) {
+    if (!s) { _npcQuestionBuf[0] = 0; return; }
+    int i = 0;
+    for (; i < kSentenceMax - 1 && s[i]; i++) _npcQuestionBuf[i] = s[i];
+    _npcQuestionBuf[i] = 0;
+}
+
+extern "C" void thumby_capture_npc_question(const unsigned char *buf) {
+    if (!g_system) return;
+    static_cast<OSystem_Thumby *>(g_system)->captureNpcQuestion(
+        reinterpret_cast<const char *>(buf));
+}
+
 void OSystem_Thumby::synthesizeLeftClick(int x, int y) {
     if (!_eventManager) return;
+    // Block auto-open of the verb picker for the next few frames.
+    // The engine needs a couple of ticks to consume the click and run
+    // the response/verb script that clears dialog state from _verbs[].
+    _pickerCooldown = 6;
     // Push MOVE+DOWN+UP at the verb's source coords.  ThumbyEventManager
     // drains synthetic events without calling setEngineMousePos, so our
     // visual cursor sprite stays at the player's last position.
@@ -69,17 +87,20 @@ void OSystem_Thumby::synthesizeLeftClick(int x, int y) {
 void OSystem_Thumby::renderSnapshotToFramebuffer() {
     // No cursor — overlays paint their own selection markers; showing
     // the game cursor under the menu would be visual noise.
+    const bool dialog_active = _engine &&
+                               verb_picker::dialog_mode_active(_engine);
+    const char *strip_text = dialog_active ? _npcQuestionBuf : _sentenceBuf;
     int verb_prefix_len = 0;
-    if (_engine && _sentenceBuf[0]) {
+    if (!dialog_active && _engine && strip_text[0]) {
         for (int v = 1; v < _engine->numVerbs(); ++v) {
             const VerbSlot &vs = _engine->_verbs[v];
             if (!vs.curmode || !vs.verbid) continue;
             const byte *vt = _engine->getResourceAddress(rtVerb, v);
             if (!vt) continue;
             int n = 0;
-            while (vt[n] && _sentenceBuf[n] == (char)vt[n]) ++n;
+            while (vt[n] && strip_text[n] == (char)vt[n]) ++n;
             if (vt[n] == 0 &&
-                (_sentenceBuf[n] == ' ' || _sentenceBuf[n] == 0) &&
+                (strip_text[n] == ' ' || strip_text[n] == 0) &&
                 n > verb_prefix_len) {
                 verb_prefix_len = n;
             }
@@ -88,8 +109,9 @@ void OSystem_Thumby::renderSnapshotToFramebuffer() {
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, /*cursor=*/nullptr,
                       _lcdStamps, _lcdStampCount,
-                      _sentenceBuf, verb_prefix_len,
-                      /*send_to_lcd=*/false);
+                      strip_text, verb_prefix_len,
+                      /*send_to_lcd=*/false,
+                      /*panel_active=*/_verbPanelActive);
 }
 
 // Bridge — string.cpp drawString slot 2 captures the rendered
@@ -497,25 +519,57 @@ void OSystem_Thumby::updateScreen() {
     // the overlay UI, not on screen).
     flushLcdLine();
 
-    // Detect verb-prefix length for sentence-strip highlighting.  The
-    // engine's sentence (slot 2) is composed as "<verb text> <noun>";
-    // we match the leading characters of _sentenceBuf against each
-    // _verbs[].text and use the longest match as the highlighted prefix.
+    // Pick which text the sentence strip shows this frame:
+    //   normal play → composed cursor sentence ("Walk to bartender")
+    //   dialog mode → NPC's last spoken line, captured in actorTalk
+    const bool dialog_active = _engine &&
+                               verb_picker::dialog_mode_active(_engine);
+    const char *strip_text = dialog_active ? _npcQuestionBuf : _sentenceBuf;
+
+    // Detect verb-prefix length for cursor-sentence highlighting only;
+    // NPC questions are painted entirely in body colour (no prefix
+    // accent — they're free-form dialogue, not verb+noun structure).
     int verb_prefix_len = 0;
-    if (_engine && _sentenceBuf[0]) {
+    if (!dialog_active && _engine && strip_text[0]) {
         for (int v = 1; v < _engine->numVerbs(); ++v) {
             const VerbSlot &vs = _engine->_verbs[v];
             if (!vs.curmode || !vs.verbid) continue;
             const byte *vt = _engine->getResourceAddress(rtVerb, v);
             if (!vt) continue;
             int n = 0;
-            while (vt[n] && _sentenceBuf[n] == (char)vt[n]) ++n;
-            // Accept only full-prefix matches (verb text fully consumed),
-            // and only if followed by space or end — avoids partial collisions.
+            while (vt[n] && strip_text[n] == (char)vt[n]) ++n;
             if (vt[n] == 0 &&
-                (_sentenceBuf[n] == ' ' || _sentenceBuf[n] == 0) &&
+                (strip_text[n] == ' ' || strip_text[n] == 0) &&
                 n > verb_prefix_len) {
                 verb_prefix_len = n;
+            }
+        }
+    }
+
+    // Auto-verb cursor tooltip: "<verb> <name>".  The actual default
+    // verb is picked by the SCUMM sentence-script at right-click time
+    // and isn't available pre-click, so we approximate from the
+    // hovered object's class flags:
+    //   kObjectClassPlayer (actor)   → "Talk to"
+    //   else                         → "Look at"
+    // Empty space → no tooltip (right-click would Walk-to but no
+    // useful name to show).
+    const char *cursor_tooltip = nullptr;
+    char tooltip_buf[64] = {0};
+    if (_engine && _engine->canSaveGameStateCurrently()) {
+        const int hover = _engine->hoveredObject();
+        if (hover > 0) {
+            const byte *name = _engine->publicGetObjOrActorName(hover);
+            if (name && name[0]) {
+                const char *verb = _engine->publicGetClass(hover, kObjectClassPlayer)
+                                   ? "Talk to " : "Look at ";
+                int i = 0;
+                for (; verb[i] && i < (int)sizeof(tooltip_buf) - 1; ++i)
+                    tooltip_buf[i] = verb[i];
+                for (int j = 0; name[j] && i < (int)sizeof(tooltip_buf) - 1; ++i, ++j)
+                    tooltip_buf[i] = (char)name[j];
+                tooltip_buf[i] = 0;
+                cursor_tooltip = tooltip_buf;
             }
         }
     }
@@ -523,7 +577,10 @@ void OSystem_Thumby::updateScreen() {
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,
                       _lcdStamps, _lcdStampCount,
-                      _sentenceBuf, verb_prefix_len);
+                      strip_text, verb_prefix_len,
+                      /*send_to_lcd*/ true,
+                      /*panel_active*/ _verbPanelActive,
+                      cursor_tooltip);
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM
@@ -601,7 +658,11 @@ void OSystem_Thumby::updateScreen() {
             _ovLbDownAt = 0;
             if (held < kHoldThreshMs && !_ovEscFired) want_verb = true;
         }
-        if (_engine->canSaveGameStateCurrently()) {
+        // Cooldown after a picker dispatch — prevents the auto-open
+        // path from re-firing while the engine's still processing the
+        // synthesized click and dialog mode hasn't cleared yet.
+        if (_pickerCooldown > 0) { --_pickerCooldown; want_verb = false; }
+        else if (_engine->canSaveGameStateCurrently()) {
             if (verb_picker::dialog_mode_active(_engine)) want_verb = true;
         } else {
             want_verb = false;
@@ -787,45 +848,32 @@ void OSystem_Thumby::logMessage(LogMessageType::Type /*type*/,
 // Source coord → LCD coord with the active scale mode + crop offsets.
 // Pure mirror of the math used by platform::present() so glyph positions
 // land exactly where the scene blit puts the corresponding source pixel.
-int OSystem_Thumby::sceneToLcdX(int src_x, int src_y) const {
-    // When a verb panel is active, src y ≥ 144 maps to the locked
-    // verb-panel mapping (LCD-overlay glyph lands on the LCD-bottom
-    // verb panel band).  When inactive (title / cutscene), source rows
-    // 144..199 are scene continuation — fall through to the per-mode
-    // scene mapping so any LCD-overlay text positions there land on
-    // top of the rendered title image.
-    if (src_y >= 144 && _verbPanelActive) {
-        return (src_x - _verbCropX) * 128 / 200;
-    }
+// Scene-only redesign: source 144..199 is the legacy panel area (now
+// handled by overlay menus / sentence strip).  These mappings land
+// glyphs in the visible scene region using the same per-mode math as
+// platform::present's scene blit, parameterised by panel_active.
+int OSystem_Thumby::sceneToLcdX(int src_x, int /*src_y*/) const {
     switch (_scaleMode) {
     case platform::ScaleMode::Fill:
         return (src_x - _cropX) * 128 / 200;
     case platform::ScaleMode::Crop:
         return src_x - _cropX;
-    default:                         // Fit scene
+    default:
         return src_x * 128 / 320;
     }
 }
 int OSystem_Thumby::sceneToLcdY(int src_y) const {
-    // When verb panel is active, src y ≥ 144 maps to the fixed LCD
-    // verb-panel band (rows 92..127).  Otherwise (title, cutscene),
-    // those rows are scene continuation and use the full per-mode
-    // scene mapping.
-    if (src_y >= 144 && _verbPanelActive) {
-        return 92 + (src_y - 144) * 36 / 56;
-    }
-    switch (_scaleMode) {
-    case platform::ScaleMode::Fill:
-        return _verbPanelActive
-                ? (src_y * 92 / 144)              // scene-only fills LCD 0..91
-                : (src_y * 128 / 200);            // full source 0..199 → LCD 0..127
-    case platform::ScaleMode::Crop:
-        return src_y - _cropY;
-    default:                                       // Fit
-        return _verbPanelActive
-                ? (24 + src_y * 58 / 144)         // 24 + scene 0.4× of 144 src
-                : (24 + src_y * 80 / 200);        // 24 + full 0.4× of 200 src
-    }
+    constexpr int kSceneLcdRows = 120;
+    const int src_y_max = _verbPanelActive ? 144 : 200;
+    if (_scaleMode == platform::ScaleMode::Crop) return src_y - _cropY;
+    const int fit_rows  = (src_y_max * 128) / 320;
+    const int fill_rows = (src_y_max * 128) / 200;
+    int dst_h = (_scaleMode == platform::ScaleMode::Fit) ? fit_rows : fill_rows;
+    if (dst_h > kSceneLcdRows) dst_h = kSceneLcdRows;
+    const int letterbox_top = (_scaleMode == platform::ScaleMode::Fit)
+                              ? (kSceneLcdRows - dst_h) / 2
+                              : 0;
+    return letterbox_top + src_y * dst_h / src_y_max;
 }
 
 void OSystem_Thumby::clearLcdTextOverlay() {
@@ -1001,16 +1049,17 @@ void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
         return;
     }
     flushLcdLine();
-    // Scene-only redesign: source rows 144..199 are the legacy verb /
-    // sentence / inventory area which we no longer paint to LCD.  Mark
-    // the line "suppressed" — every renderGlyphToTextOverlay call
-    // until the next non-panel beginLcdLine is silently dropped.  We
-    // still update _lcdLineSrcY so any cursor/scene math sees the
-    // correct source row.
+    // Scene-only redesign: when the verb panel is active (gameplay
+    // with visible verbs), source rows 144..199 carry verb / dialog
+    // / sentence text we replaced with overlay menus — suppress LCD
+    // overlay glyph emission for that band.  When the panel is
+    // INACTIVE (cutscenes, intro, map screens), those rows can hold
+    // banner text ("Deep in the Caribbean…") that we DO want to
+    // render.
     _lcdLineSrcY      = scumm_ypos;
     _lcdLineXHint     = scumm_xpos;
     _lcdLineCenter    = center;
-    if (scumm_ypos >= 144) {
+    if (_verbPanelActive && scumm_ypos >= 144) {
         _lcdLineActive     = false;
         _lcdLineSuppressed = true;
         return;
@@ -1205,14 +1254,13 @@ void thumby_clear_lcd_text_overlay() {
 }
 
 // Charset hook queries this to decide whether to route glyphs through
-// the LCD overlay or fall back to SCUMM's _textSurface scene path.
-// Crop mode → false, so text renders at native 1:1 scene scale (the
-// source pixels ARE LCD pixels in Crop), which is what looks best
-// without the overlay.
+// the LCD overlay (75 % scale, fits more text per LCD row) or fall
+// back to SCUMM's _textSurface native path (1:1 source pixels).
+// Always route to overlay — even in Crop mode, where the native path
+// would otherwise leave long talk lines clipped off the right edge of
+// the 128-wide viewport.
 bool thumby_lcd_text_path_active() {
-    if (!g_system) return false;
-    auto *t = static_cast<OSystem_Thumby *>(g_system);
-    return t->scaleMode() != platform::ScaleMode::Crop;
+    return true;
 }
 
 }  // namespace tsb

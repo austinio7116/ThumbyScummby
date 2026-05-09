@@ -27,5 +27,18 @@ void draw(int x, int y, const char *str, uint16_t fg_rgb565);
 void draw_substr(int x, int y, const char *str, int start, int end,
                  uint16_t fg_rgb565);
 
+// Draw `str` clipped to LCD x range [clip_min, clip_max).  Pixels
+// outside the band are skipped.  Used to render marquee-scrolling
+// rows in pickers where text extends past the row's reserved width.
+void draw_clipped(int x, int y, const char *str, uint16_t fg_rgb565,
+                  int clip_min, int clip_max);
+
+// Marquee scroll offset.  Returns 0 when `text_w <= lcd_w` (no scroll
+// needed); otherwise ping-pongs from 0 to (text_w - lcd_w) with a
+// pause at each end.  `frame` is a free-running counter — pass the
+// same monotonically-increasing value each render call.  Negate the
+// returned offset and add to the text origin x to scroll left.
+int marquee_offset(int text_w, int lcd_w, uint32_t frame);
+
 }  // namespace mi_font
 }  // namespace tsb

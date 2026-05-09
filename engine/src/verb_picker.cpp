@@ -14,8 +14,8 @@ namespace verb_picker {
 namespace {
 
 constexpr uint16_t kBlack  = 0x0000;
-constexpr uint16_t kWhite  = 0xFFFF;
-constexpr uint16_t kHilite = 0xFD60;
+constexpr uint16_t kWhite  = 0x57E5;     // mint green — MI1 verb text
+constexpr uint16_t kHilite = 0xFFE0;     // yellow — MI1 highlight
 constexpr uint16_t kDim    = 0x39E7;
 
 constexpr int kBoxX = 0;
@@ -78,12 +78,23 @@ void paint(OSystem_Thumby *osys, ScummEngine *eng,
 	if (top + max_visible > count) top = count - max_visible;
 	if (top < 0) top = 0;
 
+	// Selection is shown by colour (yellow for selected, white otherwise),
+	// so no left-margin marker — gives 2 px margin both sides for text.
+	constexpr int kRowX     = kBoxX + 2;
+	constexpr int kRowMaxW  = kBoxW - 4;
+
+	static uint32_t s_marquee_frame = 0; ++s_marquee_frame;
+
 	for (int i = 0; i < max_visible && top + i < count; i++) {
 		const int idx = top + i;
 		const int y = kBoxY + 14 + i * 7;
 		const uint16_t color = (idx == sel) ? kHilite : kWhite;
-		if (idx == sel) tsb::mi_font::draw(kBoxX + 2, y, ">", kHilite);
-		tsb::mi_font::draw(kBoxX + 9, y, entries[idx].text, color);
+		const int text_w = tsb::mi_font::text_width(entries[idx].text);
+		const int scroll = (idx == sel)
+		    ? tsb::mi_font::marquee_offset(text_w, kRowMaxW, s_marquee_frame)
+		    : 0;
+		tsb::mi_font::draw_clipped(kRowX - scroll, y, entries[idx].text,
+		                           color, kRowX, kRowX + kRowMaxW);
 	}
 
 	// Show count indicator for long lists.
@@ -104,14 +115,45 @@ void paint(OSystem_Thumby *osys, ScummEngine *eng,
 
 }  // anonymous
 
-bool dialog_mode_active(ScummEngine *engine) {
-	if (!engine) return false;
-	// MI1 dialog mode: response slots use verbid >= 100 with non-zero
-	// hicolor.  Standard verbs are 1..12 with hicolor==0.
+// 32-bit fingerprint of the currently visible TextVerb set.  Changes
+// whenever a verb is added / removed / repositioned — used by the
+// "B-to-dismiss" auto-open escape hatch so the picker doesn't re-pop
+// while the engine is still in the same verb state.
+static uint32_t s_dismissed_fingerprint = 0;
+
+uint32_t verb_set_fingerprint(ScummEngine *engine) {
+	if (!engine) return 0;
+	uint32_t h = 5381;
 	for (int v = 1; v < engine->numVerbs(); ++v) {
 		const VerbSlot &vs = engine->_verbs[v];
 		if (!vs.curmode || vs.saveid) continue;
-		if (vs.verbid >= 100 && vs.hicolor != 0) return true;
+		if (vs.type != kTextVerbType) continue;
+		h = ((h << 5) + h) ^ (uint32_t)vs.verbid;
+		h = ((h << 5) + h) ^ (uint32_t)vs.curRect.top;
+		h = ((h << 5) + h) ^ (uint32_t)vs.curRect.left;
+	}
+	return h;
+}
+
+bool dialog_mode_active(ScummEngine *engine) {
+	if (!engine) return false;
+	// Authoritative engine signal — set by o5_verbOps's SO_VERB_NEW
+	// for slots created mid-gameplay (i.e., after _userPut > 0).
+	// Boot-time creates (standard 12 verbs, inventory arrows) leave
+	// the flag clear, so they're never mistaken for dialog responses.
+	for (int v = 1; v < engine->numVerbs(); ++v) {
+		const VerbSlot &vs = engine->_verbs[v];
+		if (!vs.curmode || vs.saveid) continue;
+		if (vs.type != kTextVerbType) continue;
+		if (engine->_verbIsDialogResponse[v]) {
+			// "Dismissed" fingerprint suppresses re-auto-open.  Cleared
+			// once the verb set changes (new dialog enters / current
+			// one ends).
+			if (verb_set_fingerprint(engine) == s_dismissed_fingerprint) {
+				return false;
+			}
+			return true;
+		}
 	}
 	return false;
 }
@@ -134,7 +176,15 @@ void run(ScummEngine *engine) {
 		tsb::platform::Input in{};
 		if (!tsb::platform::poll_input(&in)) return;
 
-		if (in.menu_pressed || in.b_pressed || in.lb_pressed) return;
+		if (in.menu_pressed || in.b_pressed || in.lb_pressed) {
+			// Snapshot the current verb set so the auto-open path
+			// (dialog_mode_active) won't re-fire until the engine
+			// changes the verb state — new dialog appears, response
+			// script runs, etc.  Without this, a false-positive flag
+			// would cause the picker to bounce open every frame.
+			s_dismissed_fingerprint = verb_set_fingerprint(engine);
+			return;
+		}
 
 		const bool up_edge   = in.dpad_up   && !prev_up;
 		const bool down_edge = in.dpad_down && !prev_down;

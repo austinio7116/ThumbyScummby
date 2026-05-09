@@ -1035,6 +1035,21 @@ public:
 	int numVerbs() const { return _numVerbs; }
 	int userPut() const  { return _userPut; }
 	const byte *publicGetObjOrActorName(int obj) { return getObjOrActorName(obj); }
+	// Object id under the engine's current mouse, or 0 if none.  Used
+	// by the auto-verb cursor tooltip to show the hover target name.
+	int hoveredObject() {
+		return findObject(_virtualMouse.x, _virtualMouse.y);
+	}
+	// Class-bit query for the hovered object.  Used by the cursor
+	// tooltip to pick "Talk to" (kObjectClassPlayer) vs "Look at".
+	bool publicGetClass(int obj, int cls) { return getClass(obj, cls); }
+	// THUMBY-PORT: dialog-response slot flag set by o5_verbOps's
+	// SO_VERB_NEW when the script creates a verb during gameplay
+	// (_userPut > 0).  Boot-time and cutscene-time verb additions
+	// (standard verbs, inventory arrows, save-screen widgets) leave
+	// the flag clear — they're never auto-opened by the dialog
+	// detector.  The flag is cleared on killVerb / SO_VERB_DELETE.
+	bool _verbIsDialogResponse[160] = { false };
 
 	Common::String getTargetName() const { return _targetName; }
 	bool canPauseSoundsDuringSave() const { return _pauseSoundsDuringSave; }
