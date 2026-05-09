@@ -40,6 +40,19 @@ void OSystem_Thumby::captureSentence(const char *s) {
 
 void OSystem_Thumby::synthesizeLeftClick(int x, int y) {
     if (!_eventManager) return;
+    // Push MOVE+DOWN+UP at the verb's source coords.  ThumbyEventManager
+    // drains synthetic events without calling setEngineMousePos, so our
+    // visual cursor sprite stays at the player's last position.
+    //
+    // Critical timing: scummvm runs all pending events through
+    // parseEvents in one drain, THEN runs processInput which uses the
+    // current _mouse for the click position.  If sample_frame fires on
+    // the same drain it'd emit a MOUSEMOVE based on our (saved) cursor
+    // pos, overriding _mouse → click registered at the cursor instead
+    // of the verb.  Suppress sample_frame for the post-picker drain by
+    // clearing _frameDone; the next updateScreen restores it.
+    _frameDone = false;
+
     Common::Event ev;
     ev.kbdRepeat = false;
     ev.type = Common::EVENT_MOUSEMOVE;
@@ -191,15 +204,22 @@ public:
     bool pollEvent(Common::Event &out) override {
         // Drain synthetic events first — used by overlay menus to
         // forward verb / inventory picks to the engine as if the
-        // player had clicked the on-screen widget.
+        // player had clicked the on-screen widget.  We deliberately
+        // DON'T call setEngineMousePos here: the synthesized events
+        // (MOUSEMOVE+DOWN+UP at the verb's curRect) drive the engine's
+        // click resolution, but our visual cursor sprite must stay at
+        // the player's last position.  Without this skip, the engine's
+        // pollEvent would warp our cursor sprite to the verb's
+        // panel-area location after every pick.
         if (_synQHead != _synQTail) {
             out = _synQ[_synQHead];
             _synQHead = (_synQHead + 1) % kSynQ;
+            // Update local mousePos cache so getMousePos() reflects the
+            // synthetic event, but skip the parent cursor-sync.
             if (out.type == Common::EVENT_MOUSEMOVE ||
                 out.type == Common::EVENT_LBUTTONDOWN || out.type == Common::EVENT_LBUTTONUP ||
                 out.type == Common::EVENT_RBUTTONDOWN || out.type == Common::EVENT_RBUTTONUP) {
                 _mousePos = out.mouse;
-                if (_parent) _parent->setEngineMousePos(out.mouse.x, out.mouse.y);
             }
             if (out.type == Common::EVENT_LBUTTONDOWN) _btnState |=  Common::EventManager::LBUTTON;
             if (out.type == Common::EVENT_LBUTTONUP)   _btnState &= ~Common::EventManager::LBUTTON;
@@ -254,9 +274,9 @@ private:
 
     // Synthetic event queue — overlay menus push verb-clicks etc here
     // and the engine sees them through the standard pollEvent path on
-    // its next tick.  4 slots is enough for "MOUSEMOVE + LBUTTONDOWN +
-    // LBUTTONUP" sequences emitted in one go.
-    static constexpr int kSynQ = 4;
+    // its next tick.  8 slots covers MOVE→DOWN→UP→MOVE-back sequences
+    // for two pickers in flight (rare, but keep headroom).
+    static constexpr int kSynQ = 8;
     Common::Event       _synQ[kSynQ];
     int                 _synQHead = 0;
     int                 _synQTail = 0;
@@ -981,6 +1001,21 @@ void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
         return;
     }
     flushLcdLine();
+    // Scene-only redesign: source rows 144..199 are the legacy verb /
+    // sentence / inventory area which we no longer paint to LCD.  Mark
+    // the line "suppressed" — every renderGlyphToTextOverlay call
+    // until the next non-panel beginLcdLine is silently dropped.  We
+    // still update _lcdLineSrcY so any cursor/scene math sees the
+    // correct source row.
+    _lcdLineSrcY      = scumm_ypos;
+    _lcdLineXHint     = scumm_xpos;
+    _lcdLineCenter    = center;
+    if (scumm_ypos >= 144) {
+        _lcdLineActive     = false;
+        _lcdLineSuppressed = true;
+        return;
+    }
+    _lcdLineSuppressed = false;
     if (!continuation) {
         // Per-tag dedup only.  Don't drop "all talk-area stamps" here —
         // that fires whenever drawString() opens a fresh line in the
@@ -1029,6 +1064,13 @@ void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
     if (src_height < 0) return;
     if (bpp != 1 && bpp != 2 && bpp != 4) return;
     if (src_width > 32 || src_height > 32) return;   // stamp scratch limit
+    // Suppress all glyph emission for the legacy verb-panel band.
+    // beginLcdLine sets _lcdLineSuppressed=true when scumm_ypos >= 144;
+    // every printChar that follows is dropped until the next non-panel
+    // beginLcdLine flips the flag back off.  This kills the on-screen
+    // verb / inventory / sentence rendering — those UIs are now in our
+    // overlay menus and bottom strip.
+    if (_lcdLineSuppressed) return;
     // Defensive: if no beginLcdLine() preceded us, open one at LCD origin.
     if (!_lcdLineActive) {
         _lcdLineXHint  = 0;

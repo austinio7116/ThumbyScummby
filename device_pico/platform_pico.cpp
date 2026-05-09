@@ -199,6 +199,10 @@ static inline uint8_t resolve_src(uint8_t t, uint8_t v) {
 // Source 320×144 → LCD 0..119; sentence strip occupies LCD 120..127.
 constexpr int kFitSceneLcdRows  = (kSceneSrcRows * DISPLAY_W) / VIRTUAL_SCREEN_W;  // 57
 constexpr int kFitTopLB         = (kSceneLcdRows - kFitSceneLcdRows) / 2;          // 31
+// Fill: legacy "medium zoom" — 0.64× vertical scale matching the OLD
+// 200-row Fill, pinned to LCD top so the black gap (former panel area)
+// sits between scene and sentence strip.
+constexpr int kFillSceneLcdRows = (kSceneSrcRows * DISPLAY_H) / VIRTUAL_SCREEN_H;  // 92
 
 static inline int src_to_lcd_x(int src_x, ScaleMode mode, int crop_x) {
     if (mode == ScaleMode::Fill)
@@ -438,7 +442,7 @@ void present(const uint8_t *virt, const uint8_t *text,
     // ---------- Scene region (LCD 0..119, source 0..143) ----------
     if (mode == ScaleMode::Fit || mode == ScaleMode::Fill) {
         const int dst_h         = (mode == ScaleMode::Fit) ? kFitSceneLcdRows
-                                                           : kSceneLcdRows;
+                                                           : kFillSceneLcdRows;
         const int letterbox_top = (mode == ScaleMode::Fit) ? kFitTopLB : 0;
         uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
         if (mode == ScaleMode::Fill) {

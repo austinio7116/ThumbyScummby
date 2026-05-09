@@ -1379,12 +1379,14 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 
 	convertMessageToString(msg, buf, sizeof(buf));
 
-	// THUMBY-PORT — capture the converted sentence text for the LCD
-	// sentence strip.  Slot 2 is SCUMM's "sentence" string slot (the
-	// "Walk to ..." readout); we re-render it ourselves with the MI
-	// font into the bottom 8 LCD rows since the original 320×200 panel
-	// is no longer drawn.
-	if (a == 2) {
+	// THUMBY-PORT — capture the rendered sentence text for the LCD
+	// sentence strip.  Detection by Y position rather than slot index:
+	// the SCUMM sentence is always rendered at the very top of the
+	// verb panel (source y 144..155 for v2..v5; the slot used varies
+	// between engine versions).  Verbs and inventory render lower in
+	// the panel so this band catches only the sentence.  Matching by
+	// position is engine-portable (MI1 / MI2 / Atlantis / Indy3+4).
+	if (a == 2 || (_string[a].ypos >= 144 && _string[a].ypos < 156)) {
 		thumby_capture_sentence(buf);
 	}
 

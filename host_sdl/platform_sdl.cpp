@@ -266,10 +266,15 @@ static inline uint8_t resolve_src(uint8_t t, uint8_t v) {
 }
 
 // Scene-only layout uses kSceneSrcRows / kSceneLcdRows / kSentenceLcdY
-// from platform.h.  Fit-mode letterbox metrics are derived locally so
-// they don't bloat the public header.
+// from platform.h.  Per-mode metrics are derived locally so they don't
+// bloat the public header.
 constexpr int kFitSceneLcdRows  = (kSceneSrcRows * DISPLAY_W) / VIRTUAL_SCREEN_W;  // 57
 constexpr int kFitTopLB         = (kSceneLcdRows - kFitSceneLcdRows) / 2;          // 31
+// Fill: vertical scale matches the legacy 200-row Fill (128 LCD / 200 src
+// = 0.64×), giving 144 src × 0.64 = 92 LCD rows of scene pinned to the
+// LCD top.  The remaining LCD rows up to the sentence strip are black,
+// occupying the area where the verb panel used to be.
+constexpr int kFillSceneLcdRows = (kSceneSrcRows * DISPLAY_H) / VIRTUAL_SCREEN_H;  // 92
 
 // Source-coord → LCD-coord helpers used by the cursor blit.  No more
 // panel split — source 0..143 maps continuously through per-mode math.
@@ -507,9 +512,15 @@ void present(const uint8_t *virt, const uint8_t *text,
     };
 
     // ---------- Scene region (LCD rows 0..119, source 0..143) ----------
+    //   Fit:   width-fit isotropic 0.4× → 57 LCD rows centred-letterbox
+    //   Fill:  legacy "medium zoom" — 0.64× vertical (matches the OLD
+    //          200-row Fill's vertical scale), pinned to LCD top so the
+    //          black gap below the scene sits where the verb panel
+    //          used to be (overlay menus paint into that gap).
+    //   Crop:  1:1 native pannable
     if (mode == ScaleMode::Fit || mode == ScaleMode::Fill) {
         const int dst_h         = (mode == ScaleMode::Fit) ? kFitSceneLcdRows
-                                                           : kSceneLcdRows;
+                                                           : kFillSceneLcdRows;
         const int letterbox_top = (mode == ScaleMode::Fit) ? kFitTopLB : 0;
         uint16_t sxa[DISPLAY_W], sxb[DISPLAY_W];
         if (mode == ScaleMode::Fill) {
