@@ -241,8 +241,14 @@ public:
     static constexpr int kSentenceMax = 64;
     char _sentenceBuf[kSentenceMax] = { 0 };
     char _npcQuestionBuf[kSentenceMax] = { 0 };
+    // Last verb the engine drew in HICOLOR mode (the default action for
+    // whatever object is currently under the cursor).  Captured by a
+    // hook in drawVerb; rendered as the cursor tooltip.
+    char _highlightedVerb[32] = { 0 };
+    int  _highlightedVerbId = 0;
     void captureSentence(const char *s);
     void captureNpcQuestion(const char *s);
+    void captureHighlightedVerb(int verbid, const char *text);
 
     // Re-render the most recent engine frame (scene + sentence strip)
     // into the LCD framebuffer WITHOUT pushing to the panel — used by
@@ -371,7 +377,16 @@ public:
     // true` means SCUMM \n inside an existing string — stack tightly
     // below the previous LCD line.  Always flushes any pending line
     // first.
-    void beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
+    // `slot` is the SCUMM drawString text-slot that owns this glyph
+    // run.  We use it to suppress verb / sentence text from the LCD
+    // overlay (those are rendered via our overlay menus / sentence
+    // strip) while letting actor talk and banner text through:
+    //   slot 0 — actor talk        (visible)
+    //   slot 1 — banner / system   (visible)
+    //   slot 2 — sentence          (suppressed; we draw the strip)
+    //   slot 3 — modal message     (visible)
+    //   slot 4 — verbs / inventory (suppressed; overlay UI handles it)
+    void beginLcdLine(int slot, bool center, int scumm_xpos, int scumm_ypos,
                       bool continuation);
     void renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
                                    int width, int height,

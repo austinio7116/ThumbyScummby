@@ -195,11 +195,18 @@ void run(ScummEngine *engine) {
 
 		if (in.a_pressed) {
 			const VerbSlot &vs = engine->_verbs[entries[sel].slot_index];
-			// Click in the middle of the verb's source-space curRect —
-			// the engine's hotspot detection accepts any pixel inside.
 			const int cx = (vs.curRect.left + vs.curRect.right) / 2;
 			const int cy = (vs.curRect.top + vs.curRect.bottom) / 2;
 			if (osys) osys->synthesizeLeftClick(cx, cy);
+			// Lock dismiss-fingerprint on the verb-set the user just
+			// picked from.  Engine takes a tick or two to consume the
+			// click and update the verb set; without this the auto-open
+			// sees "dialog still active" on the next frame and re-pops
+			// the picker — the "two-attempts-per-pick" bug.  When the
+			// engine actually mutates the verb set (response script
+			// runs, dialog closes / advances), the fingerprint stops
+			// matching and auto-open is allowed again.
+			s_dismissed_fingerprint = verb_set_fingerprint(engine);
 			return;
 		}
 		tsb::platform::sleep_ms(16);

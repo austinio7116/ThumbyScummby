@@ -31,6 +31,7 @@
 // single-column dialog option).
 extern "C" void thumby_lcd_text_set_next_highlighted(bool);
 extern "C" void thumby_lcd_text_set_next_full_scale(bool);
+extern "C" void thumby_capture_highlighted_verb(int verbid, const unsigned char *text);
 
 namespace Scumm {
 
@@ -1185,6 +1186,11 @@ void ScummEngine::drawVerb(int verb, int mode, Common::TextToSpeechManager::Acti
 		// so long dialog options become readable.  Cleared after the
 		// drawString consumes it.
 		thumby_lcd_text_set_next_highlighted((mode && vs->hicolor) != 0);
+		// THUMBY-PORT — capture the currently-highlighted verb's text
+		// for the cursor tooltip.  See the file-scope extern below.
+		if ((mode && vs->hicolor) != 0) {
+			thumby_capture_highlighted_verb(vs->verbid, msg);
+		}
 		// THUMBY-PORT: full-scale (100%) for wide verbs.  Dialog
 		// options typically render 10+ characters (≥ 80 source-px);
 		// standard 12-verb entries are 4-9 characters (≤ ~70 src-px).

@@ -46,6 +46,21 @@ void OSystem_Thumby::captureNpcQuestion(const char *s) {
     _npcQuestionBuf[i] = 0;
 }
 
+void OSystem_Thumby::captureHighlightedVerb(int verbid, const char *text) {
+    _highlightedVerbId = verbid;
+    if (!text) { _highlightedVerb[0] = 0; return; }
+    int i = 0;
+    for (; i < (int)sizeof(_highlightedVerb) - 1 && text[i]; i++)
+        _highlightedVerb[i] = text[i];
+    _highlightedVerb[i] = 0;
+}
+
+extern "C" void thumby_capture_highlighted_verb(int verbid, const byte *text) {
+    if (!g_system) return;
+    static_cast<OSystem_Thumby *>(g_system)->captureHighlightedVerb(
+        verbid, reinterpret_cast<const char *>(text));
+}
+
 extern "C" void thumby_capture_npc_question(const unsigned char *buf) {
     if (!g_system) return;
     static_cast<OSystem_Thumby *>(g_system)->captureNpcQuestion(
@@ -546,33 +561,14 @@ void OSystem_Thumby::updateScreen() {
         }
     }
 
-    // Auto-verb cursor tooltip: "<verb> <name>".  The actual default
-    // verb is picked by the SCUMM sentence-script at right-click time
-    // and isn't available pre-click, so we approximate from the
-    // hovered object's class flags:
-    //   kObjectClassPlayer (actor)   → "Talk to"
-    //   else                         → "Look at"
-    // Empty space → no tooltip (right-click would Walk-to but no
-    // useful name to show).
-    const char *cursor_tooltip = nullptr;
-    char tooltip_buf[64] = {0};
-    if (_engine && _engine->canSaveGameStateCurrently()) {
-        const int hover = _engine->hoveredObject();
-        if (hover > 0) {
-            const byte *name = _engine->publicGetObjOrActorName(hover);
-            if (name && name[0]) {
-                const char *verb = _engine->publicGetClass(hover, kObjectClassPlayer)
-                                   ? "Talk to " : "Look at ";
-                int i = 0;
-                for (; verb[i] && i < (int)sizeof(tooltip_buf) - 1; ++i)
-                    tooltip_buf[i] = verb[i];
-                for (int j = 0; name[j] && i < (int)sizeof(tooltip_buf) - 1; ++i, ++j)
-                    tooltip_buf[i] = (char)name[j];
-                tooltip_buf[i] = 0;
-                cursor_tooltip = tooltip_buf;
-            }
-        }
-    }
+    // Cursor tooltip = the currently-highlighted verb name (the SCUMM
+    // sentence-script highlights the verb whose action would fire on
+    // right-click; that's exactly the "default action" the user sees
+    // glowing in the original game's verb panel).  Empty if no verb
+    // is highlighted (cursor over empty space).
+    const char *cursor_tooltip =
+        (_highlightedVerb[0] && _engine && _engine->hoveredObject() > 0)
+        ? _highlightedVerb : nullptr;
 
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,
@@ -1019,7 +1015,7 @@ void OSystem_Thumby::flushLcdLine() {
     _lcdLineFullScale      = false;
 }
 
-void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
+void OSystem_Thumby::beginLcdLine(int slot, bool center, int scumm_xpos, int scumm_ypos,
                                    bool continuation) {
     // Continuation suppression: when SCUMM emits an explicit \n
     // (control code 0x01 / 0xFE 0x08 / 0xFF 0x6E) inside a string,
@@ -1049,17 +1045,20 @@ void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
         return;
     }
     flushLcdLine();
-    // Scene-only redesign: when the verb panel is active (gameplay
-    // with visible verbs), source rows 144..199 carry verb / dialog
-    // / sentence text we replaced with overlay menus — suppress LCD
-    // overlay glyph emission for that band.  When the panel is
-    // INACTIVE (cutscenes, intro, map screens), those rows can hold
-    // banner text ("Deep in the Caribbean…") that we DO want to
-    // render.
+    // Slot-based suppression: ONLY drop glyphs from drawString slots
+    // we render via our overlay UI — not based on ypos at all, so the
+    // banner ("Deep in the Caribbean…") which lives at any source y
+    // never gets caught.
+    //   slot 2 (sentence) → drawn in our LCD bottom strip
+    //   slot 4 (verbs / inventory / dialog responses) → drawn via the
+    //                       overlay menus that auto-open on LB / RB /
+    //                       dialog-response detection
+    // All other slots (actor talk, banner, modal) render normally
+    // through the LCD overlay path.
     _lcdLineSrcY      = scumm_ypos;
     _lcdLineXHint     = scumm_xpos;
     _lcdLineCenter    = center;
-    if (_verbPanelActive && scumm_ypos >= 144) {
+    if (slot == 2 || slot == 4) {
         _lcdLineActive     = false;
         _lcdLineSuppressed = true;
         return;
@@ -1220,11 +1219,11 @@ void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
 // ----- Free-function bridges so charset.cpp / string.cpp / gfx.cpp can
 // dispatch without dragging the OSystem_Thumby type into transcribed
 // scummvm source.
-void thumby_lcd_text_begin_line(bool center, int scumm_xpos, int scumm_ypos,
+void thumby_lcd_text_begin_line(int slot, bool center, int scumm_xpos, int scumm_ypos,
                                  bool continuation) {
     if (!g_system) return;
     static_cast<OSystem_Thumby *>(g_system)->beginLcdLine(
-        center, scumm_xpos, scumm_ypos, continuation);
+        slot, center, scumm_xpos, scumm_ypos, continuation);
 }
 
 void thumby_render_glyph_to_lcd_overlay(const uint8_t *charPtr, int bpp,

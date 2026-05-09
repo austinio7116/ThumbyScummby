@@ -36,7 +36,7 @@ namespace Scumm {
 // boundaries (string start + every \n) so the overlay knows when to
 // flush the prior line and where to anchor the next one.  See
 // osystem_thumby.cpp for the layout strategy.
-extern void thumby_lcd_text_begin_line(bool center, int scumm_xpos,
+extern void thumby_lcd_text_begin_line(int slot, bool center, int scumm_xpos,
                                         int scumm_ypos, bool continuation);
 
 #pragma mark -
@@ -662,7 +662,7 @@ bool ScummEngine::newLine() {
 	// THUMBY-PORT — actor talk wrapped to a new line: stack the LCD
 	// sub-line below the prior, same centring policy.
 	if (_thumbyLcdTextMode) {
-		thumby_lcd_text_begin_line(_string[0].center,
+		thumby_lcd_text_begin_line(0, _string[0].center,
 		                            _string[0].xpos,
 		                            _string[0].ypos,
 		                            /*continuation=*/true);
@@ -1206,7 +1206,7 @@ void ScummEngine::displayDialog() {
 	// THUMBY-PORT — when starting a fresh actor line (not "keep text"
 	// repeat redraw), open a new line in the LCD text overlay.
 	if (_thumbyLcdTextMode && _charset->_firstChar) {
-		thumby_lcd_text_begin_line(_string[0].center,
+		thumby_lcd_text_begin_line(0, _string[0].center,
 		                            _string[0].xpos,
 		                            _string[0].ypos,
 		                            /*continuation=*/false);
@@ -1506,7 +1506,7 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 			ov_center = false;
 			ov_xpos   = 0;
 		}
-		thumby_lcd_text_begin_line(ov_center, ov_xpos, _string[a].ypos,
+		thumby_lcd_text_begin_line(a, ov_center, ov_xpos, _string[a].ypos,
 		                            /*continuation=*/false);
 	}
 
@@ -1528,7 +1528,7 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 					bool ov_center = _string[a].center;
 					int  ov_xpos   = _string[a].xpos;
 					if (a == 2) { ov_center = false; ov_xpos = 0; }
-					thumby_lcd_text_begin_line(ov_center, ov_xpos,
+					thumby_lcd_text_begin_line(a, ov_center, ov_xpos,
 					                            _string[a].ypos,
 					                            /*continuation=*/true);
 				}
@@ -1564,7 +1564,7 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 					bool ov_center = _string[a].center;
 					int  ov_xpos   = _string[a].xpos;
 					if (a == 2) { ov_center = false; ov_xpos = 0; }
-					thumby_lcd_text_begin_line(ov_center, ov_xpos,
+					thumby_lcd_text_begin_line(a, ov_center, ov_xpos,
 					                            _string[a].ypos,
 					                            /*continuation=*/true);
 				}

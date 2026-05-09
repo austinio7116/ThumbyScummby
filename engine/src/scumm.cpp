@@ -3082,9 +3082,23 @@ void ScummEngine::scummLoop(int delta) {
 				visibleVerbCount++;
 			}
 		}
-		const bool gameplay = (_currentRoom != 0 && _userPut > 0 &&
-		                       visibleVerbCount > 0);
-		thumby_set_verb_panel_active(gameplay);
+		// THUMBY-PORT — panel_active = "should the LCD scene blit hide
+		// source rows 144..199 (the legacy verb panel area)".  Either
+		// of two engine signals turns it on:
+		//   _userPut > 0           → player has scene control (verbs
+		//                             belong on screen even if a frame
+		//                             of transition has visibleVerbCount
+		//                             == 0)
+		//   visibleVerbCount > 0   → engine is rendering verbs RIGHT
+		//                             NOW (cook walk-in cutscene with
+		//                             _userPut already 0 but verbs
+		//                             still visible)
+		// Only when BOTH are false (true cutscene with no panel UI) do
+		// we reveal source 144..199 so banner / map / title screens
+		// render their full image.
+		const bool panel_in_use = (_currentRoom != 0) &&
+		                          ((_userPut > 0) || (visibleVerbCount > 0));
+		thumby_set_verb_panel_active(panel_in_use);
 		// Note: dialog-options vs standard 12-verb scale is decided
 		// per-verb in drawVerb (verbs.cpp) using curRect width — this
 		// works regardless of how many options the dialog has, so it
