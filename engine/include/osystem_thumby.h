@@ -220,6 +220,36 @@ private:
     void          *_eventPollerUser = nullptr;
     ScummEngine   *_engine          = nullptr;
 
+    // Overlay-trigger button-edge tracking — see updateScreen().
+    uint32_t _ovLbDownAt   = 0;
+    uint32_t _ovRbDownAt   = 0;
+    uint32_t _ovMenuDownAt = 0;
+    bool     _ovMenuConsumed = false;
+    bool     _ovEscFired     = false;
+
+public:
+    // THUMBY-PORT — captured sentence text (slot 2 of drawString).
+    // Re-rendered each frame into the LCD bottom strip with the MI
+    // font.  String is NUL-terminated; max 63 chars is plenty for
+    // "Walk to bartender" / "Use rubber chicken with broken rope".
+    static constexpr int kSentenceMax = 64;
+    char _sentenceBuf[kSentenceMax] = { 0 };
+    void captureSentence(const char *s);
+
+    // Re-render the most recent engine frame (scene + sentence strip)
+    // into the LCD framebuffer WITHOUT pushing to the panel — used by
+    // overlay menus to refresh the underlying scene each frame before
+    // painting their translucent box on top.  Caller is responsible
+    // for calling tsb::platform::lcd_present_now() afterwards.
+    void renderSnapshotToFramebuffer();
+
+    // Inject a synthetic left-click at source-space (x, y).  Used by
+    // the verb/inventory picker overlays to "click" on the engine's
+    // verb hotspot without going through the input layer.  Pushes
+    // MOUSEMOVE → LBUTTONDOWN → LBUTTONUP into the EventManager queue;
+    // engine picks them up on the next tick.
+    void synthesizeLeftClick(int x, int y);
+
     platform::ScaleMode _scaleMode = platform::ScaleMode::Fit;
     int  _cropX = 0;
     int  _cropY = 0;

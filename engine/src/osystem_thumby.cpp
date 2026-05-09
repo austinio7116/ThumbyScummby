@@ -7,7 +7,10 @@
 #include "osystem_thumby.h"
 #include "platform.h"
 #include "save_menu.h"
+#include "verb_picker.h"
+#include "inventory_picker.h"
 #include "scumm/scumm.h"
+#include "scumm/verbs.h"
 #include "common/mutex.h"
 #include "common/events.h"
 #include "audio/mixer.h"
@@ -28,6 +31,63 @@ extern "C" void thumby_force_complete_redraw();
 // verbs come back at the new mapping on the next tick — without this,
 // the very first verb-panel paint of a session lands at the small
 // scene-mapped LCD position because scummLoop hadn't run yet.
+void OSystem_Thumby::captureSentence(const char *s) {
+    if (!s) { _sentenceBuf[0] = 0; return; }
+    int i = 0;
+    for (; i < kSentenceMax - 1 && s[i]; i++) _sentenceBuf[i] = s[i];
+    _sentenceBuf[i] = 0;
+}
+
+void OSystem_Thumby::synthesizeLeftClick(int x, int y) {
+    if (!_eventManager) return;
+    Common::Event ev;
+    ev.kbdRepeat = false;
+    ev.type = Common::EVENT_MOUSEMOVE;
+    ev.mouse.x = x; ev.mouse.y = y;
+    _eventManager->pushEvent(ev);
+    ev.type = Common::EVENT_LBUTTONDOWN;
+    ev.mouse.x = x; ev.mouse.y = y;
+    _eventManager->pushEvent(ev);
+    ev.type = Common::EVENT_LBUTTONUP;
+    ev.mouse.x = x; ev.mouse.y = y;
+    _eventManager->pushEvent(ev);
+}
+
+void OSystem_Thumby::renderSnapshotToFramebuffer() {
+    // No cursor — overlays paint their own selection markers; showing
+    // the game cursor under the menu would be visual noise.
+    int verb_prefix_len = 0;
+    if (_engine && _sentenceBuf[0]) {
+        for (int v = 1; v < _engine->numVerbs(); ++v) {
+            const VerbSlot &vs = _engine->_verbs[v];
+            if (!vs.curmode || !vs.verbid) continue;
+            const byte *vt = _engine->getResourceAddress(rtVerb, v);
+            if (!vt) continue;
+            int n = 0;
+            while (vt[n] && _sentenceBuf[n] == (char)vt[n]) ++n;
+            if (vt[n] == 0 &&
+                (_sentenceBuf[n] == ' ' || _sentenceBuf[n] == 0) &&
+                n > verb_prefix_len) {
+                verb_prefix_len = n;
+            }
+        }
+    }
+    platform::present(_staging, nullptr, _palette,
+                      _scaleMode, _cropX, _cropY, /*cursor=*/nullptr,
+                      _lcdStamps, _lcdStampCount,
+                      _sentenceBuf, verb_prefix_len,
+                      /*send_to_lcd=*/false);
+}
+
+// Bridge — string.cpp drawString slot 2 captures the rendered
+// sentence here so the platform layer can paint it into the LCD
+// bottom strip independent of the engine's 320×200 framebuffer.
+extern "C" void thumby_capture_sentence(const byte *buf) {
+    if (!g_system) return;
+    static_cast<OSystem_Thumby *>(g_system)->captureSentence(
+        reinterpret_cast<const char *>(buf));
+}
+
 extern "C" void thumby_set_verb_panel_active(bool active) {
     if (!g_system) return;
     auto *t = static_cast<tsb::OSystem_Thumby *>(g_system);
@@ -129,6 +189,24 @@ public:
     explicit ThumbyEventManager(OSystem_Thumby *parent) : _parent(parent) {}
 
     bool pollEvent(Common::Event &out) override {
+        // Drain synthetic events first — used by overlay menus to
+        // forward verb / inventory picks to the engine as if the
+        // player had clicked the on-screen widget.
+        if (_synQHead != _synQTail) {
+            out = _synQ[_synQHead];
+            _synQHead = (_synQHead + 1) % kSynQ;
+            if (out.type == Common::EVENT_MOUSEMOVE ||
+                out.type == Common::EVENT_LBUTTONDOWN || out.type == Common::EVENT_LBUTTONUP ||
+                out.type == Common::EVENT_RBUTTONDOWN || out.type == Common::EVENT_RBUTTONUP) {
+                _mousePos = out.mouse;
+                if (_parent) _parent->setEngineMousePos(out.mouse.x, out.mouse.y);
+            }
+            if (out.type == Common::EVENT_LBUTTONDOWN) _btnState |=  Common::EventManager::LBUTTON;
+            if (out.type == Common::EVENT_LBUTTONUP)   _btnState &= ~Common::EventManager::LBUTTON;
+            if (out.type == Common::EVENT_RBUTTONDOWN) _btnState |=  Common::EventManager::RBUTTON;
+            if (out.type == Common::EVENT_RBUTTONUP)   _btnState &= ~Common::EventManager::RBUTTON;
+            return true;
+        }
         auto fn = _parent ? _parent->eventPollerFn() : nullptr;
         if (!fn) return false;
         if (!fn(_parent->eventPollerUser(), &out)) return false;
@@ -150,7 +228,12 @@ public:
         if (out.type == Common::EVENT_QUIT)        _shouldQuit = 1;
         return true;
     }
-    void pushEvent(const Common::Event &) override {}
+    void pushEvent(const Common::Event &ev) override {
+        const int next = (_synQTail + 1) % kSynQ;
+        if (next == _synQHead) return;   // queue full — drop
+        _synQ[_synQTail] = ev;
+        _synQTail = next;
+    }
     void purgeMouseEvents() override {}
     void purgeKeyboardEvents() override {}
     Common::Point getMousePos() const override { return _mousePos; }
@@ -168,6 +251,15 @@ private:
     Common::Point   _mousePos;
     int             _btnState = 0;
     int             _shouldQuit = 0;
+
+    // Synthetic event queue — overlay menus push verb-clicks etc here
+    // and the engine sees them through the standard pollEvent path on
+    // its next tick.  4 slots is enough for "MOUSEMOVE + LBUTTONDOWN +
+    // LBUTTONUP" sequences emitted in one go.
+    static constexpr int kSynQ = 4;
+    Common::Event       _synQ[kSynQ];
+    int                 _synQHead = 0;
+    int                 _synQTail = 0;
 };
 }  // anonymous
 
@@ -380,37 +472,38 @@ void OSystem_Thumby::updateScreen() {
         cur_ptr        = &cur;
     }
     // THUMBY-PORT — flush any line still buffered from the last
-    // drawString into the stamp list, then pass the stamp list to
-    // platform::present so glyphs are painted at LCD-native 1× into
-    // the RGB565 framebuffer (after the scaled scene blit, before the
-    // cursor).  This avoids a 16 KB BSS overlay buffer.
+    // drawString into the stamp list (talk-area glyph stamps go on
+    // top of the scene blit; sentence/verb panel content is now in
+    // the overlay UI, not on screen).
     flushLcdLine();
-    // Marquee scroll for the highlighted dialog option / verb.  Cycle
-    // the scroll frame when the line is wider than the LCD; ping-pong
-    // with brief pauses at each end so the user can read both halves.
-    int scroll_offset = 0;
-    const int max_scroll = _lcdHighlightedLineWidth - kLcdOverlayW;
-    if (max_scroll > 0) {
-        constexpr int kPauseFrames = 24;        // ~0.8s at 30 FPS hold each end
-        const int cycle = (max_scroll + kPauseFrames) * 2;
-        const int phase = _lcdScrollFrame % cycle;
-        if (phase < kPauseFrames) {
-            scroll_offset = 0;
-        } else if (phase < kPauseFrames + max_scroll) {
-            scroll_offset = phase - kPauseFrames;
-        } else if (phase < kPauseFrames + max_scroll + kPauseFrames) {
-            scroll_offset = max_scroll;
-        } else {
-            scroll_offset = max_scroll - (phase - kPauseFrames - max_scroll - kPauseFrames);
+
+    // Detect verb-prefix length for sentence-strip highlighting.  The
+    // engine's sentence (slot 2) is composed as "<verb text> <noun>";
+    // we match the leading characters of _sentenceBuf against each
+    // _verbs[].text and use the longest match as the highlighted prefix.
+    int verb_prefix_len = 0;
+    if (_engine && _sentenceBuf[0]) {
+        for (int v = 1; v < _engine->numVerbs(); ++v) {
+            const VerbSlot &vs = _engine->_verbs[v];
+            if (!vs.curmode || !vs.verbid) continue;
+            const byte *vt = _engine->getResourceAddress(rtVerb, v);
+            if (!vt) continue;
+            int n = 0;
+            while (vt[n] && _sentenceBuf[n] == (char)vt[n]) ++n;
+            // Accept only full-prefix matches (verb text fully consumed),
+            // and only if followed by space or end — avoids partial collisions.
+            if (vt[n] == 0 &&
+                (_sentenceBuf[n] == ' ' || _sentenceBuf[n] == 0) &&
+                n > verb_prefix_len) {
+                verb_prefix_len = n;
+            }
         }
-        _lcdScrollFrame++;
-    } else {
-        _lcdScrollFrame = 0;
     }
+
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,
-                      _lcdStamps, _lcdStampCount, _verbCropX,
-                      _verbPanelActive, scroll_offset);
+                      _lcdStamps, _lcdStampCount,
+                      _sentenceBuf, verb_prefix_len);
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM
@@ -421,15 +514,88 @@ void OSystem_Thumby::updateScreen() {
     // re-sample buttons on its next pollEvent call.
     _frameDone = true;
 
-    // Hold-LB save/load menu — gated on the engine being at a savable
-    // point (canSaveGameStateCurrently — no cutscene, room ready).
-    // Triggers once per long-hold; the menu run() blocks until the user
-    // picks an option, so the engine is effectively paused for the duration.
+    // ---- Overlay UI triggers ----
+    //   MENU tap            → cycle scale mode
+    //   MENU hold ~600 ms   → save/load menu
+    //   LB  tap             → verb / dialog-response picker
+    //   RB  tap             → inventory picker
+    //   LB+RB held together → ESC (cutscene-skip)
+    //
+    // Tap = press-and-release within `kMenuHoldThreshMs`; we detect on
+    // release.  Hold = the same button still down past the threshold
+    // (consumed once, no release-tap fires after).  Both-held chord
+    // beats either-tap: while LB+RB are simultaneously down we suppress
+    // their tap events.
     if (_engine) {
-        const bool lb = platform::is_lb_held();
-        const bool in_control = _engine->canSaveGameStateCurrently();
-        if (save_menu::maybe_trigger(lb, in_control)) {
-            save_menu::run(_engine);
+        const uint32_t now = platform::millis();
+        constexpr uint32_t kHoldThreshMs = 600;
+
+        const bool lb_now   = platform::is_lb_held();
+        const bool rb_now   = platform::is_rb_held();
+        const bool menu_now = platform::is_menu_held();
+
+        // Edge tracking + first-press timestamps.
+        if (lb_now && _ovLbDownAt == 0)   _ovLbDownAt = now ? now : 1;
+        if (rb_now && _ovRbDownAt == 0)   _ovRbDownAt = now ? now : 1;
+        if (menu_now && _ovMenuDownAt == 0) _ovMenuDownAt = now ? now : 1;
+
+        // LB+RB chord — emit ESC once when both are held together,
+        // suppress tap-on-release for both.
+        if (lb_now && rb_now && !_ovEscFired) {
+            _ovEscFired = true;
+            // ESC handled like the legacy RB-as-ESC path.
+            Common::Event ev{};
+            ev.type = Common::EVENT_KEYDOWN;
+            ev.kbd.keycode = Common::KEYCODE_ESCAPE;
+            ev.kbd.ascii   = Common::ASCII_ESCAPE;
+            if (_eventManager) _eventManager->pushEvent(ev);
+            ev.type = Common::EVENT_KEYUP;
+            if (_eventManager) _eventManager->pushEvent(ev);
+        }
+        if (!lb_now && !rb_now) _ovEscFired = false;
+
+        // MENU: hold past threshold opens save menu.  Tap (release before
+        // threshold) cycles scale.
+        if (!menu_now && _ovMenuDownAt != 0) {
+            const uint32_t held = now - _ovMenuDownAt;
+            _ovMenuDownAt = 0;
+            if (held < kHoldThreshMs && !_ovMenuConsumed) {
+                cycleScaleMode();
+            }
+            _ovMenuConsumed = false;
+        } else if (menu_now && _ovMenuDownAt != 0 && !_ovMenuConsumed &&
+                   (now - _ovMenuDownAt) >= kHoldThreshMs) {
+            _ovMenuConsumed = true;
+            if (_engine->canSaveGameStateCurrently())
+                save_menu::run(_engine);
+        }
+
+        // Coalesce all "should we open the verb picker this frame?"
+        // sources into one decision: LB tap OR active dialog mode.
+        // Without coalescing, dialog auto-open would re-fire after the
+        // tap-driven picker because the synthesized click won't have
+        // been processed by the engine until its next scummLoop tick.
+        bool want_verb = false;
+        if (!lb_now && _ovLbDownAt != 0) {
+            const uint32_t held = now - _ovLbDownAt;
+            _ovLbDownAt = 0;
+            if (held < kHoldThreshMs && !_ovEscFired) want_verb = true;
+        }
+        if (_engine->canSaveGameStateCurrently()) {
+            if (verb_picker::dialog_mode_active(_engine)) want_verb = true;
+        } else {
+            want_verb = false;
+        }
+        if (want_verb) verb_picker::run(_engine);
+
+        // RB tap → inventory picker.
+        if (!rb_now && _ovRbDownAt != 0) {
+            const uint32_t held = now - _ovRbDownAt;
+            _ovRbDownAt = 0;
+            if (held < kHoldThreshMs && !_ovEscFired &&
+                _engine->canSaveGameStateCurrently() && !want_verb) {
+                inventory_picker::run(_engine);
+            }
         }
     }
 }
@@ -671,6 +837,11 @@ int OSystem_Thumby::computeLineBudget() const {
 // dropStampsByTag for idempotent re-draws.  Drops silently when the
 // list is full.
 void OSystem_Thumby::emitStamp(const LcdGlyph &g, int dst_x, int dst_y) {
+    // Phantom width-only glyph (e.g. the synthetic space we inject in
+    // beginLcdLine when suppressing a continuation): no bitmap to
+    // paint, so don't burn a stamp slot.  flushLcdLine still advances
+    // the pen by g.width before this returns.
+    if (!g.charPtr) return;
     if (_lcdStampCount >= kLcdStampMax) return;
     platform::TextStamp &s = _lcdStamps[_lcdStampCount];
     s.charPtr = g.charPtr;
@@ -784,14 +955,29 @@ void OSystem_Thumby::beginLcdLine(bool center, int scumm_xpos, int scumm_ypos,
                                    bool continuation) {
     // Continuation suppression: when SCUMM emits an explicit \n
     // (control code 0x01 / 0xFE 0x08 / 0xFF 0x6E) inside a string,
-    // ignore it.  Our own soft-wrap in renderGlyphToTextOverlay
-    // handles line breaks correctly for the LCD width, so the engine's
-    // explicit newlines (sized for 320×200 source) just confuse layout
-    // — in panel area they'd land the wrap-tail on top of the next
-    // option's row, and in talk area they'd produce double line
-    // spacing.  Treat all chars from one drawString as a single
-    // logical run.
+    // ignore the line break — but inject a phantom space-width glyph
+    // so the words on either side of the suppressed newline don't run
+    // together.  The phantom glyph has charPtr=nullptr; emitStamp
+    // skips it but flushLcdLine still advances the pen by its width.
+    // Tagging it as a break point also lets soft-wrap cut here if the
+    // joined line overflows.
     if (continuation) {
+        if (_lcdLineActive && _lcdLineCount > 0 && _lcdLineCount < kLcdLineMax) {
+            const int space_w = _lcdLineFullScale ? 4 : 3;
+            LcdGlyph &g = _lcdLine[_lcdLineCount++];
+            g.charPtr = nullptr;
+            g.bpp     = 1;
+            g.width   = (uint8_t)space_w;
+            g.height  = 0;
+            g.srcW    = 0;
+            g.srcH    = 0;
+            g.offsY   = 0;
+            g.isBreak = 1;
+            g.cmap[0] = g.cmap[1] = g.cmap[2] = g.cmap[3] = 0;
+            _lcdLineWidth         += space_w;
+            _lcdLineLastBreakIdx   = _lcdLineCount;
+            _lcdLineLastBreakWidth = _lcdLineWidth;
+        }
         return;
     }
     flushLcdLine();

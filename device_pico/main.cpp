@@ -143,28 +143,6 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
     g_in.curX = osys.cursorX();
     g_in.curY = osys.cursorY();
 
-    // LB+UP/DOWN — adjust master volume on press edges.  Suppresses
-    // cursor movement while LB is held so the user can change volume
-    // without moving the pointer.
-    if (in.button_lb) {
-        const bool up_edge   = in.dpad_up   && !g_in.prev_up;
-        const bool down_edge = in.dpad_down && !g_in.prev_down;
-        if (up_edge)
-            tsb::audio_mix_set_volume(tsb::audio_mix_get_volume() + 1);
-        if (down_edge)
-            tsb::audio_mix_set_volume(tsb::audio_mix_get_volume() - 1);
-        g_in.prev_up   = in.dpad_up;
-        g_in.prev_down = in.dpad_down;
-        // Skip cursor / pan updates this frame.
-        if (in.menu_pressed) osys.cycleScaleMode();
-        if (in.a_pressed)  emit_button(false, true);
-        if (in.a_released) emit_button(false, false);
-        if (in.b_pressed)  emit_button(true,  true);
-        if (in.b_released) emit_button(true,  false);
-        if (in.rb_pressed)  emit_esc(true);
-        if (in.rb_released) emit_esc(false);
-        return;
-    }
     g_in.prev_up   = in.dpad_up;
     g_in.prev_down = in.dpad_down;
 
@@ -186,7 +164,12 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         if (nx < 0)   nx = 0;
         if (ny < 0)   ny = 0;
         if (nx > 319) nx = 319;
-        if (ny > 199) ny = 199;
+        // Clamp to scene area — source rows 144..199 are the legacy
+        // verb panel which we no longer render.  Cursor stays in scene
+        // (0..143); verb / inventory clicks at panel-area coords are
+        // synthesized by the picker overlays directly into the
+        // EventManager queue, bypassing this clamp.
+        if (ny > 143) ny = 143;
         g_in.curX = nx;
         g_in.curY = ny;
 
@@ -269,22 +252,20 @@ static void sample_frame(tsb::OSystem_Thumby &osys) {
         emit_mousemove();
     }
 
-    // MENU — cycle scale mode on press edge.
-    if (in.menu_pressed) {
-        osys.cycleScaleMode();
-    }
+    // MENU/LB/RB are owned by OSystem_Thumby's overlay-trigger logic
+    // (see updateScreen).  Don't emit anything from this layer.
 
-    // A → right-click.  KEYUP/DOWN edge handled by platform layer.
-    if (in.a_pressed)  emit_button(/*left=*/false, /*down=*/true);
-    if (in.a_released) emit_button(/*left=*/false, /*down=*/false);
+    // A → left-click (verb / hotspot click in scene).
+    if (in.a_pressed)  emit_button(/*left=*/true,  /*down=*/true);
+    if (in.a_released) emit_button(/*left=*/true,  /*down=*/false);
 
-    // B → left-click.
-    if (in.b_pressed)  emit_button(/*left=*/true,  /*down=*/true);
-    if (in.b_released) emit_button(/*left=*/true,  /*down=*/false);
+    // B → right-click (default action / look at).
+    if (in.b_pressed)  emit_button(/*left=*/false, /*down=*/true);
+    if (in.b_released) emit_button(/*left=*/false, /*down=*/false);
 
-    // RB → ESC keypress (cutscene exit / banner dismiss).
-    if (in.rb_pressed)  emit_esc(true);
-    if (in.rb_released) emit_esc(false);
+    // LB / RB / MENU are handled by OSystem_Thumby's overlay-trigger
+    // logic — taps open verb/inventory pickers, MENU hold opens save,
+    // LB+RB chord = ESC.  No event emit from this layer.
 }
 
 bool device_event_poller(void *user, Common::Event *out) {

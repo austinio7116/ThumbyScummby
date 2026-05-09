@@ -27,6 +27,8 @@
 #include "scumm/resource.h"
 #include "scumm/charset.h"
 
+extern "C" void thumby_capture_sentence(const unsigned char *buf);
+
 namespace Scumm {
 
 // THUMBY-PORT — bridges to OSystem_Thumby's per-line LCD-text buffer.
@@ -1376,6 +1378,15 @@ void ScummEngine::drawString(int a, const byte *msg, Common::TextToSpeechManager
 	assert(_game.version < 7);
 
 	convertMessageToString(msg, buf, sizeof(buf));
+
+	// THUMBY-PORT — capture the converted sentence text for the LCD
+	// sentence strip.  Slot 2 is SCUMM's "sentence" string slot (the
+	// "Walk to ..." readout); we re-render it ourselves with the MI
+	// font into the bottom 8 LCD rows since the original 320×200 panel
+	// is no longer drawn.
+	if (a == 2) {
+		thumby_capture_sentence(buf);
+	}
 
 	if (_isRTL)
 		fakeBidiString(buf, false, sizeof(buf));

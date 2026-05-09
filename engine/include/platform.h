@@ -96,24 +96,46 @@ struct TextStamp {
     uint8_t  flags;             // see kTextStampFlag* below
     uint8_t  cmap[4];           // palette indices (snapshot of charsetColorMap)
 };
-// Bit 0: line is currently scrolling (marquee).  present() shifts the
-// stamp's dst_x by lcd_scroll_offset.  Set on stamps that belong to
-// the highlighted dialog option / hovered verb when the line is wider
-// than the LCD.
-constexpr uint8_t kTextStampFlagScroll    = 0x01;
-// Bit 1: render this stamp at full-scale (1:1 source → LCD).  Default
-// is 75% (3:4) for verb-panel content where columns are tight; dialog
-// options (wide curRect verbs) flag this for legibility.
-constexpr uint8_t kTextStampFlagFullScale = 0x02;
+// Stamp flag bits (legacy — kept for the talk-area overlay).  The
+// scene-only redesign drops the verb-panel marquee/full-scale paths;
+// only basic talk-area glyph placement remains.
+constexpr uint8_t kTextStampFlagScroll    = 0x01;   // unused now
+constexpr uint8_t kTextStampFlagFullScale = 0x02;   // unused now
+
+// Sentence strip layout — ALWAYS painted by present() at the bottom of
+// the LCD, even with no menu overlay.  Visible during gameplay,
+// menus, and dialog mode.  See engine/src/osystem_thumby.cpp for the
+// capture path (drawString slot 2).
+constexpr int kSentenceLcdRows  = 8;     // matches MI charset 1 height
+constexpr int kSceneLcdRows     = 120;   // 128 − sentence strip
+constexpr int kSentenceLcdY     = kSceneLcdRows;
+
+// The engine renders a 320×200 framebuffer; we only show source rows
+// 0..143 (the scene region).  Rows 144..199 hold the original verb
+// panel which we replace with our overlay-based UI, so they're never
+// blitted to the LCD.
+constexpr int kSceneSrcRows     = 144;
+
 void present(const uint8_t *virt, const uint8_t *text,
              const uint8_t *palette,
              ScaleMode mode, int crop_x, int crop_y,
              const CursorInfo *cursor = nullptr,
              const TextStamp *text_stamps = nullptr,
              int text_stamp_count = 0,
-             int verb_crop_x = 0,
-             bool verb_panel_active = false,
-             int lcd_scroll_offset = 0);
+             // Sentence strip — painted with the MI font at LCD rows
+             // kSentenceLcdY..127.  `verb_prefix_len` characters are
+             // drawn in `prefix_color`, the remainder in `body_color`.
+             // Pass nullptr / "" for sentence to leave the strip
+             // black this frame.
+             const char *sentence = nullptr,
+             int verb_prefix_len = 0,
+             // When false, present() fills the LCD framebuffer with
+             // scene + sentence + cursor but skips the final DMA / SDL
+             // push.  Used by overlay menus that want to paint a
+             // translucent box on top before sending the composite
+             // frame.  After painting the overlay, the caller invokes
+             // lcd_present_now() to flush.
+             bool send_to_lcd = true);
 
 // ---------------------------------------------------------------------------
 // Input
@@ -219,9 +241,16 @@ void lcd_pixel(int x, int y, uint16_t rgb565);
 // Push the current framebuffer to the panel and wait for DMA to drain.
 void lcd_present_now();
 
-// Non-destructive: is the LB shoulder currently held?  Used by the
-// hold-LB save/load trigger inside OSystem_Thumby::updateScreen.  Doesn't
-// pump events or consume edges — just reads the live button state.
+// Non-destructive button polling — read live state without consuming
+// edges from the regular input pipeline.  Used by OSystem_Thumby's
+// per-frame overlay-trigger detection.
 bool is_lb_held();
+bool is_rb_held();
+bool is_menu_held();
+
+// Darken every LCD pixel inside [x..x+w, y..y+h) by 50% (RGB565 channel
+// halve).  Used to render the scene-tinting backdrop of the overlay
+// menu box; text painted on top stays opaque.
+void lcd_dim_box(int x, int y, int w, int h);
 
 }  // namespace tsb::platform

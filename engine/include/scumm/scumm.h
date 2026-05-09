@@ -1031,6 +1031,11 @@ public:
 	}
 	bool loadSlot0() { return loadState(0, false); }
 
+	// Public accessors used by the platform-side overlay UI.
+	int numVerbs() const { return _numVerbs; }
+	int userPut() const  { return _userPut; }
+	const byte *publicGetObjOrActorName(int obj) { return getObjOrActorName(obj); }
+
 	Common::String getTargetName() const { return _targetName; }
 	bool canPauseSoundsDuringSave() const { return _pauseSoundsDuringSave; }
 

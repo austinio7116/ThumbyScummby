@@ -94,6 +94,9 @@ add_library(thumbyscummby_engine STATIC
     # src/scumm.cpp          # ScummEngine::init/go bodies
     src/saveload.cpp       # SCUMM v5 save/load (Phase 8)
     src/save_menu.cpp      # hold-LB SAVE/LOAD/CANCEL UI
+    src/mi_font_render.cpp # MI charset 1 renderer (overlays + sentence)
+    src/verb_picker.cpp    # LB-tap verb / dialog picker overlay
+    src/inventory_picker.cpp  # RB-tap inventory picker overlay
 
     # ---- Bridge implementations (will shrink as pivot completes) ----
     src/osystem_thumby.cpp

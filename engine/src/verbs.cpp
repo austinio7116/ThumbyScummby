@@ -1191,8 +1191,17 @@ void ScummEngine::drawVerb(int verb, int mode, Common::TextToSpeechManager::Acti
 		// Compute width from the message itself via the charset
 		// renderer — using vs->curRect.right would be stale on the
 		// first draw (drawString below is what populates it).
-		const int verb_width_src = _charset->getStringWidth(4, msg);
-		thumby_lcd_text_set_next_full_scale(verb_width_src > 80);
+		// Guard against running before any charset has been activated
+		// (_curId stays -1 and _fontPtr nullptr until setCurID fires).
+		// This case shows up when the player skips a cutscene that
+		// hadn't yet executed loadCharset — e.g. RB during the
+		// LucasFilm intro.
+		bool verb_full_scale = false;
+		if (_charset->getCurID() != -1) {
+			const int verb_width_src = _charset->getStringWidth(4, msg);
+			verb_full_scale = verb_width_src > 80;
+		}
+		thumby_lcd_text_set_next_full_scale(verb_full_scale);
 		drawString(4, msg, ttsAction);
 		thumby_lcd_text_set_next_highlighted(false);
 		thumby_lcd_text_set_next_full_scale(false);
