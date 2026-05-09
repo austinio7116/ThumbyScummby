@@ -518,7 +518,7 @@ void present(const uint8_t *virt, const uint8_t *text,
         const int anchor_x = src_to_lcd_x(cursor->x, mode, crop_x);
         const int anchor_y = src_to_lcd_y(cursor->y, mode, crop_y, panel_active);
         const int tw = tsb::mi_font::text_width(cursor_tooltip);
-        constexpr uint16_t kTipColor = 0xFFE0;
+        constexpr uint16_t kTipColor = 0xCE2C;     // MI1 highlight #cec760
         int tx = anchor_x + 6;
         int ty = anchor_y + 4;
         if (tx + tw > DISPLAY_W - 1) tx = anchor_x - tw - 4;
@@ -533,9 +533,9 @@ void present(const uint8_t *virt, const uint8_t *text,
         for (int x = 0; x < DISPLAY_W; x++) fb[y * DISPLAY_W + x] = 0;
     }
     if (sentence && sentence[0]) {
-        // MI1 sentence-line palette: yellow verb prefix, light blue noun body.
-        constexpr uint16_t kAccent = 0xFFE0;     // yellow
-        constexpr uint16_t kBody   = 0x57FF;     // light blue
+        // MI1 sentence-line palette: blue throughout (#0099aa → 0x04D5).
+        constexpr uint16_t kAccent = 0x04D5;
+        constexpr uint16_t kBody   = 0x04D5;
         constexpr int kMargin = 2;
         int total_len = 0;
         for (const char *p = sentence; *p; p++) total_len++;

@@ -1130,6 +1130,15 @@ void ScummEngine::killAllScriptsExceptCurrent() {
 void ScummEngine::doSentence(int verb, int objectA, int objectB) {
 	SentenceTab *st;
 
+	// THUMBY-PORT preview-mode short-circuit.  See ScummEngine::
+	// publicPreviewDefaultVerb — when shadow-executing the verb
+	// script for the hovered object, we capture the first verb the
+	// script tries to enqueue and bail without touching the queue.
+	if (_previewMode) {
+		if (_previewVerbCapture == 0) _previewVerbCapture = verb;
+		return;
+	}
+
 	if (_game.version >= 7) {
 
 		if (objectA == objectB)
@@ -1493,6 +1502,91 @@ void ScummEngine::runInputScript(int clickArea, int val, int mode) {
 
 	if (verbScript)
 		runScript(verbScript, 0, 0, args);
+}
+
+// THUMBY-PORT — shadow-execute the verb-script in "preview mode" to
+// learn what right-click would do for `obj` without firing it.  The
+// engine's right-click default-verb logic lives in script
+// VAR(VAR_VERB_SCRIPT) (MI1 / v5 SCUMM games).  When called with
+// kSceneClickArea + code 2 (right-click) the script does class
+// checks against the hovered object and ends with doSentence(verb,
+// obj, 0).  We:
+//
+//   1. Snapshot every piece of state the script could write.
+//   2. Aim the engine's "click target" at `obj` by setting virt
+//      mouse to obj's hotspot — the script calls findObject which
+//      depends on virt mouse.
+//   3. Set _previewMode so doSentence captures the verb instead of
+//      enqueuing.  Run the script.
+//   4. Restore everything.  Kill any vm.slot[] entries the script
+//      started (verb-script for v5 MI1 doesn't start child scripts
+//      in this path, but if it ever does we drop them).
+//
+// Returns the captured verb id, or 0 if the script didn't reach
+// doSentence (e.g. the object has no default action).
+int ScummEngine::publicPreviewDefaultVerb(int obj) {
+	if (!obj || _game.version != 5 || VAR_VERB_SCRIPT == 0xFF)
+		return 0;
+	const int verbScript = VAR(VAR_VERB_SCRIPT);
+	if (!verbScript)
+		return 0;
+
+	int *savedVars = (int *)malloc(_numVariables * sizeof(int));
+	if (!savedVars) return 0;
+	memcpy(savedVars, _scummVars, _numVariables * sizeof(int));
+
+	const int   savedSentenceNum    = _sentenceNum;
+	const int   savedCurrentScript  = _currentScript;
+	const int   savedNumNested      = vm.numNestedScripts;
+	const Common::Point savedVirtMouse = _virtualMouse;
+
+	uint8 slotStatus[NUM_SCRIPT_SLOT];
+	uint8 slotFreeze[NUM_SCRIPT_SLOT];
+	for (int i = 0; i < NUM_SCRIPT_SLOT; i++) {
+		slotStatus[i] = vm.slot[i].status;
+		slotFreeze[i] = vm.slot[i].freezeCount;
+	}
+
+	int ox = 0, oy = 0;
+	getObjectXYPos(obj, ox, oy);
+	_virtualMouse.x = ox;
+	_virtualMouse.y = oy;
+	if (VAR_VIRT_MOUSE_X != 0xFF) VAR(VAR_VIRT_MOUSE_X) = ox;
+	if (VAR_VIRT_MOUSE_Y != 0xFF) VAR(VAR_VIRT_MOUSE_Y) = oy;
+
+	int args[NUM_SCRIPT_LOCAL];
+	memset(args, 0, sizeof(args));
+	args[0] = kSceneClickArea;
+	args[1] = 0;
+	args[2] = 2;  // v3+ right-click code
+
+	_previewMode        = true;
+	_previewVerbCapture = 0;
+
+	runScript(verbScript, 0, 0, args);
+
+	const int captured = _previewVerbCapture;
+	_previewMode = false;
+
+	for (int i = 0; i < NUM_SCRIPT_SLOT; i++) {
+		if (slotStatus[i] != ssRunning && vm.slot[i].status == ssRunning) {
+			vm.slot[i].status      = ssDead;
+			vm.slot[i].freezeCount = 0;
+		} else {
+			vm.slot[i].status      = slotStatus[i];
+			vm.slot[i].freezeCount = slotFreeze[i];
+		}
+	}
+	vm.numNestedScripts = savedNumNested;
+	_currentScript      = savedCurrentScript;
+
+	memcpy(_scummVars, savedVars, _numVariables * sizeof(int));
+	free(savedVars);
+
+	_sentenceNum    = savedSentenceNum;
+	_virtualMouse   = savedVirtMouse;
+
+	return captured;
 }
 
 void ScummEngine::decreaseScriptDelay(int amount) {

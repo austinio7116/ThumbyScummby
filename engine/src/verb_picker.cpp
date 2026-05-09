@@ -14,8 +14,11 @@ namespace verb_picker {
 namespace {
 
 constexpr uint16_t kBlack  = 0x0000;
-constexpr uint16_t kWhite  = 0x57E5;     // mint green — MI1 verb text
-constexpr uint16_t kHilite = 0xFFE0;     // yellow — MI1 highlight
+// MI1 palette (user-confirmed RGB888 → RGB565):
+//   verb/response   #008f00 → 0x0460
+//   highlight       #cec760 → 0xCE2C
+constexpr uint16_t kWhite  = 0x0460;
+constexpr uint16_t kHilite = 0xCE2C;
 constexpr uint16_t kDim    = 0x39E7;
 
 constexpr int kBoxX = 0;
@@ -137,23 +140,21 @@ uint32_t verb_set_fingerprint(ScummEngine *engine) {
 
 bool dialog_mode_active(ScummEngine *engine) {
 	if (!engine) return false;
-	// Geometry signal: in MI1 (and other v5 SCUMM games) dialog-response
-	// verbs are positioned with full-panel-width curRects via SO_VERB_AT.
-	// Standard verbs occupy narrow columns (~40-80 src-px wide) and
-	// inventory arrows are narrower still (~16 src-px).  A visible
-	// TextVerb whose curRect spans >= 160 source pixels is unambiguously
-	// a dialog response — no engine state from prior boot needed.
+	// Temporal signal: a slot is a dialog response if and only if it
+	// was created via SO_VERB_NEW while the response window was open
+	// (i.e. an actor had just stopped speaking).  See
+	// ScummEngine::setTalkingActor for the window edges and
+	// script_v5.cpp's SO_VERB_NEW for the slot-flag set.  This
+	// replaces the old curRect-width heuristic, which mis-fired on
+	// any wide verb (e.g. MI1's banner text spans the panel too).
 	for (int v = 1; v < engine->numVerbs(); ++v) {
 		const VerbSlot &vs = engine->_verbs[v];
 		if (!vs.curmode || vs.saveid) continue;
 		if (vs.type != kTextVerbType) continue;
-		if (vs.curRect.top < 144) continue;
-		const int width = vs.curRect.right - vs.curRect.left;
-		if (width < 160) continue;
-		// Dismiss-fingerprint: B (or A) press snapshots the verb set.
-		// While the snapshot matches, suppress re-auto-open so the
-		// engine has time to consume our synthesized click and update
-		// the dialog state.
+		if (!engine->publicIsDialogResponseSlot(v)) continue;
+		// Dismiss-fingerprint: A/B snapshots the verb set.  While the
+		// snapshot matches, suppress re-auto-open so the engine has
+		// time to consume our synthesized click and update state.
 		if (verb_set_fingerprint(engine) == s_dismissed_fingerprint) {
 			return false;
 		}
@@ -201,6 +202,7 @@ void run(ScummEngine *engine) {
 			const VerbSlot &vs = engine->_verbs[entries[sel].slot_index];
 			const int cx = (vs.curRect.left + vs.curRect.right) / 2;
 			const int cy = (vs.curRect.top + vs.curRect.bottom) / 2;
+			const bool was_dialog = dialog_mode_active(engine);
 			if (osys) {
 				osys->synthesizeLeftClick(cx, cy);
 				// Clear the sentence strip after a dialog response so
@@ -209,11 +211,17 @@ void run(ScummEngine *engine) {
 				// the scene.  Cleared only for dialog mode — normal
 				// verb picks update the sentence via the engine's
 				// usual path.
-				if (dialog_mode_active(engine)) {
+				if (was_dialog) {
 					osys->captureSentence(nullptr);
 					osys->captureNpcQuestion(nullptr);
 				}
 			}
+			// Close the temporal response window — the user just
+			// answered.  New verbs created during the next NPC line
+			// (until the actor stops talking again) won't be flagged
+			// as responses.
+			if (was_dialog)
+				engine->_dialogResponseWindowOpen = false;
 			// Lock dismiss-fingerprint on the verb-set the user just
 			// picked from.  Engine takes a tick or two to consume the
 			// click and update the verb set; without this the auto-open

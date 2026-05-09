@@ -3212,12 +3212,15 @@ void ScummEngine_v5::o5_verbOps() {
 			vs->key = 0;
 			vs->center = 0;
 			vs->imgindex = 0;
-			// THUMBY-PORT: flag this slot as a dialog response if it
-			// was created mid-gameplay (script-driven dialog tree).
-			// Boot-time and cutscene-time verb adds (standard 12,
-			// inventory arrows) run with _userPut == 0 so stay clear.
+			// THUMBY-PORT: flag this slot as a dialog response only
+			// while the response-window is open (i.e. the engine is
+			// in the post-talk pause where dialog options spawn —
+			// see ScummEngine::setTalkingActor).  This excludes
+			// SO_VERB_NEW for inventory arrows, save-screen widgets,
+			// banner text, and any other in-game verbs created
+			// while no NPC has just stopped speaking.
 			if (slot < (int)(sizeof(_verbIsDialogResponse) / sizeof(_verbIsDialogResponse[0]))) {
-				_verbIsDialogResponse[slot] = (_userPut > 0);
+				_verbIsDialogResponse[slot] = _dialogResponseWindowOpen;
 			}
 			break;
 

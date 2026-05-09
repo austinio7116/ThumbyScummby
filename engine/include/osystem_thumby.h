@@ -331,6 +331,7 @@ public:
     int  _lcdLineY          = 0;    // LCD Y where this line will stamp
     bool _lcdLineActive     = false;
     bool _lcdLineSuppressed = false; // current line is in legacy panel area (src_y >= 144) — drop all glyphs
+    int  _lcdLineSlot       = -1;    // drawString slot that opened this line (0=actor talk, 1=banner, 2=sentence, 3=modal, 4=verbs)
 
     // Per-stamp tag.  Identifies which source rect (xpos, ypos) the
     // stamp came from.  Used by dropStampsByTag for idempotent

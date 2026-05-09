@@ -13,8 +13,11 @@ namespace tsb {
 namespace inventory_picker {
 namespace {
 
-constexpr uint16_t kWhite  = 0x57E5;     // mint green — MI1 verb text
-constexpr uint16_t kHilite = 0xFFE0;     // yellow — MI1 highlight
+// MI1 palette (user-confirmed RGB888 → RGB565):
+//   inventory  #982390 → 0x9912
+//   highlight  #cec760 → 0xCE2C
+constexpr uint16_t kWhite  = 0x9912;
+constexpr uint16_t kHilite = 0xCE2C;
 constexpr uint16_t kDim    = 0x39E7;
 
 constexpr int kBoxX = 0;
@@ -25,14 +28,22 @@ constexpr int kBoxH = 60;
 struct Entry { int slot_index; const char *name; };
 
 int gather_inventory(ScummEngine *eng, Entry *out, int max) {
+	// Read the engine's authoritative inventory array — _inventory[i]
+	// holds the object id of every item the ego actor owns.  Don't
+	// look at verb slots (kImageVerbType): those are only populated
+	// when the script renders the on-screen inventory grid, which our
+	// scene-only redesign doesn't do.
+	const uint16 *inv = eng->publicGetInventory();
+	const int     num = eng->publicGetNumInventory();
+	const int     ego = eng->publicGetEgoVar();
 	int n = 0;
-	for (int v = 1; v < eng->numVerbs() && n < max; ++v) {
-		const VerbSlot &vs = eng->_verbs[v];
-		if (vs.saveid || !vs.curmode || !vs.verbid) continue;
-		if (vs.type != kImageVerbType) continue;
-		const byte *name = eng->publicGetObjOrActorName(vs.verbid);
+	for (int i = 0; i < num && n < max; ++i) {
+		const int obj = inv[i];
+		if (obj == 0) continue;                    // empty slot
+		if (eng->publicGetActorOwner(obj) != ego) continue;  // not held by player
+		const byte *name = eng->publicGetObjOrActorName(obj);
 		if (!name || !name[0]) continue;
-		out[n].slot_index = v;
+		out[n].slot_index = obj;                   // object id, not verb slot
 		out[n].name       = reinterpret_cast<const char *>(name);
 		++n;
 	}
@@ -114,10 +125,14 @@ void run(ScummEngine *engine) {
 		if (down_edge) sel = (sel + 1) % count;
 
 		if (in.a_pressed) {
-			const VerbSlot &vs = engine->_verbs[entries[sel].slot_index];
-			const int cx = (vs.curRect.left + vs.curRect.right) / 2;
-			const int cy = (vs.curRect.top + vs.curRect.bottom) / 2;
-			if (osys) osys->synthesizeLeftClick(cx, cy);
+			// slot_index in this picker is the OBJECT ID, not a verb
+			// slot.  Fire runInputScript(kInventoryClickArea, obj, 0)
+			// — same path the engine takes when the user clicks an
+			// inventory ImageVerb in the panel.  Bypasses the
+			// synthesized-click route since there's no on-screen
+			// inventory grid for the cursor to "click".
+			engine->publicRunInputScript(kInventoryClickArea,
+			                             entries[sel].slot_index, 0);
 			return;
 		}
 		tsb::platform::sleep_ms(16);

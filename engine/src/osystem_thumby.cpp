@@ -561,31 +561,50 @@ void OSystem_Thumby::updateScreen() {
         }
     }
 
-    // Cursor tooltip = the auto-default verb for the hovered object.
-    // We compute it the same way MI1's right-click dispatch does:
-    // walk the standard verb slots (verbid 1..12) in order, and pick
-    // the first one whose OBCD has a non-zero script entry for the
-    // hovered object.  That's the verb right-click would fire.
+    // Cursor tooltip = the auto-default verb for the hovered object,
+    // computed by shadow-executing VAR(VAR_VERB_SCRIPT) with right-
+    // click args.  See ScummEngine::publicPreviewDefaultVerb.  Cached
+    // per (room, object) so we run the script only when hover changes.
     const char *cursor_tooltip = nullptr;
     char tooltip_buf[32] = {0};
+    static int s_last_hover_obj = 0;
+    static int s_last_hover_room = -1;
+    static int s_cached_verb_id = 0;
     if (_engine && _engine->canSaveGameStateCurrently()) {
         const int hover = _engine->hoveredObject();
+        const int room  = _engine->_currentRoom;
         if (hover > 0) {
-            const VerbSlot *verbs = _engine->publicGetVerbs();
-            for (int v = 1; v < _engine->numVerbs() && !cursor_tooltip; ++v) {
-                const VerbSlot &vs = verbs[v];
-                if (vs.saveid || !vs.curmode || !vs.verbid) continue;
-                if (vs.type != kTextVerbType) continue;
-                if (vs.verbid > 12) continue;     // skip dialog responses
-                if (_engine->publicGetVerbEntrypoint(hover, vs.verbid) == 0) continue;
-                const byte *name = _engine->getResourceAddress(rtVerb, v);
-                if (!name || !name[0]) continue;
-                int i = 0;
-                for (; i < (int)sizeof(tooltip_buf) - 1 && name[i]; ++i)
-                    tooltip_buf[i] = (char)name[i];
-                tooltip_buf[i] = 0;
-                cursor_tooltip = tooltip_buf;
+            int verb_id;
+            if (hover == s_last_hover_obj && room == s_last_hover_room) {
+                verb_id = s_cached_verb_id;
+            } else {
+                verb_id = _engine->publicPreviewDefaultVerb(hover);
+                s_last_hover_obj  = hover;
+                s_last_hover_room = room;
+                s_cached_verb_id  = verb_id;
             }
+            if (verb_id > 0) {
+                // Resolve verb name via the visible verb slots.  In MI1
+                // standard verbs always have a slot allocated (1..12).
+                const VerbSlot *verbs = _engine->publicGetVerbs();
+                for (int v = 1; v < _engine->numVerbs() && !cursor_tooltip; ++v) {
+                    const VerbSlot &vs = verbs[v];
+                    if (vs.type != kTextVerbType) continue;
+                    if (vs.verbid != verb_id)     continue;
+                    const byte *name = _engine->getResourceAddress(rtVerb, v);
+                    if (!name || !name[0]) continue;
+                    int i = 0;
+                    for (; i < (int)sizeof(tooltip_buf) - 1 && name[i]; ++i)
+                        tooltip_buf[i] = (char)name[i];
+                    tooltip_buf[i] = 0;
+                    cursor_tooltip = tooltip_buf;
+                }
+            }
+            // If verb_id is 0 OR the verb has no resolvable name, leave
+            // cursor_tooltip null — render no tooltip rather than fall
+            // back to noun-only (per user's explicit guidance).
+        } else {
+            s_last_hover_obj = 0;
         }
     }
 
@@ -1006,11 +1025,24 @@ void OSystem_Thumby::flushLcdLine() {
         if (origin_x < 0) origin_x = 0;
     }
 
+    // CROP-mode actor talk: when the actor's talk Y maps off the
+    // visible LCD strip (cropY puts the source row outside [0, 120))
+    // pin the line to the top of the display so the player can always
+    // read what the actor is saying.  Only applies to slot 0 (actor
+    // talk) — banner / modal / sentence have their own anchor logic.
+    int line_y = _lcdLineY;
+    if (_scaleMode == platform::ScaleMode::Crop && _lcdLineSlot == 0) {
+        constexpr int kSceneLcdRows = 120;
+        const int line_h = _lcdLineMaxH > 0 ? _lcdLineMaxH : 8;
+        if (line_y < 0 || line_y + line_h > kSceneLcdRows) {
+            line_y = 2;  // top margin
+        }
+    }
     int pen = origin_x;
     for (int i = 0; i < _lcdLineCount; i++) {
         const LcdGlyph &g = _lcdLine[i];
         // Baseline alignment via per-glyph offsY (LCD-px, halved).
-        emitStamp(g, pen, _lcdLineY + g.offsY);
+        emitStamp(g, pen, line_y + g.offsY);
         pen += g.width;
     }
     // For highlighted (marquee-scroll) lines, capture the full line
@@ -1024,7 +1056,7 @@ void OSystem_Thumby::flushLcdLine() {
         }
         _lcdHighlightedLineWidth = _lcdLineWidth;
     }
-    _lcdLineY            += _lcdLineMaxH;
+    _lcdLineY             = line_y + _lcdLineMaxH;
     _lcdLineCount         = 0;
     _lcdLineWidth         = 0;
     _lcdLineMaxH          = 4;
@@ -1077,6 +1109,7 @@ void OSystem_Thumby::beginLcdLine(int slot, bool center, int scumm_xpos, int scu
     _lcdLineSrcY      = scumm_ypos;
     _lcdLineXHint     = scumm_xpos;
     _lcdLineCenter    = center;
+    _lcdLineSlot      = slot;
     if (slot == 2 || slot == 4) {
         _lcdLineActive     = false;
         _lcdLineSuppressed = true;

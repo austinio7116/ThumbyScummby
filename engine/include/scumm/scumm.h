@@ -1052,6 +1052,27 @@ public:
 		return getVerbEntrypoint(obj, verb_id);
 	}
 	const VerbSlot *publicGetVerbs() { return _verbs; }
+	// Direct access to the engine's authoritative inventory state.
+	// `_inventory[i]` holds the object id of slot i (0 = empty slot).
+	// Number of entries = `_numInventory`.  Reads here are
+	// authoritative — the inventory grid (kImageVerbType verb slots)
+	// is just the script's rendered view of this array, and is only
+	// updated when the script explicitly chooses to redraw.
+	const uint16 *publicGetInventory()  const { return _inventory; }
+	int           publicGetNumInventory() const { return _numInventory; }
+	int           publicGetActorOwner(int obj) {
+		return getOwner(obj);
+	}
+	int           publicGetEgoVar() {
+		return (VAR_EGO != 0xFF) ? VAR(VAR_EGO) : 0;
+	}
+	// Public bridge to runInputScript — used by the inventory picker
+	// to fire the engine's inventory-click handler directly with the
+	// chosen object id, mirroring what verbs.cpp does when the user
+	// clicks an ImageVerb in the panel.
+	void publicRunInputScript(int clickArea, int val, int mode) {
+		runInputScript(clickArea, val, mode);
+	}
 	// THUMBY-PORT: dialog-response slot flag set by o5_verbOps's
 	// SO_VERB_NEW when the script creates a verb during gameplay
 	// (_userPut > 0).  Boot-time and cutscene-time verb additions
@@ -1059,6 +1080,43 @@ public:
 	// the flag clear — they're never auto-opened by the dialog
 	// detector.  The flag is cleared on killVerb / SO_VERB_DELETE.
 	bool _verbIsDialogResponse[160] = { false };
+
+	// THUMBY-PORT — dialog-response window.  Flips true when an actor
+	// finishes speaking (setTalkingActor transitions to 0/255) and
+	// stays true until either: the user picks a response (picker
+	// dispatches click), a new actor starts speaking, or the player
+	// loses interface control.  While open, every TextVerb created
+	// via SO_VERB_NEW gets _verbIsDialogResponse[slot] = true.  This
+	// is the temporal signal for "we're in dialog mode" — replaces
+	// the geometry heuristic with the actual engine flow that defines
+	// what a dialog response IS.
+	bool _dialogResponseWindowOpen = false;
+	int  _previousTalkActor = 0;
+
+	// THUMBY-PORT — preview-mode shadow execution of the verb-script
+	// to compute the auto-default verb for a hovered object (i.e.
+	// what right-click would dispatch).  doSentence() captures the
+	// first verb id into _previewVerbCapture and returns without
+	// enqueuing.  previewDefaultVerb(obj) wraps the runScript call
+	// with a snapshot/restore of vars + sentence queue + active
+	// verb/object + script slots so the engine state is unchanged
+	// when we return.  Limited safety: side-effecting opcodes the
+	// verb-script triggers (sound, walk, cutscene) would still leak
+	// — MI1's right-click default-verb path doesn't invoke any of
+	// those, so in practice this stays clean.
+	bool _previewMode = false;
+	int  _previewVerbCapture = 0;
+	int  publicPreviewDefaultVerb(int obj);
+
+	// Read-only accessor used by the verb picker to decide between
+	// "VERB" and "RESPONSE" modes — a slot is a dialog response if
+	// it was created while the response window was open (post-talk).
+	bool publicIsDialogResponseSlot(int slot) const {
+		const int max = (int)(sizeof(_verbIsDialogResponse) /
+		                      sizeof(_verbIsDialogResponse[0]));
+		if (slot < 0 || slot >= max) return false;
+		return _verbIsDialogResponse[slot];
+	}
 
 	Common::String getTargetName() const { return _targetName; }
 	bool canPauseSoundsDuringSave() const { return _pauseSoundsDuringSave; }
