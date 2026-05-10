@@ -147,27 +147,63 @@ uint32_t verb_set_fingerprint(ScummEngine *engine) {
 
 bool dialog_mode_active(ScummEngine *engine) {
 	if (!engine) return false;
-	// Temporal signal: a slot is a dialog response if and only if it
-	// was created via SO_VERB_NEW while the response window was open
-	// (i.e. an actor had just stopped speaking).  See
-	// ScummEngine::setTalkingActor for the window edges and
-	// script_v5.cpp's SO_VERB_NEW for the slot-flag set.  This
-	// replaces the old curRect-width heuristic, which mis-fired on
-	// any wide verb (e.g. MI1's banner text spans the panel too).
+
+	// Engine-state predicate.  SCUMM has NO engine-level "in dialog"
+	// flag — confirmed by greps of scummvm-upstream/engines/scumm/
+	// (no isInDialog / dialogActive / inConversation / _dialog* found).
+	// Dialog trees are entirely scripted: the script HIDES the standard
+	// 12 interface verbs (SO_VERB_OFF for verbid 1..12), SHOWS the
+	// response-option verbs (SO_VERB_NEW + SO_VERB_AT + SO_VERB_NAME_STR
+	// + SO_VERB_ON), waits for the user's pick (breakUntil(VAR_VERB ==
+	// X)), then RESTORES the standard verbs.  This three-state
+	// predicate captures the exact moment when the user is meant to
+	// pick:
+	//
+	//   1. _userPut > 0           input enabled — same gate the engine
+	//                             itself uses in checkExecVerbs
+	//                             (scummvm-upstream verbs.cpp:698).
+	//   2. NO standard verb       no kTextVerbType slot with
+	//      visible                verbid 1..12 has curmode == 1.
+	//                             Standard verbs being absent is the
+	//                             script's "we are NOT in normal verb
+	//                             mode" signal.  Used both for dialog
+	//                             trees AND for inventory-only / map /
+	//                             save-screen modes.
+	//   3. SOME other             a kTextVerbType slot with verbid
+	//      TextVerb visible       outside 1..12 has curmode == 1 —
+	//                             that's a response option spawned by
+	//                             the dialog script (or, in the
+	//                             unlikely case of a non-dialog
+	//                             menu screen, a custom-verb screen
+	//                             the user can interact with).
+	//
+	// Width thresholds, curRect.top positions, the temporal-window
+	// edge tracking on setTalkingActor, and the per-slot SO_VERB_NEW
+	// flag all turned out to be guesses that broke for various
+	// MI1 dialogs (response options can be narrow; pre-spawn timing
+	// inverted the temporal model).  Pure state, no heuristics.
+	if (engine->userPut() <= 0) return false;
+
+	bool any_nonstandard_visible = false;
 	for (int v = 1; v < engine->numVerbs(); ++v) {
 		const VerbSlot &vs = engine->_verbs[v];
 		if (!vs.curmode || vs.saveid) continue;
 		if (vs.type != kTextVerbType) continue;
-		if (!engine->publicIsDialogResponseSlot(v)) continue;
-		// Dismiss-fingerprint: A/B snapshots the verb set.  While the
-		// snapshot matches, suppress re-auto-open so the engine has
-		// time to consume our synthesized click and update state.
-		if (verb_set_fingerprint(engine) == s_dismissed_fingerprint) {
+		if (vs.verbid >= 1 && vs.verbid <= 12) {
+			// Standard interface verb is visible → not dialog.
 			return false;
 		}
-		return true;
+		any_nonstandard_visible = true;
 	}
-	return false;
+	if (!any_nonstandard_visible) return false;
+
+	// Dismiss-fingerprint: when the user just dismissed the picker
+	// (B / LB / MENU), suppress re-open until the engine's verb set
+	// changes (new dialog appears, response runs, room transitions).
+	if (verb_set_fingerprint(engine) == s_dismissed_fingerprint) {
+		return false;
+	}
+	return true;
 }
 
 void run(ScummEngine *engine) {
@@ -235,12 +271,6 @@ void run(ScummEngine *engine) {
 				osys->captureSentence(nullptr);
 				osys->captureNpcQuestion(nullptr);
 			}
-			// Close the temporal response window — the user just
-			// answered.  New verbs created during the next NPC line
-			// (until the actor stops talking again) won't be flagged
-			// as responses.
-			if (was_dialog)
-				engine->_dialogResponseWindowOpen = false;
 			// Lock dismiss-fingerprint on the verb-set the user just
 			// picked from.  Engine takes a tick or two to consume the
 			// click and update the verb set; without this the auto-open

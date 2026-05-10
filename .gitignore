@@ -44,3 +44,6 @@ scummvm.ini
 scummvm
 *.ini
 .claude/
+
+# Runtime config (host-side persistent settings)
+thumbyscummby.cfg

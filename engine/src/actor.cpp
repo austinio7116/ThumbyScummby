@@ -3484,26 +3484,6 @@ void ScummEngine::setTalkingActor(int i) {
 	else
 		VAR(VAR_TALK_ACTOR) = i;
 
-	// THUMBY-PORT — temporal dialog detection.  Edge transitions:
-	//   talking → not-talking  : open the response window (the
-	//                            engine is about to spawn dialog
-	//                            response verbs via SO_VERB_NEW —
-	//                            those should be flagged as
-	//                            responses, not standard verbs).
-	//   not-talking → talking  : close the window.  A new line
-	//                            starting means whatever verbs are
-	//                            currently up are stale; new verbs
-	//                            during this state are not responses.
-	{
-		const int prev = _previousTalkActor;
-		const bool was_talking = (prev != 0 && prev != 255);
-		const bool now_talking = (i    != 0 && i    != 255);
-		if (was_talking && !now_talking)
-			_dialogResponseWindowOpen = true;
-		else if (!was_talking && now_talking)
-			_dialogResponseWindowOpen = false;
-		_previousTalkActor = i;
-	}
 }
 
 static const int v0MMActorTalkColor[25] = {

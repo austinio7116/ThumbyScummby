@@ -27,6 +27,8 @@
 #include "platform.h"
 #include "scumm/actor.h"
 #include "scumm/resource.h"
+#include <cstdio>
+#include <cstdlib>
 
 #include "common/config-manager.h"
 #include "common/compression/clickteam.h"
@@ -1813,13 +1815,12 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	// shrink to ~32-48 KB so resources are evicted aggressively to fit.
 	// Host build keeps the original numbers.
 #ifdef THUMBY_DEVICE
-	// 64 KB low / 96 KB high — gives the engine breathing room to keep a
-	// small room+scripts+costumes set live. With 376 KB total heap and
-	// ~330 KB engine init footprint, ~46 KB is the absolute minimum so
-	// these numbers push the threshold above eviction-thrash territory.
-	// If we OOM at 96 KB, lower it; if game thrashes (frequent reloads),
-	// raise it.
-	_res->setHeapThreshold(64 * 1024, 96 * 1024);
+	// 48 KB low / 80 KB high — culls resources earlier than the
+	// previous 64/96 numbers so peaks during heavy room transitions
+	// (e.g. Melee map) stay well under our ~46 KB headroom.  Below
+	// 48 KB we'd thrash on small dialogue rooms; above 80 KB the
+	// peak after preemptive purge starts crowding the heap.
+	_res->setHeapThreshold(48 * 1024, 80 * 1024);
 #else
 	_res->setHeapThreshold(400000, maxHeapThreshold);
 #endif
@@ -3059,68 +3060,53 @@ void ScummEngine_v0::scummLoop(int delta) {
 
 void ScummEngine::scummLoop(int delta) {
 	#define LOOP_CKPT(label, color) ((void)0)
+	// THUMBY-PORT: heartbeat trace.  When THUMBY_HEARTBEAT is set, log
+	// engine state once a second.  If the freeze comes from a script
+	// looping, the heartbeats keep ticking but show the same scripts
+	// running over and over.  If the main loop is stuck, the
+	// heartbeats just stop.
+	if (std::getenv("THUMBY_HEARTBEAT")) {
+		static uint32 s_last_beat = 0;
+		const uint32 now = _system->getMillis();
+		if (now - s_last_beat >= 1000) {
+			s_last_beat = now;
+			std::fprintf(stderr,
+			    "[heartbeat] room=%d userPut=%d nested=%d cs=%d running:",
+			    (int)_currentRoom, _userPut,
+			    (int)vm.numNestedScripts, (int)_currentScript);
+			for (int i = 0; i < NUM_SCRIPT_SLOT; ++i) {
+				if (vm.slot[i].status != ssDead) {
+					std::fprintf(stderr, " s%d(n=%d,off=0x%x,fc=%d)",
+					    i, (int)vm.slot[i].number,
+					    (unsigned)vm.slot[i].offs,
+					    (int)vm.slot[i].freezeCount);
+				}
+			}
+			std::fprintf(stderr, "\n");
+		}
+	}
 	// THUMBY-PORT: tell the platform whether a verb panel is rendering
 	// this frame, so present() can split the LCD layout (verb panel
 	// pinned at LCD bottom) in gameplay but render the full source for
 	// title / cutscene screens where rows 144..199 are scene image.
+	//
+	// Signal source: the engine's authoritative VirtScreen layout.  When
+	// the room script calls SO_ROOM_SCREEN(0, 200) (Mêlée map, title,
+	// full-screen cutscenes) initScreens makes kVerbVirtScreen height 0
+	// — kMainVirtScreen owns all 200 source rows, no panel area exists.
+	// Normal MI1 gameplay uses initScreens(8, 144), giving kVerbVirtScreen
+	// height 56 (the legacy panel band at rows 144..199).
+	//
+	// Earlier this gate was a heuristic on visibleVerbCount + 30-tick
+	// grace.  That made the LCD scene scale + letterbox flip ~1s after
+	// the script changed the layout, manifesting as a "missing band at
+	// the bottom" + visible scene resize/shift on Mêlée map entry.
+	// Reading vs->h directly is instant and matches the engine's actual
+	// intent — no flicker on transient verb show/hide inside a single
+	// layout, no lag when SO_ROOM_SCREEN flips it.
 	{
-		// Declared at file scope below the namespace.
-		// NOTE: do NOT gate this on vm.cutSceneStackPointer — dialog
-		// response scripts and other in-game flow run inside
-		// beginCutscene/endCutscene blocks; flipping the panel state
-		// each time would clear the LCD text overlay (talk text and all)
-		// every time a script enters a cutscene block.
-		//
-		// DO gate on visible verb count: scenes like the cliff-top
-		// "I am Guybrush Threepwood" lookout have _userPut > 0 but no
-		// verbs populated, so the verb panel band would render empty
-		// (a half-rendered mess at LCD bottom).  Counting verbs whose
-		// curmode/verbid are both non-zero distinguishes "12-verb
-		// interface or dialog responses are showing" from "narrative /
-		// scripted scene with no panel content".
-		// Count verbs that drawVerb() would actually draw — must match
-		// the conditions at verbs.cpp:1130 exactly: !saveid && curmode &&
-		// verbid.  Missing the !saveid bit was why an earlier version
-		// fired the verb-panel split during the cliff-top lookout: the
-		// engine populates verb slots with saveid != 0 there, my count
-		// included them, but drawVerb wouldn't emit any LCD stamps —
-		// so the panel split was active with no actual verb content,
-		// just scene continuation pixels showing in the band.  Mode
-		// cycle "fixed" it because clearLcdTextOverlay() runs but
-		// redrawVerbs() (which would re-emit) does nothing — proving
-		// drawVerb is skipping all of them.
-		// "Standard verb panel present" signal: any of the 12 standard
-		// verbs (verbid 1..12 in MI1 / v5 SCUMM) currently visible.
-		// Map screens / save menu / inventory-only UI replace the
-		// panel entirely — they show NO standard verbs.  Inventory
-		// image verbs and dialog-response text verbs (verbid > 12)
-		// don't qualify.  Hysteresis: once we've seen the standard
-		// panel, treat it as present for ~30 ticks of grace so
-		// brief verb-rebuild transitions during room change don't
-		// flicker the LCD scaling.
-		int standardVerbCount = 0;
-		for (int i = 1; i < _numVerbs; i++) {
-			const VerbSlot &vs = _verbs[i];
-			if (vs.saveid || !vs.curmode || !vs.verbid) continue;
-			if (vs.type != kTextVerbType) continue;
-			if (vs.verbid < 1 || vs.verbid > 12) continue;
-			standardVerbCount++;
-		}
-		static int s_standard_verb_grace = 0;
-		if (standardVerbCount > 0) s_standard_verb_grace = 30;
-		else if (s_standard_verb_grace > 0) --s_standard_verb_grace;
-		const int visibleVerbCount = (s_standard_verb_grace > 0) ? 1 : 0;
-		// THUMBY-PORT — panel_active = "should the LCD scene blit hide
-		// source rows 144..199 (the legacy verb panel area)".  Driven
-		// solely by visibleVerbCount (with grace-period hysteresis
-		// above): the panel is "present" exactly when the standard
-		// 12 verbs are or recently were drawn.  Map / save UI / title
-		// screens spend extended time without standard verbs and are
-		// allowed to render their full source 0..199.  _userPut alone
-		// is no longer a signal — the user's clickable on the map but
-		// the map itself is full-screen.
 		const bool panel_in_use = (_currentRoom != 0) &&
-		                          (visibleVerbCount > 0);
+		                          (_virtscr[kVerbVirtScreen].h > 0);
 		thumby_set_verb_panel_active(panel_in_use);
 		// Note: dialog-options vs standard 12-verb scale is decided
 		// per-verb in drawVerb (verbs.cpp) using curRect width — this

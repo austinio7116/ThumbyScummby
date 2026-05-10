@@ -1035,6 +1035,16 @@ public:
 	int numVerbs() const { return _numVerbs; }
 	int userPut() const  { return _userPut; }
 	const byte *publicGetObjOrActorName(int obj) { return getObjOrActorName(obj); }
+	// THUMBY-PORT: expand SCUMM 0xFF control sequences (variable
+	// expansion, name-of-object expansion, etc.) into a plain string
+	// so overlay menus can read object names with embedded markup.
+	// Pieces of eight (object 478) is the canonical case: its OBCD
+	// name starts with 0xFF 0x04 NN NN (int-variable expansion of
+	// VAR_GOLD) which the gather-time 0xFF strip would otherwise
+	// drop entirely, leaving the item invisible in the inventory.
+	int publicConvertMessageToString(const byte *msg, byte *dst, int dstSize) {
+		return convertMessageToString(msg, dst, dstSize);
+	}
 	// Object id under the engine's current mouse, or 0 if none.  Used
 	// by the auto-verb cursor tooltip to show the hover target name.
 	int hoveredObject() {
@@ -1076,25 +1086,29 @@ public:
 	void publicRunInputScript(int clickArea, int val, int mode) {
 		runInputScript(clickArea, val, mode);
 	}
-	// THUMBY-PORT: dialog-response slot flag set by o5_verbOps's
-	// SO_VERB_NEW when the script creates a verb during gameplay
-	// (_userPut > 0).  Boot-time and cutscene-time verb additions
-	// (standard verbs, inventory arrows, save-screen widgets) leave
-	// the flag clear — they're never auto-opened by the dialog
-	// detector.  The flag is cleared on killVerb / SO_VERB_DELETE.
-	bool _verbIsDialogResponse[160] = { false };
-
-	// THUMBY-PORT — dialog-response window.  Flips true when an actor
-	// finishes speaking (setTalkingActor transitions to 0/255) and
-	// stays true until either: the user picks a response (picker
-	// dispatches click), a new actor starts speaking, or the player
-	// loses interface control.  While open, every TextVerb created
-	// via SO_VERB_NEW gets _verbIsDialogResponse[slot] = true.  This
-	// is the temporal signal for "we're in dialog mode" — replaces
-	// the geometry heuristic with the actual engine flow that defines
-	// what a dialog response IS.
-	bool _dialogResponseWindowOpen = false;
-	int  _previousTalkActor = 0;
+	// THUMBY-PORT: re-emit the current cursor sprite to OSystem.
+	// Called after a save→load round-trip; scummvm v5 saveload restores
+	// _grabbedCursor + _cursor.* fields but does NOT call updateCursor()
+	// or setBuiltinCursor() for non-Mac platforms (saveload.cpp:2164).
+	// That leaves OSystem_Thumby's _cursorBuf untouched while the
+	// engine's internal cursor index/state has already changed —
+	// resulting in no cursor sprite on screen post-load.
+	//
+	// Two-step refresh:
+	//   1. setBuiltinCursor(_currentCursor) regenerates _grabbedCursor
+	//      from _cursorImages so any saveload-time staleness is
+	//      flushed.
+	//   2. updateCursor() pushes the regenerated buffer through
+	//      CursorMan.replaceCursor → OSystem::setMouseCursor.
+	// setBuiltinCursor already calls updateCursor at its tail, but
+	// some derived classes (Mac/SegaCD) early-return before reaching
+	// that path; calling updateCursor explicitly afterwards covers
+	// those branches and any future ports that might reorder the
+	// internals.
+	void publicRefreshCursor() {
+		setBuiltinCursor(_currentCursor);
+		updateCursor();
+	}
 
 	// THUMBY-PORT — preview-mode shadow execution of the verb-script
 	// to compute the auto-default verb for a hovered object (i.e.
@@ -1110,16 +1124,6 @@ public:
 	bool _previewMode = false;
 	int  _previewVerbCapture = 0;
 	int  publicPreviewDefaultVerb(int obj);
-
-	// Read-only accessor used by the verb picker to decide between
-	// "VERB" and "RESPONSE" modes — a slot is a dialog response if
-	// it was created while the response window was open (post-talk).
-	bool publicIsDialogResponseSlot(int slot) const {
-		const int max = (int)(sizeof(_verbIsDialogResponse) /
-		                      sizeof(_verbIsDialogResponse[0]));
-		if (slot < 0 || slot >= max) return false;
-		return _verbIsDialogResponse[slot];
-	}
 
 	// THUMBY-PORT — fire a verb click as if the user had mouse-clicked
 	// on the verb's curRect in the panel.  Exact mirror of what

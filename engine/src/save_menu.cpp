@@ -244,6 +244,20 @@ void run(ScummEngine *engine) {
 				status = "LOADING...";
 				paint_menu(osys, sel, has, status);
 				bool ok = engine->loadSlot0();
+				if (ok) {
+					// scummvm v5 saveload restores _grabbedCursor +
+					// _cursor.* fields but never re-uploads the cursor
+					// sprite to OSystem for non-Mac platforms — so on
+					// device the crosshair vanishes after load.  Two-
+					// step refresh:
+					//   1. ask the engine to re-emit (works on host).
+					//   2. fall back to a hardcoded crosshair (covers
+					//      device, where step 1 alone leaves the
+					//      sprite invisible — root cause unclear but
+					//      this guarantees a visible pointer).
+					engine->publicRefreshCursor();
+					if (osys) osys->forceVisibleCrosshairCursor();
+				}
 				status = ok ? "LOADED" : "LOAD FAILED";
 				paint_menu(osys, sel, has, status);
 				tsb::platform::sleep_ms(900);

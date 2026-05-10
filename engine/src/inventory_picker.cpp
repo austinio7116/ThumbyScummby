@@ -41,23 +41,28 @@ int gather_inventory(ScummEngine *eng, Entry *out, int max) {
 		const int obj = inv[i];
 		if (obj == 0) continue;                    // empty slot
 		if (eng->publicGetActorOwner(obj) != ego) continue;  // not held by player
-		const byte *name = eng->publicGetObjOrActorName(obj);
-		if (!name || !name[0]) continue;
-		// MI1 v4 OBCD names are stored inline in the resource and
-		// may not be strictly null-terminated for the rendering
-		// purposes we want — adjacent bytes (padding / next field)
-		// can include 0x2D ('-') or '@' (SCUMM space-pad).  Copy
-		// only printable 7-bit ASCII (32..126) and stop at the
-		// first '@' (SCUMM end-of-string fill), 0xFF (SCUMM
-		// markup escape), or non-printable byte.  Trim trailing
-		// spaces too.
+		const byte *raw = eng->publicGetObjOrActorName(obj);
+		if (!raw || !raw[0]) continue;
+		// SCUMM v5 OBCD names can begin with 0xFF control sequences
+		// (object/variable expansion).  Pieces of eight (object 478)
+		// in MI1 is the canonical case — its name starts with
+		// 0xFF 0x04 NN NN (VAR_GOLD expansion) followed by " pieces
+		// of eight".  Run convertMessageToString first so the
+		// expansion happens, then strip any leftover non-printable
+		// bytes / '@' padding.  Without the expansion the strip
+		// loop below sees 0xFF first byte → drops the whole entry,
+		// hiding gold from the inventory entirely.
+		byte expanded[64];
+		expanded[0] = 0;
+		eng->publicConvertMessageToString(raw, expanded, sizeof(expanded));
+		const byte *name = expanded;
+		if (!name[0]) continue;
 		out[n].slot_index = obj;
 		int dst = 0;
 		for (int j = 0; j < (int)sizeof(out[n].name) - 1 && name[j]; ++j) {
 			const byte b = name[j];
-			if (b == 0xFF) break;          // SCUMM control-code escape
 			if (b == '@')  break;          // SCUMM end-of-string padding
-			if (b < 32 || b > 126) break;  // non-printable
+			if (b < 32 || b > 126) break;  // non-printable / leftover markup
 			out[n].name[dst++] = (char)b;
 		}
 		while (dst > 0 && out[n].name[dst - 1] == ' ') --dst;

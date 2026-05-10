@@ -3212,23 +3212,6 @@ void ScummEngine_v5::o5_verbOps() {
 			vs->key = 0;
 			vs->center = 0;
 			vs->imgindex = 0;
-			// THUMBY-PORT: flag this slot as a dialog response only
-			// when BOTH temporal and geometric signals agree.  The
-			// temporal window opens when the talking actor stops
-			// (setTalkingActor edge to 0/255).  The geometric check
-			// requires the verb's curRect to span >= 160 source-px
-			// — dialog options always occupy a full panel-width row
-			// via SO_VERB_AT, while the standard 12 verbs each
-			// occupy a 40..80-px column.  A skipped conversation
-			// leaves the temporal window open while the engine
-			// restores the standard 12 verbs; geometric AND
-			// excludes them so the verb picker doesn't auto-open
-			// onto the standard set after a skip.
-			if (slot < (int)(sizeof(_verbIsDialogResponse) / sizeof(_verbIsDialogResponse[0]))) {
-				const int width = vs->curRect.right - vs->curRect.left;
-				_verbIsDialogResponse[slot] =
-				    _dialogResponseWindowOpen && (width >= 160);
-			}
 			break;
 
 		case 16:	// SO_VERB_DIMCOLOR

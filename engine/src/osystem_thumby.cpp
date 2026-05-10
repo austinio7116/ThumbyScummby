@@ -691,7 +691,20 @@ void OSystem_Thumby::updateScreen() {
         } else {
             want_verb = false;
         }
-        if (want_verb) verb_picker::run(_engine);
+        if (want_verb) {
+            verb_picker::run(_engine);
+            // Picker may have been dismissed via LB or MENU.  Whichever
+            // button the user pressed inside the picker is still held
+            // when run() returns, and the next frame would see it as a
+            // fresh press → tap on release re-opens the verb picker
+            // (LB) or cycles the scale mode (MENU).  Park the *DownAt
+            // timestamps in the past so the release branch sees
+            // held>=threshold and skips the tap-fire; mark MENU
+            // consumed so the hold-path is also suppressed.
+            _ovLbDownAt    = now - kHoldThreshMs;
+            _ovMenuDownAt  = now - kHoldThreshMs;
+            _ovMenuConsumed = true;
+        }
 
         // RB tap → inventory picker.
         if (!rb_now && _ovRbDownAt != 0) {
@@ -700,6 +713,11 @@ void OSystem_Thumby::updateScreen() {
             if (held < kHoldThreshMs && !_ovEscFired &&
                 _engine->canSaveGameStateCurrently() && !want_verb) {
                 inventory_picker::run(_engine);
+                // Same dismiss-gating as the verb picker: RB or MENU
+                // used to close are still held when run() returns.
+                _ovRbDownAt    = now - kHoldThreshMs;
+                _ovMenuDownAt  = now - kHoldThreshMs;
+                _ovMenuConsumed = true;
             }
         }
     }
@@ -744,6 +762,33 @@ void OSystem_Thumby::cycleScaleMode() {
     clearLcdTextOverlay();
     _verbCropX = 0;
     thumby_force_complete_redraw();
+}
+
+// THUMBY-PORT: defensive cursor restore — paints a 16×16 SCUMM-style
+// crosshair (matches default_cursor_images[0]) into _cursorBuf using
+// keycolor=255 / colour=15 (palette index 15 = white in MI1's palette).
+// Used as a fallback after save→load on device when the engine's own
+// cursor restore leaves the sprite invisible.
+void OSystem_Thumby::forceVisibleCrosshairCursor() {
+    // SCUMM v5 crosshair pattern (cursor.cpp:1198-1199 — first entry of
+    // default_cursor_images).  16 rows of 16 columns, 1 = lit.  Bit 7 of
+    // src[i] is the leftmost pixel.
+    static const uint16_t crosshair[16] = {
+        0x0080, 0x0080, 0x0080, 0x0080, 0x0080, 0x0080, 0x0000, 0x7e3f,
+        0x0000, 0x0080, 0x0080, 0x0080, 0x0080, 0x0080, 0x0080, 0x0000
+    };
+    for (int i = 0; i < 16; ++i) {
+        for (int j = 0; j < 16; ++j) {
+            const bool lit = (crosshair[i] & (1 << j)) != 0;
+            // src bit ordering: bit (15-j) of crosshair[i] is column j.
+            _cursorBuf[i * 16 + (15 - j)] = lit ? 15 : 255;
+        }
+    }
+    _cursorW = 16;
+    _cursorH = 16;
+    _cursorHotspotX = 8;
+    _cursorHotspotY = 7;
+    _cursorKeyColor = 255;
 }
 
 // Capture the 8bpp cursor sprite scummvm v4 cursor.cpp uploads via

@@ -16,7 +16,10 @@
 #include "audio_mix.h"
 #include "opl2.h"
 #include "config_backend.h"
+#include "telemetry.h"
+#include "mi_font_render.h"
 #include "adlib.h"
+#include <cstdio>
 
 extern "C" {
 #include "pico/stdlib.h"
@@ -343,6 +346,41 @@ int main() {
     osys.initBackend();
     extern OSystem *g_system;
     g_system = &osys;
+
+    // THUMBY-PORT: telemetry — read the persisted "last known state"
+    // from flash and paint it on the LCD for ~3 s before handing off to
+    // the engine.  This is our only visibility into device hangs (no
+    // USB serial), so checkpoints written before the freeze surface
+    // here on the next boot.
+    {
+        tsb::telemetry::Snapshot snap;
+        if (tsb::telemetry::read_last(&snap)) {
+            tsb::platform::debug_splash(0x0000);
+            constexpr uint16_t kCol = 0xCE2C;     // MI1 highlight
+            constexpr uint16_t kDim = 0x9BD3;     // soft blue-grey
+            tsb::mi_font::draw(2,  4,  "LAST KNOWN STATE", kCol);
+            char buf[40];
+            std::snprintf(buf, sizeof(buf), "serial %u", (unsigned)snap.serial);
+            tsb::mi_font::draw(2, 18, buf, kDim);
+            std::snprintf(buf, sizeof(buf), "millis %u", (unsigned)snap.millis);
+            tsb::mi_font::draw(2, 28, buf, kDim);
+            std::snprintf(buf, sizeof(buf), "room   %d", snap.room);
+            tsb::mi_font::draw(2, 38, buf, kDim);
+            std::snprintf(buf, sizeof(buf), "heap   %u", (unsigned)snap.heap_used);
+            tsb::mi_font::draw(2, 48, buf, kDim);
+            std::snprintf(buf, sizeof(buf), "event  %s", snap.event);
+            tsb::mi_font::draw(2, 58, buf, kCol);
+            tsb::mi_font::draw(2, 80, "Hold MENU to skip", kDim);
+            tsb::platform::lcd_present_now();
+            // 3 s wait, but allow MENU to skip ahead.
+            for (int i = 0; i < 60; ++i) {
+                tsb::platform::Input in{};
+                if (tsb::platform::poll_input(&in) && in.button_menu) break;
+                tsb::platform::sleep_ms(50);
+            }
+        }
+        tsb::telemetry::boot();
+    }
 
     tsb::DetectorResult dr;
     dr.game.id        = (int)tsb::GID_MONKEY_VGA;

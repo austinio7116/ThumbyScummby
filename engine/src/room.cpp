@@ -23,9 +23,15 @@
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
 #include "platform.h"
+#include "telemetry.h"
 #include "scumm/actor.h"
 #include "scumm/resource.h"
 #include "scumm/object.h"
+#include <cstdio>
+#include <cstdlib>
+#if defined(__linux__) && !defined(__ARM_ARCH_6M__)
+#include <malloc.h>
+#endif
 
 namespace Scumm {
 
@@ -145,6 +151,55 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 
 	_res->increaseResourceCounters();
 
+	// THUMBY-PORT: telemetry — checkpoint right before the heavy
+	// room-load work so a hang during loadRoom shows up on next
+	// boot as ENTER_<from>_<to>, while a hang AFTER load shows
+	// LOADED_<to>.  Also lets us see how heap drifts per room.
+	{
+		char tag[40];
+		snprintf(tag, sizeof(tag), "ENTER %d>%d", (int)_currentRoom, (int)room);
+		tsb::telemetry::set_event(tag);
+		tsb::telemetry::set_room(room);
+		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
+		tsb::telemetry::checkpoint();
+	}
+
+	// THUMBY-PORT: preemptive purge before the new room loads.
+	// Without this, the engine only culls reactively during the
+	// allocations the new room triggers — which means a heavy room
+	// (the Melee map graphic + location verbs + region masks) can
+	// peak well above the threshold before any cull fires.  Force
+	// expireResources(0) here so the room starts loading from a
+	// clean baseline.  Locked resources (current scripts, fonts,
+	// charset) survive; old room-bound costumes / sounds / scripts
+	// for unrelated rooms get released.
+	tsb::telemetry::set_event("PURGE");
+	tsb::telemetry::checkpoint();
+	_res->publicExpireResources(0);
+	tsb::telemetry::set_event("PURGED");
+	tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
+	tsb::telemetry::checkpoint();
+
+	// THUMBY-PORT: heap pressure trace.  Logs free/used heap and the
+	// resource manager's tracked size at every room change so we can
+	// follow allocation drift / fragmentation across map transitions.
+	// No-op unless THUMBY_HEAP_TRACE env var is set on host (device
+	// build still emits but to platform::log).
+	if (std::getenv("THUMBY_HEAP_TRACE")) {
+#if defined(__linux__) && !defined(__ARM_ARCH_6M__)
+		struct mallinfo2 mi = mallinfo2();
+		std::fprintf(stderr,
+		    "[heap room %d→%d] mallinfo arena=%zu hblk=%zu uord=%zu ford=%zu | resmgr=%u\n",
+		    (int)_currentRoom, room,
+		    (size_t)mi.arena, (size_t)mi.hblkhd,
+		    (size_t)mi.uordblks, (size_t)mi.fordblks,
+		    (unsigned)_res->getHeapSize());
+#else
+		std::fprintf(stderr, "[heap room %d→%d] resmgr=%u\n",
+		    (int)_currentRoom, room, (unsigned)_res->getHeapSize());
+#endif
+	}
+
 	_currentRoom = room;
 	VAR(VAR_ROOM) = room;
 
@@ -165,10 +220,24 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 	if (VAR_ROOM_RESOURCE != 0xFF)
 		VAR(VAR_ROOM_RESOURCE) = _roomResource;
 
+	// THUMBY-PORT: finer-grained telemetry between PURGED and LOADED so a
+	// hang during room load (room 85 / Melee map seen on second visit)
+	// pinpoints which call hung instead of just surfacing "PURGED".  Each
+	// checkpoint also re-emits heap so we can see allocation growth
+	// across the load.  Tag stays short to fit the 40-byte event field.
+	#define THUMBY_RC(tag)                                                  \
+		do {                                                                \
+			tsb::telemetry::set_event(tag);                                 \
+			tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);     \
+			tsb::telemetry::checkpoint();                                   \
+		} while (0)
+
 	if (room != 0)
 		ensureResourceLoaded(rtRoom, room);
+	THUMBY_RC("ENS_RTROOM");
 
 	clearRoomObjects();
+	THUMBY_RC("CLR_OBJ");
 
 	if (_currentRoom == 0) {
 		_ENCD_offs = _EXCD_offs = 0;
@@ -182,11 +251,15 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 	}
 
 	setupRoomSubBlocks();
+	THUMBY_RC("SETUP_SB");
 	resetRoomSubBlocks();
+	THUMBY_RC("RESET_SB");
 
 	initBGBuffers(_roomHeight);
+	THUMBY_RC("INIT_BG");
 
 	resetRoomObjects();
+	THUMBY_RC("RESET_OBJ");
 
 	if (VAR_ROOM_WIDTH != 0xFF && VAR_ROOM_HEIGHT != 0xFF) {
 		VAR(VAR_ROOM_WIDTH) = _roomWidth;
@@ -239,13 +312,17 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 		setBoxFlags(4, 0);
 
 	showActors();
+	THUMBY_RC("SHOW_ACT");
 
 	_egoPositioned = false;
 
 #ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
 	towns_resetPalCycleFields();
 #endif
+	THUMBY_RC("PRE_ENTRY");
 	runEntryScript();
+	THUMBY_RC("POST_ENTRY");
+	#undef THUMBY_RC
 	if (_game.version >= 1 && _game.version <= 2) {
 		runScript(5, 0, 0, nullptr);
 	} else if (_game.version >= 5 && _game.version <= 6) {
@@ -290,6 +367,20 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 				_system->setFeatureState(OSystem::kFeatureVirtualKeyboard, false);
 		} else if (room == 90)
 			_system->setFeatureState(OSystem::kFeatureVirtualKeyboard, true);
+	}
+
+	// THUMBY-PORT: telemetry — final checkpoint after the room load
+	// has completed.  A hang during the load itself surfaces as the
+	// preceding "PURGED" / "ENTER ..." record on next boot; a hang
+	// after load surfaces as "LOADED <room>" so we can pinpoint
+	// whether the freeze is in resource setup or post-load logic.
+	{
+		char tag[40];
+		std::snprintf(tag, sizeof(tag), "LOADED %d", room);
+		tsb::telemetry::set_event(tag);
+		tsb::telemetry::set_room(room);
+		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
+		tsb::telemetry::checkpoint();
 	}
 }
 

@@ -188,6 +188,12 @@ public:
 	void setHeapThreshold(int min, int max);
 	uint32 getHeapSize() { return _allocatedSize; }
 
+	// THUMBY-PORT: preemptive purge before room change.  Public
+	// wrapper around the protected expireResources so the engine
+	// can request a cleanup at known-safe points (room transitions)
+	// rather than waiting for the per-allocation reactive cull.
+	void publicExpireResources(uint32 size) { expireResources(size); }
+
 	void allocResTypeData(ResType type, uint32 tag, int num, ResTypeMode mode);
 	void freeResources();
 

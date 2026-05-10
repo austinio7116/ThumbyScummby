@@ -22,6 +22,7 @@
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
 #include "platform.h"
+#include "telemetry.h"
 #include "scumm/actor.h"
 #include "scumm/resource.h"
 #include <cstdio>
@@ -1032,8 +1033,26 @@ void ScummEngine::runExitScript() {
 }
 
 void ScummEngine::runEntryScript() {
+	// THUMBY-PORT: room 85 (Mêlée map) hangs during runEntryScript
+	// per device telemetry — narrow which of the three sub-scripts
+	// (global ENTRY, room ENCD, global ENTRY2) is the culprit.  Each
+	// sub-stage gets a flash checkpoint with current heap so the
+	// LAST splash on the next boot tells us the exact stage.
+	{
+		char tag[40];
+		std::snprintf(tag, sizeof(tag), "ENT1 v=%d",
+		    (VAR_ENTRY_SCRIPT != 0xFF) ? (int)VAR(VAR_ENTRY_SCRIPT) : -1);
+		tsb::telemetry::set_event(tag);
+		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
+		tsb::telemetry::checkpoint();
+	}
 	if (VAR_ENTRY_SCRIPT != 0xFF && VAR(VAR_ENTRY_SCRIPT))
 		runScript(VAR(VAR_ENTRY_SCRIPT), 0, 0, nullptr);
+	{
+		tsb::telemetry::set_event(_ENCD_offs ? "ENCD_BEFORE" : "ENCD_SKIP");
+		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
+		tsb::telemetry::checkpoint();
+	}
 	if (_ENCD_offs) {
 		int slot = getScriptSlot();
 		vm.slot[slot].status = ssRunning;
@@ -1048,8 +1067,21 @@ void ScummEngine::runEntryScript() {
 		initializeLocals(slot, nullptr);
 		runScriptNested(slot);
 	}
+	{
+		char tag[40];
+		std::snprintf(tag, sizeof(tag), "ENT2 v=%d",
+		    (VAR_ENTRY_SCRIPT2 != 0xFF) ? (int)VAR(VAR_ENTRY_SCRIPT2) : -1);
+		tsb::telemetry::set_event(tag);
+		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
+		tsb::telemetry::checkpoint();
+	}
 	if (VAR_ENTRY_SCRIPT2 != 0xFF && VAR(VAR_ENTRY_SCRIPT2))
 		runScript(VAR(VAR_ENTRY_SCRIPT2), 0, 0, nullptr);
+	{
+		tsb::telemetry::set_event("ENT_DONE");
+		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
+		tsb::telemetry::checkpoint();
+	}
 
 	// WORKAROUND: The Macintosh version of MI2 doesn't have any bats in the
 	// Scabb Island swamp, because that line has been removed from the entry

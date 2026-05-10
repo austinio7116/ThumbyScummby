@@ -7,6 +7,7 @@ add_executable(thumbyscummby
     platform_sdl.cpp
     save_backend.cpp
     config_backend.cpp
+    telemetry.cpp
 )
 
 target_link_libraries(thumbyscummby

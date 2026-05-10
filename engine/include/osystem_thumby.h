@@ -84,6 +84,20 @@ public:
                         const Graphics::PixelFormat *format = nullptr,
                         const byte *mask = nullptr) override;
 
+    // THUMBY-PORT: defensive cursor restore for the post-save→load
+    // path on device.  Called from save_menu after engine->loadSlot0
+    // returns.  Even after the engine's own setBuiltinCursor +
+    // updateCursor refresh, the device sometimes ends up with no
+    // visible sprite (host doesn't reproduce it, so the engine path is
+    // correct on host but something on device — possibly XIP timing
+    // around the flash read or a stale _cursor.width from a moment
+    // when the engine briefly had _cursor.width=0 — leaves _cursorBuf
+    // in a hidden state).  This method paints a hardcoded crosshair
+    // unconditionally so the user always has a visible pointer after
+    // loading a save.  The next genuine setMouseCursor from the engine
+    // (verb hover, etc.) will replace it cleanly.
+    void forceVisibleCrosshairCursor();
+
     // ---- Time ----
     uint32 getMillis(bool skipRecord = false) override;
     void delayMillis(uint msecs) override;
