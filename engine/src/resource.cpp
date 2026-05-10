@@ -20,12 +20,12 @@
  */
 
 #include <new>
+#include <cstring>
 #include "common/md5.h"
 #include "common/str.h"
 #include "common/memstream.h"
 #include "common/macresman.h"
 #include "platform.h"
-#include "telemetry.h"
 #ifndef MACOSX
 #include "common/config-manager.h"
 #endif
@@ -641,32 +641,7 @@ void ScummEngine::ensureResourceLoaded(ResType type, ResId idx) {
 	_resourceAccessMutex.lock();
 #endif
 
-	// THUMBY-PORT: per-load telemetry.  Bug 1 (room 85 ENCD_BEFORE
-	// crash) leaves the splash showing only the BEFORE checkpoint.
-	// Logging each ensureResourceLoaded call lets the splash on the
-	// next-boot pinpoint EXACTLY which resource (type + idx + size)
-	// the ENCD script was trying to load when the freeze happened.
-	// If the previous splash is "LD <type>:<idx> sz=N rmgr=N" and
-	// we never reach a later checkpoint, that resource is the one
-	// that hung / failed.  Cost: each load adds a flash-page write
-	// (~5-50 ms).  ENCD on host triggers ~5-15 loads → ~75-750 ms
-	// added to room transitions.  Acceptable for diagnostics; will
-	// be removed once bug 1 is fixed.
-	{
-		char tag[40];
-		snprintf(tag, sizeof(tag), "LD %s:%d", nameOfResType(type), (int)idx);
-		tsb::telemetry::set_event(tag);
-		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
-		tsb::telemetry::checkpoint();
-	}
 	loadResource(type, idx);
-	{
-		char tag[40];
-		snprintf(tag, sizeof(tag), "LD_OK %s:%d", nameOfResType(type), (int)idx);
-		tsb::telemetry::set_event(tag);
-		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
-		tsb::telemetry::checkpoint();
-	}
 
 	if (_game.version == 5 && type == rtRoom && (int)idx == _roomResource)
 		VAR(VAR_ROOM_FLAG) = 1;
@@ -921,9 +896,29 @@ byte *ResourceManager::createResource(ResType type, ResId idx, uint32 size) {
 		setResourceCounter(type, idx, 1);
 		_vm->_insideCreateResource--;
 		return _types[type][idx]._address;
-	} else {
-		nukeResource(type, idx);
 	}
+
+	// THUMBY-PORT: rtBuffer entries (virtscreen back buffers, gfx scratch)
+	// are written to by the engine — we can't push them off-heap.  But
+	// they vary in size only between rooms (e.g. main back buffer is
+	// 320*144+pad for normal play, 320*200+pad for full-screen scrollable
+	// rooms like the Mêlée map at 65280 B).  Nuking and re-allocating
+	// every room transition fragments the heap until a wide room can no
+	// longer find 64+ KB contiguous (room 85 OOM).  When the existing
+	// allocation is already at least the requested size, reuse it in
+	// place — no nuke, no malloc.  Combined with a max-size pre-allocation
+	// at engine init (see scumm.cpp setupVolumeAndAlloc), the back-buffer
+	// slot lives at the heap floor for the whole session.
+	if (type == rtBuffer && _types[type][idx]._address &&
+	    _types[type][idx]._size >= size) {
+		// Caller expects a zeroed buffer (initVirtScreens memsets right
+		// after createResource) — preserve that contract.
+		std::memset(_types[type][idx]._address, 0, size);
+		setResourceCounter(type, idx, 1);
+		_vm->_insideCreateResource--;
+		return _types[type][idx]._address;
+	}
+	nukeResource(type, idx);
 
 	expireResources(size);
 
@@ -933,18 +928,6 @@ byte *ResourceManager::createResource(ResType type, ResId idx, uint32 size) {
 	// matched (delete[] of a malloc'd block corrupts the heap).
 	byte *ptr = (byte *)malloc(size + SAFETY_AREA);
 	if (ptr == nullptr) {
-		// THUMBY-PORT: persist the OOM context to flash BEFORE error()
-		// (which calls exit(1) — on device that's an infinite loop in
-		// the panic handler, indistinguishable from a script hang).
-		// The next-boot splash will show "OOM <type>:<idx> sz=N rmgr=N"
-		// so we know malloc actually failed (vs. a script wait that
-		// never resolves).
-		char tag[40];
-		snprintf(tag, sizeof(tag), "OOM %s:%d sz=%u",
-		    nameOfResType(type), (int)idx, (unsigned)size);
-		tsb::telemetry::set_event(tag);
-		tsb::telemetry::set_heap((uint32_t)_allocatedSize, 0);
-		tsb::telemetry::checkpoint();
 		_vm->_insideCreateResource--;
 		error("createResource(%s,%d): Out of memory while allocating %d", nameOfResType(type), idx, size);
 	}

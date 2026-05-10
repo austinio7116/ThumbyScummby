@@ -1728,6 +1728,28 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	_textSurface.create(_screenWidth * _textSurfaceMultiplier, _screenHeight * _textSurfaceMultiplier, Graphics::PixelFormat::createFormatCLUT8());
 	clearTextSurface();
 
+	// THUMBY-PORT: pre-reserve the rtBuffer slots that the engine sizes
+	// per room (main virtscreen primary + back buffer + Z buffer).  Each
+	// can grow to ~65 KB for full-screen scrollable rooms (Mêlée map at
+	// 320*200 + 320*4 = 65280 B).  Allocating them eagerly here while
+	// the heap is still pristine pins them at the heap floor.  Combined
+	// with the rtBuffer reuse short-circuit in createResource(), later
+	// initVirtScreens / initBGBuffers calls just zero and reuse the
+	// pre-allocated blocks instead of nuke+realloc.  Without this,
+	// returning to a wide room after intermediate room transitions
+	// fragments the heap (~89 KB free across 12 chunks observed) and
+	// the back-buffer alloc fails despite enough total free memory.
+	{
+		const uint32 max_main_buf = (uint32)(_screenWidth * _screenHeight + _screenWidth * 4);
+		_res->createResource(rtBuffer, kMainVirtScreen + 1, max_main_buf);
+		_res->createResource(rtBuffer, kMainVirtScreen + 5, max_main_buf);
+		// Z buffers: itemsize = (height+4) * numStrips, total = itemsize * numZBuffer.
+		// MI1 VGA caps _numZBuffer at 4 (gfx.cpp:1052 GF_SMALL_HEADER branch).
+		const uint32 strips = (uint32)_screenWidth / 8;
+		const uint32 max_zbuf = ((uint32)_screenHeight + 4) * strips * 4;
+		_res->createResource(rtBuffer, 9, max_zbuf);
+	}
+
 	// Create the costume renderer
 	setupCostumeRenderer();
 
@@ -2691,19 +2713,6 @@ Common::Error ScummEngine::go() {
 
 	_lastWaitTime = _system->getMillis();
 
-	// THUMBY-PORT script-dump mode.  When THUMBY_DUMP_SCRIPTS=<dir> is
-	// set, run the boot script (so the index is populated and any
-	// initial resources are loaded), then iterate every script id and
-	// dump its bytecode as <dir>/script_NNN.bin.  Also writes
-	// SCRIPTS_INDEX.txt with size/script-number mapping.  Used by
-	// tools/scumm_v5_dasm.py to disassemble offline — no need to play
-	// the game to see what a script does.
-	if (const char *dump_dir = std::getenv("THUMBY_DUMP_SCRIPTS")) {
-		runBootscript();
-		publicDumpAllScripts(dump_dir);
-		return Common::kNoError;
-	}
-
 	// If requested, load a save game instead of running the boot script
 	if (_saveLoadFlag != 2 || !loadState(_saveLoadSlot, _saveTemporaryState)) {
 		_saveLoadFlag = 0;
@@ -3060,46 +3069,6 @@ void ScummEngine_v0::scummLoop(int delta) {
 
 void ScummEngine::scummLoop(int delta) {
 	#define LOOP_CKPT(label, color) ((void)0)
-	// THUMBY-PORT: live script dump.  When THUMBY_DUMP_SCRIPTS_LIVE=<dir>
-	// is set, re-dump every currently-loaded script every 5 seconds while
-	// the game runs.  Lets us capture room-loaded scripts (verb-script
-	// 201/202, sentence-script 202, etc.) that the boot-time dumper
-	// misses because they aren't in memory at boot.  Navigate to the
-	// area you want to capture; wait a few seconds; the dir gets
-	// overwritten with whatever's loaded right now.
-	if (const char *live_dir = std::getenv("THUMBY_DUMP_SCRIPTS_LIVE")) {
-		static uint32 s_last_dump = 0;
-		const uint32 now = _system->getMillis();
-		if (now - s_last_dump >= 5000) {
-			s_last_dump = now;
-			publicDumpAllScripts(live_dir);
-		}
-	}
-	// THUMBY-PORT: heartbeat trace.  When THUMBY_HEARTBEAT is set, log
-	// engine state once a second.  If the freeze comes from a script
-	// looping, the heartbeats keep ticking but show the same scripts
-	// running over and over.  If the main loop is stuck, the
-	// heartbeats just stop.
-	if (std::getenv("THUMBY_HEARTBEAT")) {
-		static uint32 s_last_beat = 0;
-		const uint32 now = _system->getMillis();
-		if (now - s_last_beat >= 1000) {
-			s_last_beat = now;
-			std::fprintf(stderr,
-			    "[heartbeat] room=%d userPut=%d nested=%d cs=%d running:",
-			    (int)_currentRoom, _userPut,
-			    (int)vm.numNestedScripts, (int)_currentScript);
-			for (int i = 0; i < NUM_SCRIPT_SLOT; ++i) {
-				if (vm.slot[i].status != ssDead) {
-					std::fprintf(stderr, " s%d(n=%d,off=0x%x,fc=%d)",
-					    i, (int)vm.slot[i].number,
-					    (unsigned)vm.slot[i].offs,
-					    (int)vm.slot[i].freezeCount);
-				}
-			}
-			std::fprintf(stderr, "\n");
-		}
-	}
 	// THUMBY-PORT: tell the platform whether a verb panel is rendering
 	// this frame, so present() can split the LCD layout (verb panel
 	// pinned at LCD bottom) in gameplay but render the full source for

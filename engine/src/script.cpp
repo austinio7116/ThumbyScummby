@@ -22,7 +22,6 @@
 // ThumbyScummby: replaces scummvm-private headers.
 #include "scummvm_compat.h"
 #include "platform.h"
-#include "telemetry.h"
 #include "scumm/actor.h"
 #include "scumm/resource.h"
 #include <cstdio>
@@ -1033,26 +1032,8 @@ void ScummEngine::runExitScript() {
 }
 
 void ScummEngine::runEntryScript() {
-	// THUMBY-PORT: room 85 (Mêlée map) hangs during runEntryScript
-	// per device telemetry — narrow which of the three sub-scripts
-	// (global ENTRY, room ENCD, global ENTRY2) is the culprit.  Each
-	// sub-stage gets a flash checkpoint with current heap so the
-	// LAST splash on the next boot tells us the exact stage.
-	{
-		char tag[40];
-		std::snprintf(tag, sizeof(tag), "ENT1 v=%d",
-		    (VAR_ENTRY_SCRIPT != 0xFF) ? (int)VAR(VAR_ENTRY_SCRIPT) : -1);
-		tsb::telemetry::set_event(tag);
-		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
-		tsb::telemetry::checkpoint();
-	}
 	if (VAR_ENTRY_SCRIPT != 0xFF && VAR(VAR_ENTRY_SCRIPT))
 		runScript(VAR(VAR_ENTRY_SCRIPT), 0, 0, nullptr);
-	{
-		tsb::telemetry::set_event(_ENCD_offs ? "ENCD_BEFORE" : "ENCD_SKIP");
-		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
-		tsb::telemetry::checkpoint();
-	}
 	if (_ENCD_offs) {
 		int slot = getScriptSlot();
 		vm.slot[slot].status = ssRunning;
@@ -1067,21 +1048,8 @@ void ScummEngine::runEntryScript() {
 		initializeLocals(slot, nullptr);
 		runScriptNested(slot);
 	}
-	{
-		char tag[40];
-		std::snprintf(tag, sizeof(tag), "ENT2 v=%d",
-		    (VAR_ENTRY_SCRIPT2 != 0xFF) ? (int)VAR(VAR_ENTRY_SCRIPT2) : -1);
-		tsb::telemetry::set_event(tag);
-		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
-		tsb::telemetry::checkpoint();
-	}
 	if (VAR_ENTRY_SCRIPT2 != 0xFF && VAR(VAR_ENTRY_SCRIPT2))
 		runScript(VAR(VAR_ENTRY_SCRIPT2), 0, 0, nullptr);
-	{
-		tsb::telemetry::set_event("ENT_DONE");
-		tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
-		tsb::telemetry::checkpoint();
-	}
 
 	// WORKAROUND: The Macintosh version of MI2 doesn't have any bats in the
 	// Scabb Island swamp, because that line has been removed from the entry
@@ -1681,230 +1649,6 @@ int ScummEngine::publicPreviewDefaultVerb(int obj) {
 	_virtualMouse   = savedVirtMouse;
 
 	return captured;
-}
-
-void ScummEngine::publicDumpAllScripts(const char *output_dir) {
-	std::fprintf(stderr, "[dump-scripts] writing to %s/\n", output_dir);
-
-	// Best-effort mkdir.  Ignored if it exists.
-	{
-		char buf[1024];
-		std::snprintf(buf, sizeof(buf), "mkdir -p %s", output_dir);
-		(void)std::system(buf);
-	}
-
-	char index_path[1024];
-	std::snprintf(index_path, sizeof(index_path), "%s/SCRIPTS_INDEX.txt", output_dir);
-	FILE *idx = std::fopen(index_path, "w");
-	if (!idx) {
-		std::fprintf(stderr, "[dump-scripts] cannot open %s\n", index_path);
-		return;
-	}
-
-	std::fprintf(idx,
-	    "# THUMBY-PORT script index — MI1 / SCUMM v5\n"
-	    "# format: <script_num> <size_bytes> <annotation>\n");
-
-	const int verb_script      = (VAR_VERB_SCRIPT      != 0xFF) ? VAR(VAR_VERB_SCRIPT)      : -1;
-	const int sentence_script  = (VAR_SENTENCE_SCRIPT  != 0xFF) ? VAR(VAR_SENTENCE_SCRIPT)  : -1;
-	const int inventory_script = (VAR_INVENTORY_SCRIPT != 0xFF) ? VAR(VAR_INVENTORY_SCRIPT) : -1;
-	std::fprintf(idx,
-	    "# VAR_VERB_SCRIPT = %d, VAR_SENTENCE_SCRIPT = %d, VAR_INVENTORY_SCRIPT = %d\n",
-	    verb_script, sentence_script, inventory_script);
-
-	auto dump_one = [&](int s, const char *note) -> bool {
-		if (s <= 0) return false;
-		if ((int)_res->_types[rtScript].size() <= s) return false;
-		if (_res->_types[rtScript][s]._roomoffs == RES_INVALID_OFFSET) return false;
-		const byte *res = _res->_types[rtScript][s]._address;
-		if (!res) return false;  // only dump ALREADY-loaded scripts; loading
-		                         // unloaded ones crashes on missing room data
-		const uint32 sz = _res->_types[rtScript][s]._size;
-		if (sz == 0) return false;
-		char bin_path[1024];
-		std::snprintf(bin_path, sizeof(bin_path), "%s/script_%03d.bin",
-		              output_dir, s);
-		FILE *f = std::fopen(bin_path, "wb");
-		if (!f) return false;
-		std::fwrite(res, 1, sz, f);
-		std::fclose(f);
-		std::fprintf(idx, "%d %u%s\n", s, sz, note);
-		return true;
-	};
-
-	int dumped = 0;
-	// Try the named scripts first.
-	if (dump_one(verb_script,      " VERB_SCRIPT"))      ++dumped;
-	if (dump_one(sentence_script,  " SENTENCE_SCRIPT"))  ++dumped;
-	if (dump_one(inventory_script, " INVENTORY_SCRIPT")) ++dumped;
-	// Then everything else already loaded post-boot.
-	for (int s = 1; s < _numGlobalScripts; ++s) {
-		if (s == verb_script || s == sentence_script || s == inventory_script) continue;
-		if ((int)_res->_types[rtScript].size() <= s) break;
-		if (_res->_types[rtScript][s]._roomoffs == RES_INVALID_OFFSET) continue;
-		const byte *res = _res->_types[rtScript][s]._address;
-		if (!res) continue;
-		const uint32 sz = _res->_types[rtScript][s]._size;
-		if (sz == 0) continue;
-
-		char bin_path[1024];
-		std::snprintf(bin_path, sizeof(bin_path), "%s/script_%03d.bin", output_dir, s);
-		FILE *f = std::fopen(bin_path, "wb");
-		if (!f) continue;
-		std::fwrite(res, 1, sz, f);
-		std::fclose(f);
-
-		const char *note = "";
-		if (s == verb_script)     note = " VERB_SCRIPT";
-		if (s == sentence_script) note = " SENTENCE_SCRIPT";
-		std::fprintf(idx, "%d %u%s\n", s, sz, note);
-		++dumped;
-	}
-
-	// THUMBY-PORT: also dump LOCAL scripts of the current room (script
-	// numbers >= _numGlobalScripts).  These live in the room's resource
-	// data at offsets stored in _localScriptOffsets[].  MI1 VGA's
-	// VAR_VERB_SCRIPT in normal play is e.g. 201 / 202 — local scripts
-	// of the current room — which the global-only loop above misses.
-	// Plus the room's ENCD (entry) and EXCD (exit) scripts at
-	// _ENCD_offs / _EXCD_offs — these are special slots, not in
-	// _localScriptOffsets, but they're where the room's setup
-	// runs on entry (e.g., the Mêlée map's location-verb spawning).
-	// Size is approximate (descumm stops at o5_stopObjectCode = 0x00 /
-	// the natural end-of-script byte).
-	{
-		const byte *room = getResourceAddress(rtRoom, _roomResource);
-		const uint32 room_sz = (room && _res->_types[rtRoom].size() > (size_t)_roomResource)
-		    ? _res->_types[rtRoom][_roomResource]._size : 0;
-		if (room && room_sz > 0) {
-			// ENCD / EXCD dumps (room entry / exit scripts).
-			auto dump_room_chunk = [&](uint32 offs, const char *name) {
-				if (offs == 0 || offs >= room_sz) return;
-				uint32 sz = 4096;
-				if (offs + sz > room_sz) sz = room_sz - offs;
-				char path[1024];
-				std::snprintf(path, sizeof(path),
-				    "%s/%s_%03d.bin", output_dir, name, (int)_roomResource);
-				FILE *f = std::fopen(path, "wb");
-				if (!f) return;
-				std::fwrite(room + offs, 1, sz, f);
-				std::fclose(f);
-				std::fprintf(idx, "%s %d offs=0x%x sz=%u\n",
-				    name, (int)_roomResource, (unsigned)offs, (unsigned)sz);
-				++dumped;
-			};
-			dump_room_chunk(_ENCD_offs, "encd");
-			dump_room_chunk(_EXCD_offs, "excd");
-
-			std::fprintf(idx, "# LOCAL scripts (room=%d):\n", _roomResource);
-			for (int s = _numGlobalScripts; s < _numGlobalScripts + 1024; ++s) {
-				const int li = s - _numGlobalScripts;
-				if (li < 0 || li >= 1024) continue;
-				const uint32 offs = _localScriptOffsets[li];
-				if (offs == 0) continue;
-				if (offs >= room_sz) continue;
-				// Write up to 4 KB or until end of room data, whichever
-				// comes first.  Descumm tolerates trailing junk past
-				// stopObjectCode.
-				uint32 sz = 4096;
-				if (offs + sz > room_sz) sz = room_sz - offs;
-
-				char bin_path[1024];
-				std::snprintf(bin_path, sizeof(bin_path),
-				    "%s/local_%03d_%03d.bin", output_dir,
-				    (int)_roomResource, s);
-				FILE *f = std::fopen(bin_path, "wb");
-				if (!f) continue;
-				std::fwrite(room + offs, 1, sz, f);
-				std::fclose(f);
-				const char *note = "";
-				if (s == verb_script)     note = " VERB_SCRIPT";
-				if (s == sentence_script) note = " SENTENCE_SCRIPT";
-				std::fprintf(idx, "local %d offs=0x%x sz=%u%s\n",
-				    s, (unsigned)offs, (unsigned)sz, note);
-				++dumped;
-			}
-		}
-	}
-
-	std::fclose(idx);
-	std::fprintf(stderr, "[dump-scripts] dumped %d scripts\n", dumped);
-
-	// If THUMBY_TRACE_SCRIPTS is also set, force-run the verb-script
-	// with a synthetic inventory-click args triple and let the engine's
-	// own executeScript log every opcode it visits.  No new
-	// disassembler needed — we reuse the engine's parameter parsing
-	// because the handlers know exactly how many bytes each opcode
-	// consumes.  Side effects don't matter — we're about to exit.
-	if (std::getenv("THUMBY_TRACE_SCRIPTS") && verb_script > 0) {
-		// Walk all kImageVerbType slots: log their verbid+imgindex so
-		// we know what to feed in.
-		std::fprintf(stderr, "[trace] kImageVerbType slots:\n");
-		for (int v = 1; v < _numVerbs; ++v) {
-			const VerbSlot &vs = _verbs[v];
-			if (vs.type != kImageVerbType) continue;
-			std::fprintf(stderr,
-			    "  slot=%d verbid=%d imgindex=%d curRect=(%d,%d,%d,%d) curmode=%d\n",
-			    v, (int)vs.verbid, (int)vs.imgindex,
-			    (int)vs.curRect.left, (int)vs.curRect.top,
-			    (int)vs.curRect.right, (int)vs.curRect.bottom,
-			    (int)vs.curmode);
-		}
-
-		// Run the verb-script with several synthetic args to trace
-		// each input dispatch branch.  Even with no inventory items
-		// at boot, the script's BRANCH logic (which VARs / which
-		// classes / which verbids) will execute and the trace shows
-		// us exactly what state it reads to decide what to do.
-		auto trace_run = [&](int a0, int a1, int a2, const char *label) {
-			std::fprintf(stderr,
-			    "\n[trace] === %s : verb-script %d args=[%d, %d, %d] ===\n",
-			    label, verb_script, a0, a1, a2);
-			int args[NUM_SCRIPT_LOCAL];
-			memset(args, 0, sizeof(args));
-			args[0] = a0;
-			args[1] = a1;
-			args[2] = a2;
-			runScript(verb_script, 0, 0, args);
-		};
-
-		// Standard verb click (e.g. "Use" — verbid 7 in MI1).
-		trace_run(1, 7, 1,   "kVerbClickArea / Use / left");
-		// Inventory verbid range — common in MI1 is 101..104.
-		trace_run(1, 101, 1, "kVerbClickArea / inventory slot 1 / left");
-		trace_run(1, 102, 1, "kVerbClickArea / inventory slot 2 / left");
-		// Scene click left + right.
-		trace_run(2, 0, 1,   "kSceneClickArea / left");
-		trace_run(2, 0, 2,   "kSceneClickArea / right");
-		// Inventory area click (v0/v2 path; v5 may ignore).
-		trace_run(3, 100, 0, "kInventoryClickArea / obj=100");
-
-		// Trace the inventory display script too — its verbOps calls
-		// reveal what verbids the inventory image-slots actually use,
-		// which is the only way to dispatch a click to them.
-		if (inventory_script > 0) {
-			std::fprintf(stderr,
-			    "\n[trace] === inventory-script %d args=[1, 0, 0] ===\n",
-			    inventory_script);
-			int args[NUM_SCRIPT_LOCAL];
-			memset(args, 0, sizeof(args));
-			args[0] = 1;
-			runScript(inventory_script, 0, 0, args);
-
-			std::fprintf(stderr,
-			    "[trace] kImageVerbType slots after inventory-script:\n");
-			for (int v = 1; v < _numVerbs; ++v) {
-				const VerbSlot &vs = _verbs[v];
-				if (vs.type != kImageVerbType) continue;
-				std::fprintf(stderr,
-				    "  slot=%d verbid=%d imgindex=%d curRect=(%d,%d,%d,%d) curmode=%d\n",
-				    v, (int)vs.verbid, (int)vs.imgindex,
-				    (int)vs.curRect.left, (int)vs.curRect.top,
-				    (int)vs.curRect.right, (int)vs.curRect.bottom,
-				    (int)vs.curmode);
-			}
-		}
-	}
 }
 
 bool ScummEngine::publicClickVerbAt(int verb_slot) {

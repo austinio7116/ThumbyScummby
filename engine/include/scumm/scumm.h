@@ -1164,11 +1164,6 @@ public:
 	// script.cpp where VerbSlot is fully defined.
 	bool publicClickVerbAt(int verb_slot);
 
-	// THUMBY-PORT — dump every loadable script's bytecode to a directory.
-	// Called from go() when THUMBY_DUMP_SCRIPTS is set; writes
-	// <dir>/script_NNN.bin (raw) + <dir>/SCRIPTS_INDEX.txt.
-	void publicDumpAllScripts(const char *output_dir);
-
 	Common::String getTargetName() const { return _targetName; }
 	bool canPauseSoundsDuringSave() const { return _pauseSoundsDuringSave; }
 
