@@ -396,11 +396,13 @@ static inline void blit_text_stamp(uint16_t *fb,
         }
     }
 
-    // Full-scale (1:1) path for talk-area stamps: each source pixel is
-    // one LCD pixel.  Skipping the area-weighted downsample preserves
-    // sharp glyph edges, which is the whole point of running talk text
-    // larger than the verb panel.
-    if (s.flags & kTextStampFlagFullScale) {
+    const int kNum = (s.scale_num > 0) ? (int)s.scale_num : 3;
+    const int kDen = (s.scale_den > 0) ? (int)s.scale_den : 4;
+
+    // 1:1 fast path — used both for FullScale talk-area stamps and for
+    // the 100% setting on the speech text scale slider.  Skipping the
+    // area-weighted downsample preserves sharp glyph edges.
+    if (kNum == kDen || (s.flags & kTextStampFlagFullScale)) {
         for (int sy = 0; sy < s.height; sy++) {
             const int fb_y = s.dst_y + sy;
             if (fb_y < 0 || fb_y >= DISPLAY_H) continue;
@@ -416,11 +418,10 @@ static inline void blit_text_stamp(uint16_t *fb,
         return;
     }
 
-    constexpr int kNum = 3, kDen = 4;            // 75% scale (verb-panel default)
     const int dst_w = (s.width  * kNum + kDen - 1) / kDen;
     const int dst_h = (s.height * kNum + kDen - 1) / kDen;
-    // Each LCD pixel covers kDen×kDen = 16 weighted units in the q-grid.
-    constexpr int kWeightTotal = kDen * kDen;
+    // Each LCD pixel covers kDen×kDen weighted units in the q-grid.
+    const int kWeightTotal = kDen * kDen;
 
     for (int dy = 0; dy < dst_h; dy++) {
         const int fb_y = s.dst_y + dy;
@@ -498,7 +499,8 @@ void present(const uint8_t *virt, const uint8_t *text,
              const TextStamp *text_stamps, int text_stamp_count,
              const char *sentence, int verb_prefix_len,
              bool send_to_lcd, bool panel_active,
-             const char *cursor_tooltip) {
+             const char *cursor_tooltip,
+             const MiFontLine *mi_lines, int mi_line_count) {
     // Source-row count visible this frame.  Panel-active gameplay
     // hides rows 144..199 (legacy panel area, now in overlay UI);
     // cutscene / map / title screens show the full 0..199 source.
@@ -597,6 +599,16 @@ void present(const uint8_t *virt, const uint8_t *text,
         const TextStamp &s = text_stamps[i];
         if (s.dst_y >= kSentenceLcdY) continue;
         blit_text_stamp(fb, s, palette);
+    }
+
+    // ---------- MI-overlay-font speech lines ----------
+    // Re-painted every frame so they persist across the framebuffer
+    // rebuild — same pattern as the cursor tooltip and sentence strip
+    // below.
+    for (int i = 0; i < mi_line_count; i++) {
+        const MiFontLine &l = mi_lines[i];
+        if (l.dst_y >= kSentenceLcdY) continue;
+        tsb::mi_font::draw(l.dst_x, l.dst_y, l.text, l.color);
     }
 
     // ---------- Cursor (clipped to scene area) ----------

@@ -346,6 +346,16 @@ int main() {
     extern OSystem *g_system;
     g_system = &osys;
 
+    // Apply persisted speech text settings from the config flash sector.
+    {
+        int pct;
+        if (tsb::config_backend::load_text_scale_pct(&pct))
+            osys.setSpeechScalePct(pct);
+        bool use_mi;
+        if (tsb::config_backend::load_use_mi_font(&use_mi))
+            osys.setUseMiFontForSpeech(use_mi);
+    }
+
     tsb::DetectorResult dr;
     dr.game.id        = (int)tsb::GID_MONKEY_VGA;
     dr.game.version   = 4;

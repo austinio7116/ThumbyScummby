@@ -32,16 +32,31 @@ constexpr uint16_t kWhite  = 0x0460;
 constexpr uint16_t kHilite = 0xCE2C;
 constexpr uint16_t kDim    = 0x39E7;
 
-constexpr int kMenuItems = 4;
-constexpr const char *kLabels[kMenuItems] = { "SAVE", "LOAD", "VOLUME", "CANCEL" };
-enum { CHOICE_SAVE = 0, CHOICE_LOAD = 1, CHOICE_VOLUME = 2, CHOICE_CANCEL = 3 };
+constexpr int kMenuItems = 6;
+constexpr const char *kLabels[kMenuItems] = {
+    "SAVE", "LOAD", "VOLUME", "TEXT SIZE", "SPCH FONT", "CANCEL"
+};
+enum {
+    CHOICE_SAVE      = 0,
+    CHOICE_LOAD      = 1,
+    CHOICE_VOLUME    = 2,
+    CHOICE_TEXT_SIZE = 3,
+    CHOICE_SPCH_FONT = 4,
+    CHOICE_CANCEL    = 5,
+};
 
-// Half-screen translucent overlay box rows 60..119 (full LCD width).
-// The sentence strip at rows 120..127 stays visible underneath.
+// Two more rows pushed the box down to fit comfortably above the
+// sentence strip (kSentenceLcdY = 120).  Box now spans rows 50..119.
 constexpr int kBoxX     = 0;
-constexpr int kBoxY     = 60;
+constexpr int kBoxY     = 50;
 constexpr int kBoxW     = 128;
-constexpr int kBoxH     = 60;
+constexpr int kBoxH     = 70;
+
+// Range + step for the speech text scale slider.  6 cells (75, 80, 85,
+// 90, 95, 100) — matches the volume bar's discrete-cell visual.
+constexpr int kTextScaleMin  = 75;
+constexpr int kTextScaleMax  = 100;
+constexpr int kTextScaleStep = 5;
 
 void paint_menu(OSystem_Thumby *osys, int sel, bool has_save, const char *status) {
 	// Refresh the scene under the menu — the engine isn't ticking but
@@ -66,11 +81,11 @@ void paint_menu(OSystem_Thumby *osys, int sel, bool has_save, const char *status
 		const bool greyed = (i == CHOICE_LOAD && !has_save);
 		uint16_t color = greyed ? kDim : kWhite;
 		if (i == sel) color = greyed ? kDim : kHilite;
-		const int y = kBoxY + 14 + i * 9;
+		const int y = kBoxY + 12 + i * 9;
 		draw_text(kBoxX + 8, y, kLabels[i], color);
 	}
 	if (status && status[0]) {
-		draw_text(kBoxX + 4, kBoxY + 51, status, kHilite);
+		draw_text(kBoxX + 4, kBoxY + 61, status, kHilite);
 	}
 
 	tsb::platform::lcd_present_now();
@@ -158,6 +173,144 @@ void run_volume(OSystem_Thumby *osys) {
 			++level;
 			audio_mix_set_volume(level);
 			config_backend::save_volume(level);
+		}
+		tsb::platform::sleep_ms(16);
+	}
+}
+
+// Reuses the volume-bar visual.  Cells map 75 → 0 .. 100 → 5.
+void paint_text_scale(OSystem_Thumby *osys, int pct) {
+	if (osys) osys->renderSnapshotToFramebuffer();
+
+	tsb::platform::lcd_dim_box(kBoxX, kBoxY, kBoxW, kBoxH);
+	for (int x = 0; x < kBoxW; x++) {
+		tsb::platform::lcd_pixel(kBoxX + x,         kBoxY,             kDim);
+		tsb::platform::lcd_pixel(kBoxX + x,         kBoxY + kBoxH - 1, kDim);
+	}
+	for (int y = 0; y < kBoxH; y++) {
+		tsb::platform::lcd_pixel(kBoxX,             kBoxY + y, kDim);
+		tsb::platform::lcd_pixel(kBoxX + kBoxW - 1, kBoxY + y, kDim);
+	}
+
+	draw_text(kBoxX + 4, kBoxY + 3, "TEXT SIZE", kHilite);
+
+	char num[8];
+	std::snprintf(num, sizeof(num), "%d%%", pct);
+	draw_text(kBoxX + kBoxW - 24, kBoxY + 3, num, kWhite);
+
+	constexpr int kBarY = 24;
+	constexpr int kBarW = 120;
+	constexpr int kBarH = 8;
+	const int cells     = ((kTextScaleMax - kTextScaleMin) / kTextScaleStep) + 1;
+	const int level     = (pct - kTextScaleMin) / kTextScaleStep;
+	const int cell_w    = kBarW / cells;
+	const int bar_total = cell_w * cells;
+	const int bar_origin_x = kBoxX + (kBoxW - bar_total) / 2;
+	for (int i = 0; i < cells; i++) {
+		const int x0 = bar_origin_x + i * cell_w;
+		const uint16_t fill = (i == level)
+		                          ? kHilite
+		                          : (i <= level ? kWhite : kDim);
+		for (int yy = 0; yy < kBarH; yy++) {
+			for (int xx = 1; xx < cell_w - 1; xx++) {
+				tsb::platform::lcd_pixel(x0 + xx, kBoxY + kBarY + yy, fill);
+			}
+		}
+	}
+
+	draw_text(kBoxX + 4, kBoxY + 38, "L/R adjust", kDim);
+	draw_text(kBoxX + 4, kBoxY + 47, "A/B accept", kDim);
+
+	tsb::platform::lcd_present_now();
+}
+
+void run_text_scale(OSystem_Thumby *osys) {
+	if (!osys) return;
+	int pct = osys->getSpeechScalePct();
+	bool prev_left = false, prev_right = false;
+	while (true) {
+		paint_text_scale(osys, pct);
+
+		tsb::platform::Input in{};
+		if (!tsb::platform::poll_input(&in)) return;
+		if (in.menu_pressed || in.b_pressed || in.a_pressed) {
+			config_backend::save_text_scale_pct(pct);
+			return;
+		}
+
+		const bool left_edge  = in.dpad_left  && !prev_left;
+		const bool right_edge = in.dpad_right && !prev_right;
+		prev_left  = in.dpad_left;
+		prev_right = in.dpad_right;
+		if (left_edge && pct > kTextScaleMin) {
+			pct -= kTextScaleStep;
+			osys->setSpeechScalePct(pct);
+			config_backend::save_text_scale_pct(pct);
+		}
+		if (right_edge && pct < kTextScaleMax) {
+			pct += kTextScaleStep;
+			osys->setSpeechScalePct(pct);
+			config_backend::save_text_scale_pct(pct);
+		}
+		tsb::platform::sleep_ms(16);
+	}
+}
+
+void paint_speech_font(OSystem_Thumby *osys, bool use_mi) {
+	if (osys) osys->renderSnapshotToFramebuffer();
+
+	tsb::platform::lcd_dim_box(kBoxX, kBoxY, kBoxW, kBoxH);
+	for (int x = 0; x < kBoxW; x++) {
+		tsb::platform::lcd_pixel(kBoxX + x,         kBoxY,             kDim);
+		tsb::platform::lcd_pixel(kBoxX + x,         kBoxY + kBoxH - 1, kDim);
+	}
+	for (int y = 0; y < kBoxH; y++) {
+		tsb::platform::lcd_pixel(kBoxX,             kBoxY + y, kDim);
+		tsb::platform::lcd_pixel(kBoxX + kBoxW - 1, kBoxY + y, kDim);
+	}
+
+	draw_text(kBoxX + 4, kBoxY + 3, "SPEECH FONT", kHilite);
+
+	// Two options laid out side-by-side; selected is highlighted.
+	constexpr int kRowY  = 28;
+	const int half_w = kBoxW / 2;
+	uint16_t col_scumm = use_mi ? kDim    : kHilite;
+	uint16_t col_mi    = use_mi ? kHilite : kDim;
+	draw_text(kBoxX + 12,           kBoxY + kRowY, "SCUMM", col_scumm);
+	draw_text(kBoxX + half_w + 8,   kBoxY + kRowY, "MI",    col_mi);
+
+	draw_text(kBoxX + 4, kBoxY + 47, "L/R toggle  A/B accept", kDim);
+
+	tsb::platform::lcd_present_now();
+}
+
+void run_speech_font(OSystem_Thumby *osys) {
+	if (!osys) return;
+	bool use_mi = osys->getUseMiFontForSpeech();
+	bool prev_left = false, prev_right = false;
+	while (true) {
+		paint_speech_font(osys, use_mi);
+
+		tsb::platform::Input in{};
+		if (!tsb::platform::poll_input(&in)) return;
+		if (in.menu_pressed || in.b_pressed || in.a_pressed) {
+			config_backend::save_use_mi_font(use_mi);
+			return;
+		}
+
+		const bool left_edge  = in.dpad_left  && !prev_left;
+		const bool right_edge = in.dpad_right && !prev_right;
+		prev_left  = in.dpad_left;
+		prev_right = in.dpad_right;
+		if (left_edge && use_mi) {
+			use_mi = false;
+			osys->setUseMiFontForSpeech(use_mi);
+			config_backend::save_use_mi_font(use_mi);
+		}
+		if (right_edge && !use_mi) {
+			use_mi = true;
+			osys->setUseMiFontForSpeech(use_mi);
+			config_backend::save_use_mi_font(use_mi);
 		}
 		tsb::platform::sleep_ms(16);
 	}
@@ -264,17 +417,28 @@ void run(ScummEngine *engine) {
 				return;
 			}
 
-			if (sel == CHOICE_VOLUME) {
-				// Wait for A release so the sub-screen doesn't see this
-				// edge as an exit.
-				do {
-					tsb::platform::Input drain{};
-					if (!tsb::platform::poll_input(&drain)) return;
-					if (!drain.a_pressed) break;
+			// All three sub-menus need to drain the A-press edge first
+			// so the sub-screen doesn't immediately treat it as an exit.
+			auto drain_a = [&]() {
+				tsb::platform::Input drain{};
+				while (tsb::platform::poll_input(&drain) && drain.a_pressed)
 					tsb::platform::sleep_ms(16);
-				} while (true);
+			};
+
+			if (sel == CHOICE_VOLUME) {
+				drain_a();
 				run_volume(osys);
-				continue;  // back to main menu
+				continue;
+			}
+			if (sel == CHOICE_TEXT_SIZE) {
+				drain_a();
+				run_text_scale(osys);
+				continue;
+			}
+			if (sel == CHOICE_SPCH_FONT) {
+				drain_a();
+				run_speech_font(osys);
+				continue;
 			}
 		}
 

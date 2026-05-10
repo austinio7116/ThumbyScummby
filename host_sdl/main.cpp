@@ -209,6 +209,16 @@ int main(int argc, char **argv) {
     extern OSystem *g_system;
     g_system = &osys;
 
+    // Apply persisted speech text settings.
+    {
+        int pct;
+        if (tsb::config_backend::load_text_scale_pct(&pct))
+            osys.setSpeechScalePct(pct);
+        bool use_mi;
+        if (tsb::config_backend::load_use_mi_font(&use_mi))
+            osys.setUseMiFontForSpeech(use_mi);
+    }
+
     // Construct the canonical engine.  MI1 VGA Floppy is GID_MONKEY (v4)
     // — but our 100% transcribed runtime uses ScummEngine_v5 dispatch
     // (v5 is the dominant SCUMM5 variant; our MI1 floppy works in v5

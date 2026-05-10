@@ -309,13 +309,12 @@ public:
 
     static constexpr int kLcdOverlayW = 128;   // LCD width  (used for budget)
     static constexpr int kLcdOverlayH = 128;   // LCD height (used for clip)
-    // Per-line text scale.  Talk-area text (src_y < 144) renders at
-    // full 1:1 scale for legibility; verb-panel content (src_y >= 144)
-    // stays at 75% (3:4) so the 12-verb columns don't overlap each
-    // other on the LCD.  The decision is per-line based on
-    // _lcdLineSrcY at flush time.
-    static constexpr int kTextScalePanelNum = 3;
-    static constexpr int kTextScalePanelDen = 4;
+    // Default speech text scale — original ThumbyScummby fixed value at
+    // 75% (3:4), matching the scene-blit downsample.  The save menu's
+    // TEXT SIZE slider now overrides this at runtime via
+    // setSpeechScalePct(75..100).  FullScale dialog-option lines still
+    // bump to 100% for legibility regardless of the slider.
+    static constexpr int kSpeechScaleDefaultPct = 75;
 
     // Per-glyph "line buffer" descriptor — used during layout only.
     // `width` / `height` / `offsY` are LCD-px (halved at append).
@@ -331,6 +330,9 @@ public:
         uint8_t  bpp;               // 1, 2, or 4
         int8_t   offsY;             // LCD-px, halved
         bool     isBreak;           // glyph bitmap is all-zero (a space)
+        uint8_t  chr;               // ASCII char code — used by the MI-font
+                                    // speech-render path to recover the
+                                    // text from the buffered glyph stream.
     };
     static constexpr int kLcdLineMax = 32;
     LcdGlyph _lcdLine[kLcdLineMax];
@@ -365,6 +367,13 @@ public:
     bool _lcdLineHighlighted = false;
     bool _lcdNextFullScale   = false;
     bool _lcdLineFullScale   = false;
+
+    // Speech text scale + font, settable from the save menu.
+    // _speechScalePct in [75, 100] — see kSpeechScaleDefaultPct.
+    // _useMiFontForSpeech: when true, slots 0/1/3 (actor talk, banner,
+    // modal) render via tsb::mi_font instead of SCUMM CHAR stamps.
+    int  _speechScalePct      = kSpeechScaleDefaultPct;
+    bool _useMiFontForSpeech  = false;
     LcdStampTag _lcdHighlightedTag = { -1, -1 };  // resets offset on change
     int  _lcdHighlightedLineWidth  = 0;           // captured at flush time
     int  _lcdScrollFrame           = 0;
@@ -378,6 +387,16 @@ public:
     LcdStampTag         _lcdStampTags[kLcdStampMax];
     int                 _lcdStampCount = 0;
 
+    // Parallel buffer for the MI-overlay-font speech path.  flushLcdLine
+    // pushes one entry per finished line when _useMiFontForSpeech is on
+    // for a slot 0/1/3 line.  present() iterates and re-paints them
+    // every frame so the lines persist across the framebuffer rebuild
+    // (mi_font::draw writes pixels directly — without the per-frame
+    // re-paint they'd vanish on the next present()).
+    static constexpr int kMiFontLineMax = 16;
+    platform::MiFontLine _miFontLines[kMiFontLineMax];
+    int                  _miFontLineCount = 0;
+
 public:
     // drawVerb signals "next drawString is the hovered (hicolor) verb".
     // Used so the LCD overlay can mark its stamps for marquee scroll.
@@ -387,6 +406,19 @@ public:
     // for legibility.  Standard 12-verb interface entries leave it
     // false → 75% scale → columns fit without overlap.
     void setNextFullScale(bool f) { _lcdNextFullScale = f; }
+
+    // Save-menu hooks — runtime adjustment of speech text appearance.
+    // Pct is clamped to [75, 100].  No-effect on FullScale lines (those
+    // always render at 100%).  Calling setUseMiFontForSpeech(true)
+    // routes slot 0/1/3 lines through tsb::mi_font at flush time.
+    void setSpeechScalePct(int pct) {
+        if (pct < 75)  pct = 75;
+        if (pct > 100) pct = 100;
+        _speechScalePct = pct;
+    }
+    int  getSpeechScalePct() const { return _speechScalePct; }
+    void setUseMiFontForSpeech(bool v) { _useMiFontForSpeech = v; }
+    bool getUseMiFontForSpeech() const { return _useMiFontForSpeech; }
     // Begin a fresh logical line.  `continuation == false` means new
     // string anchor (use scumm_ypos to drive LCD Y).  `continuation ==
     // true` means SCUMM \n inside an existing string — stack tightly

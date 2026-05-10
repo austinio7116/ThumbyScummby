@@ -296,9 +296,11 @@ static void blit_cursor_overlay(uint16_t *fb, const CursorInfo &c,
     }
 }
 
-// THUMBY-PORT — paint a glyph stamp at 75% source size (3:4) with an
-// area-weighted blend against the framebuffer.  See platform_sdl.cpp
-// for the design rationale; this is the device-side mirror.
+// THUMBY-PORT — paint a glyph stamp at the per-stamp scale (default 3:4
+// = 75%, but the SPCH SCALE slider can drive it up to 100%/100% = 1:1)
+// with an area-weighted blend against the framebuffer.  See
+// platform_sdl.cpp for the design rationale; this is the device-side
+// mirror.
 static inline void blit_text_stamp(uint16_t *fb,
                                    const TextStamp &s,
                                    const uint8_t *palette) {
@@ -326,8 +328,12 @@ static inline void blit_text_stamp(uint16_t *fb,
         }
     }
 
-    // Full-scale (1:1) path for talk-area stamps — see host_sdl/platform_sdl.cpp.
-    if (s.flags & kTextStampFlagFullScale) {
+    const int kNum = (s.scale_num > 0) ? (int)s.scale_num : 3;
+    const int kDen = (s.scale_den > 0) ? (int)s.scale_den : 4;
+
+    // 1:1 fast path — used both for FullScale talk-area stamps and for
+    // the 100% setting on the speech text scale slider.
+    if (kNum == kDen || (s.flags & kTextStampFlagFullScale)) {
         for (int sy = 0; sy < s.height; sy++) {
             const int fb_y = s.dst_y + sy;
             if (fb_y < 0 || fb_y >= DISPLAY_H) continue;
@@ -343,10 +349,9 @@ static inline void blit_text_stamp(uint16_t *fb,
         return;
     }
 
-    constexpr int kNum = 3, kDen = 4;
     const int dst_w = (s.width  * kNum + kDen - 1) / kDen;
     const int dst_h = (s.height * kNum + kDen - 1) / kDen;
-    constexpr int kWeightTotal = kDen * kDen;
+    const int kWeightTotal = kDen * kDen;
 
     for (int dy = 0; dy < dst_h; dy++) {
         const int fb_y = s.dst_y + dy;
@@ -421,7 +426,8 @@ void present(const uint8_t *virt, const uint8_t *text,
              const TextStamp *text_stamps, int text_stamp_count,
              const char *sentence, int verb_prefix_len,
              bool send_to_lcd, bool panel_active,
-             const char *cursor_tooltip) {
+             const char *cursor_tooltip,
+             const MiFontLine *mi_lines, int mi_line_count) {
     using namespace tsb::platform_pico;
     uint16_t *fb = g_fb;
     lcd_wait_idle();
@@ -507,6 +513,16 @@ void present(const uint8_t *virt, const uint8_t *text,
         const TextStamp &s = text_stamps[i];
         if (s.dst_y >= kSentenceLcdY) continue;
         blit_text_stamp(fb, s, palette);
+    }
+
+    // ---------- MI-overlay-font speech lines ----------
+    // Re-painted every frame so they persist across the framebuffer
+    // rebuild — same pattern as the cursor tooltip and sentence strip
+    // below.
+    for (int i = 0; i < mi_line_count; i++) {
+        const MiFontLine &l = mi_lines[i];
+        if (l.dst_y >= kSentenceLcdY) continue;
+        tsb::mi_font::draw(l.dst_x, l.dst_y, l.text, l.color);
     }
 
     // ---------- Cursor (clipped to scene) ----------
