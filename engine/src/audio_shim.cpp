@@ -42,9 +42,28 @@ int ScummEngine::readSoundResourceSmallHeader(ResId idx) {
     int64 pos = _fileHandle->pos();
     uint32 size = _fileHandle->readUint32LE();
     _fileHandle->seek(pos, SEEK_SET);
-    byte *dst = _res->createResource(rtSound, idx, size);
-    if (dst)
-        _fileHandle->read(dst, size);
+
+    // THUMBY-PORT: try off-heap.  SO chunks (AdLib music + SFX) are
+    // pre-decrypted and flash-resident via the .incbin'd data blob.
+    // Copying them into heap was costing 64+ KB per large track —
+    // room 85 (Mêlée map) hit OOM here on a 65280-byte AdLib music
+    // resource that the resource manager could not satisfy at 107 KB
+    // free / 6 chunks.  imuse_start_sound (imuse.cpp:autodetect) only
+    // SCANS the resource bytes for TLV chunk tags — read-only — so
+    // the flash pointer is safe to install as the resource _address.
+    // Same pattern as resource.cpp:755 (room/script/etc.) and
+    // resource_v4.cpp:207 (charsets).
+    const void *flashPtr = _fileHandle->getRawPointer(size);
+    if (flashPtr) {
+        _res->_types[rtSound][idx]._address =
+            (byte *)const_cast<void *>(flashPtr);
+        _res->_types[rtSound][idx]._size = size;
+        _res->setOffHeap(rtSound, idx);
+    } else {
+        byte *dst = _res->createResource(rtSound, idx, size);
+        if (dst)
+            _fileHandle->read(dst, size);
+    }
     return 1;
 }
 

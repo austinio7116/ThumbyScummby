@@ -1073,6 +1073,19 @@ public:
 	int           publicGetActorOwner(int obj) {
 		return getOwner(obj);
 	}
+	// THUMBY-PORT: read a SCUMM script variable by index.  Used by the
+	// cursor tooltip to read Var[171] — the auto/default verb the
+	// MI1 sentence-script (script 2) maintains per-frame based on the
+	// hovered object's class bits.  Pure data read, no script
+	// execution, no side effects.
+	int           publicReadVar(int num) const {
+		if (num < 0 || num >= _numVariables) return 0;
+		return _scummVars[num];
+	}
+	// THUMBY-PORT: expose VAR_VERB_SCRIPT byte index for diagnostic
+	// traces.  The VALUE at this var is the script number that
+	// runs on every verb/scene click (set by the boot script).
+	byte          getVarVerbScriptIdx() const { return VAR_VERB_SCRIPT; }
 	int           publicGetEgoVar() {
 		return (VAR_EGO != 0xFF) ? VAR(VAR_EGO) : 0;
 	}
@@ -1106,6 +1119,24 @@ public:
 	// those branches and any future ports that might reorder the
 	// internals.
 	void publicRefreshCursor() {
+		// THUMBY-PORT — ROOT-CAUSE FIX for "no cursor after load":
+		// scummvm's saveload format includes _cursorImages (saveload.cpp:
+		// 2147 — `sync2DArray(s, _cursorImages, ...)`) AND _cursorHotspots
+		// (line 2148).  These hold the PER-CURSOR-INDEX bitmap source
+		// that setBuiltinCursor reads to build _grabbedCursor.  If the
+		// save was made while a script had modified _cursorImages — e.g.
+		// during a cutscene where the cursor was redefined / hidden /
+		// blanked — those modified (often all-zero / all-transparent)
+		// bitmaps come back on load.  Then setBuiltinCursor packs an
+		// invisible sprite, updateCursor pushes it, OSystem renders
+		// nothing.  Result: cursor never appears after that load,
+		// despite OSystem state looking valid (w=16, h=16).
+		// Fix: restore the engine's hardcoded default crosshair /
+		// hourglass / arrow / hand bitmaps before re-emitting.  Cost:
+		// any script-customised cursor in flight at save time is
+		// reverted to the standard set after load — acceptable since
+		// scripts re-assert custom cursors on the next interaction.
+		resetCursors();
 		setBuiltinCursor(_currentCursor);
 		updateCursor();
 	}

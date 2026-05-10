@@ -26,6 +26,13 @@ void set_heap(uint32_t used, uint32_t peak);
 void set_room(int room);
 void set_event(const char *tag);   // copied; up to 39 chars
 
+// Record the size + entrypoint kind + return-address of the most
+// recent failed allocation, captured by oom_malloc.c right before
+// panic().  'kind' is 'm' (malloc), 'c' (calloc), or 'r' (realloc);
+// 'addr' is the caller's PC.  Persisted on the next checkpoint so
+// the next-boot splash shows what failed and where.
+void set_alloc(uint32_t size, uint8_t kind, uint32_t addr);
+
 // ----- Checkpoint (slow ~50 ms) -----
 
 // Commit the current in-flight state to flash, in a single page.  Each
@@ -46,8 +53,13 @@ struct Snapshot {
     uint32_t serial;        // monotonic counter across boots/checkpoints
     uint32_t millis;        // millis() at the time of the checkpoint
     int      room;
-    uint32_t heap_used;
-    uint32_t heap_peak;
+    uint32_t heap_used;     // resmgr _allocatedSize
+    uint32_t heap_peak;     // newlib mallinfo uordblks (in-use bytes)
+    uint32_t newlib_free;   // newlib mallinfo fordblks (free bytes)
+    uint32_t newlib_chunks; // newlib mallinfo ordblks (count of free chunks)
+    uint32_t alloc_size;    // size of last failed alloc (0 if none)
+    uint8_t  alloc_kind;    // 'm', 'c', 'r' (or 0 if no failure)
+    uint32_t alloc_addr;    // caller PC at the failed alloc (LR snapshot)
     char     event[40];
 };
 

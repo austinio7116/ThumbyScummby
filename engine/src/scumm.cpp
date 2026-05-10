@@ -3060,6 +3060,21 @@ void ScummEngine_v0::scummLoop(int delta) {
 
 void ScummEngine::scummLoop(int delta) {
 	#define LOOP_CKPT(label, color) ((void)0)
+	// THUMBY-PORT: live script dump.  When THUMBY_DUMP_SCRIPTS_LIVE=<dir>
+	// is set, re-dump every currently-loaded script every 5 seconds while
+	// the game runs.  Lets us capture room-loaded scripts (verb-script
+	// 201/202, sentence-script 202, etc.) that the boot-time dumper
+	// misses because they aren't in memory at boot.  Navigate to the
+	// area you want to capture; wait a few seconds; the dir gets
+	// overwritten with whatever's loaded right now.
+	if (const char *live_dir = std::getenv("THUMBY_DUMP_SCRIPTS_LIVE")) {
+		static uint32 s_last_dump = 0;
+		const uint32 now = _system->getMillis();
+		if (now - s_last_dump >= 5000) {
+			s_last_dump = now;
+			publicDumpAllScripts(live_dir);
+		}
+	}
 	// THUMBY-PORT: heartbeat trace.  When THUMBY_HEARTBEAT is set, log
 	// engine state once a second.  If the freeze comes from a script
 	// looping, the heartbeats keep ticking but show the same scripts

@@ -1761,6 +1761,72 @@ void ScummEngine::publicDumpAllScripts(const char *output_dir) {
 		++dumped;
 	}
 
+	// THUMBY-PORT: also dump LOCAL scripts of the current room (script
+	// numbers >= _numGlobalScripts).  These live in the room's resource
+	// data at offsets stored in _localScriptOffsets[].  MI1 VGA's
+	// VAR_VERB_SCRIPT in normal play is e.g. 201 / 202 — local scripts
+	// of the current room — which the global-only loop above misses.
+	// Plus the room's ENCD (entry) and EXCD (exit) scripts at
+	// _ENCD_offs / _EXCD_offs — these are special slots, not in
+	// _localScriptOffsets, but they're where the room's setup
+	// runs on entry (e.g., the Mêlée map's location-verb spawning).
+	// Size is approximate (descumm stops at o5_stopObjectCode = 0x00 /
+	// the natural end-of-script byte).
+	{
+		const byte *room = getResourceAddress(rtRoom, _roomResource);
+		const uint32 room_sz = (room && _res->_types[rtRoom].size() > (size_t)_roomResource)
+		    ? _res->_types[rtRoom][_roomResource]._size : 0;
+		if (room && room_sz > 0) {
+			// ENCD / EXCD dumps (room entry / exit scripts).
+			auto dump_room_chunk = [&](uint32 offs, const char *name) {
+				if (offs == 0 || offs >= room_sz) return;
+				uint32 sz = 4096;
+				if (offs + sz > room_sz) sz = room_sz - offs;
+				char path[1024];
+				std::snprintf(path, sizeof(path),
+				    "%s/%s_%03d.bin", output_dir, name, (int)_roomResource);
+				FILE *f = std::fopen(path, "wb");
+				if (!f) return;
+				std::fwrite(room + offs, 1, sz, f);
+				std::fclose(f);
+				std::fprintf(idx, "%s %d offs=0x%x sz=%u\n",
+				    name, (int)_roomResource, (unsigned)offs, (unsigned)sz);
+				++dumped;
+			};
+			dump_room_chunk(_ENCD_offs, "encd");
+			dump_room_chunk(_EXCD_offs, "excd");
+
+			std::fprintf(idx, "# LOCAL scripts (room=%d):\n", _roomResource);
+			for (int s = _numGlobalScripts; s < _numGlobalScripts + 1024; ++s) {
+				const int li = s - _numGlobalScripts;
+				if (li < 0 || li >= 1024) continue;
+				const uint32 offs = _localScriptOffsets[li];
+				if (offs == 0) continue;
+				if (offs >= room_sz) continue;
+				// Write up to 4 KB or until end of room data, whichever
+				// comes first.  Descumm tolerates trailing junk past
+				// stopObjectCode.
+				uint32 sz = 4096;
+				if (offs + sz > room_sz) sz = room_sz - offs;
+
+				char bin_path[1024];
+				std::snprintf(bin_path, sizeof(bin_path),
+				    "%s/local_%03d_%03d.bin", output_dir,
+				    (int)_roomResource, s);
+				FILE *f = std::fopen(bin_path, "wb");
+				if (!f) continue;
+				std::fwrite(room + offs, 1, sz, f);
+				std::fclose(f);
+				const char *note = "";
+				if (s == verb_script)     note = " VERB_SCRIPT";
+				if (s == sentence_script) note = " SENTENCE_SCRIPT";
+				std::fprintf(idx, "local %d offs=0x%x sz=%u%s\n",
+				    s, (unsigned)offs, (unsigned)sz, note);
+				++dumped;
+			}
+		}
+	}
+
 	std::fclose(idx);
 	std::fprintf(stderr, "[dump-scripts] dumped %d scripts\n", dumped);
 

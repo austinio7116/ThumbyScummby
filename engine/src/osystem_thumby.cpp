@@ -535,6 +535,16 @@ void OSystem_Thumby::updateScreen() {
     // ignoring the engine's showMouse(false) hint.  D-pad drives our
     // cursor-edge pan even during cutscenes, so the user needs to see
     // where the pointer is to know which direction will scroll.
+    // THUMBY-PORT: if the engine left the cursor in an invisible
+    // state (w/h zero — happens after some save→load paths and
+    // possibly after error/recovery flows), force the hardcoded
+    // crosshair so the user always has a visible pointer.  D-pad
+    // pan still works without a sprite, but the user can't aim
+    // anything without seeing where they are.  Defensive fallback:
+    // always render SOMETHING.
+    if (_cursorW <= 0 || _cursorH <= 0) {
+        forceVisibleCrosshairCursor();
+    }
     platform::CursorInfo cur{};
     platform::CursorInfo *cur_ptr = nullptr;
     if (_cursorW > 0 && _cursorH > 0) {
@@ -588,15 +598,114 @@ void OSystem_Thumby::updateScreen() {
         }
     }
 
-    // Cursor tooltip is currently disabled.  The shadow-execute
-    // approach (publicPreviewDefaultVerb) was fundamentally unsafe:
-    // the verb-script does walkActorTo / startSound / setCursor /
-    // startScript BEFORE doSentence — even with doSentence
-    // intercepted in preview mode, those side effects fire and the
-    // hover behaves as if a real click happened.  Leaving the
-    // tooltip empty until a side-effect-free implementation
-    // (bytecode walker over the verb-script) is in place.
+    // Cursor tooltip = the auto-default verb the game would dispatch
+    // on right-click of the hovered object.  Read directly from
+    // Var[171] (MI1 VGA's "default verb" register, kept in sync per
+    // frame by the sentence-script based on hovered-object CLASS
+    // bits).  This is the SAME source the verb-script reads at
+    // dispatch time (script 95 line [0000]: Var[110] = Var[171]),
+    // so it matches what right-click would actually do.  Pure read
+    // — no script execution, no side effects.  Fallback to Var[114]
+    // (walk-to verb) per script 95 line [0100] if 171 is unset.
+    // Cursor tooltip: the auto/default verb the original game would
+    // dispatch on right-click of the hovered object.  Approach (per
+    // agent research, scummvm-upstream conventions, and MI1 VGA's
+    // observed verb naming): probe getVerbEntrypoint(hover, verbid)
+    // — pure OBCD VERB-block read, zero side effects — in v5 LucasArts
+    // default-verb priority order MATCHED BY VERB NAME (not verbid,
+    // since verbid numbering varies per game).  First hit wins; we
+    // show that slot's resource name as the tooltip.  If MI1 VGA's
+    // actual right-click priority differs from the standard order
+    // (TBD pending script-201 disassembly), the order can be tuned
+    // here without touching engine code.
+    static const char *kPriority[] = {
+        "Look at", "Pick up", "Use", "Talk to",
+        "Open", "Close", "Push", "Pull", "Give",
+    };
+    constexpr int kPriorityCount = (int)(sizeof(kPriority) / sizeof(kPriority[0]));
+
     const char *cursor_tooltip = nullptr;
+    static char tooltip_buf[24] = {0};
+    // THUMBY-PORT: cursor tooltip = the verb the original game would
+    // dispatch on right-click of the hovered object.
+    //
+    // Mechanism (reverse-engineered from disasm/script_023.txt):
+    // global script 23 runs every frame as part of the sentence-script
+    // chain.  Per [0148]: `Var[182] = Var[181]` after [0138]
+    // `startObject(hovered_obj, 90, [])` — script 23 invokes the
+    // OBJECT'S OWN verb-entry 90 ("default action"), which writes the
+    // appropriate verb id into Var[181].  Script 23 then highlights
+    // that verb (Color(14)) and remembers it in Var[182] so the next
+    // frame can un-highlight on hover-change.
+    //
+    // For our tooltip we just READ Var[182] — script 23 already did
+    // the work.  Pure read, no script execution, no side effects.
+    // 100% match with the original game's verb-highlight behaviour
+    // (pirate → Talk to, door → Open, item → Pick up, etc.).
+    //
+    // If Var[182] is 0, no verb is highlighted (cursor over empty
+    // space or non-interactive object) — show no tooltip.
+    if (_engine && _engine->canSaveGameStateCurrently()) {
+        const int verb_id = _engine->publicReadVar(182);
+        if (verb_id > 0) {
+            const VerbSlot *verbs = _engine->publicGetVerbs();
+            for (int v = 1; v < _engine->numVerbs() && !cursor_tooltip; ++v) {
+                const VerbSlot &vs = verbs[v];
+                if (vs.type != kTextVerbType) continue;
+                if (vs.verbid != verb_id) continue;
+                const byte *name = _engine->getResourceAddress(rtVerb, v);
+                if (!name || !name[0]) continue;
+                int t = 0;
+                for (; t < (int)sizeof(tooltip_buf) - 1 && name[t]; ++t) {
+                    const byte b = name[t];
+                    if (b == 0xFF || b == '@' || b < 32 || b > 126) break;
+                    tooltip_buf[t] = (char)b;
+                }
+                tooltip_buf[t] = 0;
+                if (tooltip_buf[0]) cursor_tooltip = tooltip_buf;
+            }
+        }
+    }
+    // Legacy priority-probe path retained but unreachable — kept as
+    // a fallback should Var[182] turn out wrong on some game state.
+    if (false && _engine && _engine->canSaveGameStateCurrently()) {
+        const int hover = _engine->hoveredObject();
+        if (hover > 0) {
+            const VerbSlot *verbs = _engine->publicGetVerbs();
+            for (int p = 0; p < kPriorityCount && !cursor_tooltip; ++p) {
+                for (int v = 1; v < _engine->numVerbs(); ++v) {
+                    const VerbSlot &vs = verbs[v];
+                    if (vs.saveid || !vs.curmode || !vs.verbid) continue;
+                    if (vs.type != kTextVerbType) continue;
+                    if (vs.verbid < 1 || vs.verbid > 12) continue;  // standard only
+                    const byte *name = _engine->getResourceAddress(rtVerb, v);
+                    if (!name || !name[0]) continue;
+                    // Sanitise + match by name (case-sensitive; MI1
+                    // VGA uses "Look at", "Pick up", etc. exactly).
+                    char nm[24] = {0};
+                    int dst = 0;
+                    for (int j = 0; j < 23 && name[j] && dst < 23; ++j) {
+                        const byte b = name[j];
+                        if (b == 0xFF || b == '@' || b < 32 || b > 126) break;
+                        nm[dst++] = (char)b;
+                    }
+                    nm[dst] = 0;
+                    if (strcmp(nm, kPriority[p]) != 0) continue;
+                    // Probe OBCD VERB block: does this object respond
+                    // to this verbid?  Pure data lookup, no side effects.
+                    if (_engine->publicGetVerbEntrypoint(hover, vs.verbid) == 0)
+                        continue;
+                    // Match.  Show the verb's name as the tooltip.
+                    int t = 0;
+                    for (; t < (int)sizeof(tooltip_buf) - 1 && nm[t]; ++t)
+                        tooltip_buf[t] = nm[t];
+                    tooltip_buf[t] = 0;
+                    cursor_tooltip = tooltip_buf;
+                    break;
+                }
+            }
+        }
+    }
 
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,

@@ -360,17 +360,43 @@ int main() {
             constexpr uint16_t kDim = 0x9BD3;     // soft blue-grey
             tsb::mi_font::draw(2,  4,  "LAST KNOWN STATE", kCol);
             char buf[40];
-            std::snprintf(buf, sizeof(buf), "serial %u", (unsigned)snap.serial);
-            tsb::mi_font::draw(2, 18, buf, kDim);
-            std::snprintf(buf, sizeof(buf), "millis %u", (unsigned)snap.millis);
-            tsb::mi_font::draw(2, 28, buf, kDim);
+            // Dropped serial/millis lines — they were diagnostic
+            // padding and we need the rows for the failed-alloc size.
             std::snprintf(buf, sizeof(buf), "room   %d", snap.room);
+            tsb::mi_font::draw(2, 18, buf, kDim);
+            std::snprintf(buf, sizeof(buf), "rmgr   %u", (unsigned)snap.heap_used);
+            tsb::mi_font::draw(2, 28, buf, kDim);
+            std::snprintf(buf, sizeof(buf), "nl use %u", (unsigned)snap.heap_peak);
             tsb::mi_font::draw(2, 38, buf, kDim);
-            std::snprintf(buf, sizeof(buf), "heap   %u", (unsigned)snap.heap_used);
+            // Free heap + free-chunk count on a single line — tells us
+            // if we're hitting fragmentation (many small chunks, big
+            // total free) vs genuine OOM (low total free).
+            std::snprintf(buf, sizeof(buf), "nl fr %u/%u",
+                (unsigned)snap.newlib_free, (unsigned)snap.newlib_chunks);
             tsb::mi_font::draw(2, 48, buf, kDim);
-            std::snprintf(buf, sizeof(buf), "event  %s", snap.event);
-            tsb::mi_font::draw(2, 58, buf, kCol);
-            tsb::mi_font::draw(2, 80, "Hold MENU to skip", kDim);
+            // Failed-alloc size + caller PC on their own lines so they
+            // can't get pushed off the end of the panic message tag.
+            // Only shown if the panic actually came from oom_malloc.c.
+            // Resolve the addr offline:
+            //   arm-none-eabi-addr2line -e firmware_thumbyscummby.elf <hex>
+            if (snap.alloc_size) {
+                char k = (char)snap.alloc_kind;
+                if (k != 'm' && k != 'c' && k != 'r') k = '?';
+                std::snprintf(buf, sizeof(buf), "alloc  %c %u",
+                              k, (unsigned)snap.alloc_size);
+                tsb::mi_font::draw(2, 58, buf, kCol);
+            }
+            if (snap.alloc_addr) {
+                std::snprintf(buf, sizeof(buf), "addr  %08X",
+                              (unsigned)snap.alloc_addr);
+                tsb::mi_font::draw(2, 68, buf, kCol);
+            }
+            // Event tag gets the FULL LCD width — no "event  " prefix.
+            tsb::mi_font::draw(2, 80, snap.event, kCol);
+            if (snap.event[0] && (int)strlen(snap.event) > 20) {
+                tsb::mi_font::draw(2, 90, snap.event + 20, kCol);
+            }
+            tsb::mi_font::draw(2, 110, "Hold MENU to skip", kDim);
             tsb::platform::lcd_present_now();
             // 3 s wait, but allow MENU to skip ahead.
             for (int i = 0; i < 60; ++i) {

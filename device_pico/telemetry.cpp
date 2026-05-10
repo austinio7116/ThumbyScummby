@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <cstdio>
+#include <malloc.h>   // mallinfo on newlib for the actual heap state
 
 namespace tsb {
 namespace telemetry {
@@ -41,10 +42,16 @@ struct __attribute__((packed)) Record {
     uint32_t serial;           // monotonic, higher wins on read
     uint32_t millis;           // wall ms at the time of the checkpoint
     int32_t  room;             // current room number
-    uint32_t heap_used;
-    uint32_t heap_peak;
+    uint32_t heap_used;        // resmgr _allocatedSize
+    uint32_t heap_peak;        // newlib mallinfo uordblks (in-use)
+    uint32_t newlib_free;      // newlib mallinfo fordblks (free bytes)
+    uint32_t newlib_chunks;    // newlib mallinfo ordblks (free chunks)
+    uint32_t alloc_size;       // size of last failed alloc (0 if none)
+    uint8_t  alloc_kind;       // 'm'/'c'/'r' (or 0 if no failure)
+    uint8_t  reserved_pad[3];  // align alloc_addr
+    uint32_t alloc_addr;       // caller PC at the failed alloc
     char     event[40];        // null-terminated short tag
-    uint8_t  reserved1[256 - 4 - 2 - 2 - 4 - 4 - 4 - 4 - 4 - 40];
+    uint8_t  reserved1[256 - 4 - 2 - 2 - 4 - 4 - 4 - 4 - 4 - 4 - 4 - 4 - 4 - 4 - 40];
 };
 static_assert(sizeof(Record) == kRecordSize, "telemetry record must be 256 B");
 
@@ -129,6 +136,13 @@ void set_room(int room) {
     g_live.room = room;
 }
 
+void set_alloc(uint32_t size, uint8_t kind, uint32_t addr) {
+    ensure_init();
+    g_live.alloc_size = size;
+    g_live.alloc_kind = kind;
+    g_live.alloc_addr = addr;
+}
+
 void set_event(const char *tag) {
     ensure_init();
     if (!tag) { g_live.event[0] = 0; return; }
@@ -142,6 +156,19 @@ void checkpoint() {
     ensure_init();
     g_live.serial = ++g_serial_seed;
     g_live.millis = (uint32_t)to_ms_since_boot(get_absolute_time());
+
+    // Auto-capture newlib's actual heap state on every checkpoint.
+    // The engine's heap_used field is the resmgr's _allocatedSize
+    // (logical resource bytes); heap_peak holds newlib's mallinfo
+    // uordblks (in-use bytes for ALL malloc calls including non-
+    // resmgr allocations like iMUSE buffers, screens, costume
+    // renderer scratch).  The boot splash displays both so we can
+    // see how much non-resmgr heap is in play and whether the next
+    // alloc that crashes is hitting a real OOM ceiling.
+    struct mallinfo mi = mallinfo();
+    g_live.heap_peak     = (uint32_t)mi.uordblks;
+    g_live.newlib_free   = (uint32_t)mi.fordblks;
+    g_live.newlib_chunks = (uint32_t)mi.ordblks;
 
     uint32_t slot = next_slot();
     if (slot >= kRecordsPerSector) {
@@ -158,8 +185,13 @@ bool read_last(Snapshot *out) {
     out->serial    = latest->serial;
     out->millis    = latest->millis;
     out->room      = latest->room;
-    out->heap_used = latest->heap_used;
-    out->heap_peak = latest->heap_peak;
+    out->heap_used     = latest->heap_used;
+    out->heap_peak     = latest->heap_peak;
+    out->newlib_free   = latest->newlib_free;
+    out->newlib_chunks = latest->newlib_chunks;
+    out->alloc_size    = latest->alloc_size;
+    out->alloc_kind    = latest->alloc_kind;
+    out->alloc_addr    = latest->alloc_addr;
     std::memcpy(out->event, latest->event, sizeof(out->event));
     out->event[sizeof(out->event) - 1] = 0;
     return true;

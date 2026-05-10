@@ -20,7 +20,28 @@ if (NOT THUMBYONE_SLOT_MODE)
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+    # Skip the SDK's pico_malloc subdirectory — we provide our own
+    # below (oom_malloc.c) that captures the failed allocation size
+    # before panic, so the OOM telemetry tag includes how many bytes
+    # were requested.  pico_add_subdirectory honours SKIP_<name>.
+    set(SKIP_PICO_MALLOC 1)
+
     pico_sdk_init()
+
+    # Install our pico_malloc replacement now that the SDK is loaded.
+    # Same target name + wrap functions as the SDK version, so any
+    # other library that link-depends on `pico_malloc` (notably
+    # pico_runtime) picks ours up transparently.
+    pico_add_library(pico_malloc)
+    target_sources(pico_malloc INTERFACE
+        ${CMAKE_CURRENT_LIST_DIR}/oom_malloc.c)
+    target_include_directories(pico_malloc_headers SYSTEM INTERFACE
+        ${PICO_SDK_PATH}/src/rp2_common/pico_malloc/include)
+    pico_wrap_function(pico_malloc malloc)
+    pico_wrap_function(pico_malloc calloc)
+    pico_wrap_function(pico_malloc realloc)
+    pico_wrap_function(pico_malloc free)
+    target_link_libraries(pico_malloc INTERFACE pico_sync)
 endif()
 
 # ----------------------------------------------------------------------
@@ -79,6 +100,7 @@ add_executable(thumbyscummby
     save_backend.cpp
     config_backend.cpp
     telemetry.cpp
+    panic_handler.cpp
     lcd_gc9107.c
     buttons.c
     audio_pwm.c
@@ -103,14 +125,24 @@ target_include_directories(thumbyscummby PRIVATE
 target_compile_definitions(thumbyscummby PRIVATE
     THUMBY_DEVICE=1
     # Pico-SDK defaults to PICO_HEAP_SIZE=0x800 (2KB) — way too small
-    # for scummvm.  The very first calloc in allocateArrays (1000
-    # bytes for _objectOwnerTable) blows past it (LIME splash hung).
-    # RP2350 has 520 KB SRAM; our static + .bss is ~140 KB.  Give the
-    # engine 320 KB of heap.  Stack stays at the default 4 KB
-    # SCRATCH_X allocation — scummvm doesn't recurse deep enough to
-    # overflow that, and growing it would push us into general SRAM
-    # (a separate fix if it bites).
-    PICO_HEAP_SIZE=0x50000   # 320 KB
+    # for scummvm.  RP2350 has 520 KB SRAM; static + .bss is ~140 KB;
+    # stack is ~4 KB.  0x58000 (352 KB) is the largest size that fits
+    # without the linker complaining "cannot move location counter
+    # backwards".  Room-85 still OOMs at this ceiling — we now route
+    # the panic via oom_malloc.c → panic_handler so the telemetry
+    # tag captures BOTH the message AND the failed alloc size, e.g.
+    # "P: OOM m 16384" → 16 KB malloc that pushed us over.
+    # Custom panic handler in panic_handler.cpp logs the message + the
+    # captured failed-alloc size to flash telemetry before the SDK
+    # breakpoint halts the CPU.  Next boot's splash shows the panic
+    # message + alloc size + kind (m/c/r) so we know definitively
+    # which allocator and which size triggered the OOM.
+    PICO_PANIC_FUNCTION=thumby_panic_handler
+    PICO_HEAP_SIZE=0x58000   # 352 KB — known-good upper bound.  If we
+                             # need more headroom for room 85:
+                             #   1. Shrink _textSurface (~64 KB BSS).
+                             #   2. Audit further BSS waste.
+                             #   3. XIP rooms (read SMAP from flash).
 )
 
 target_compile_options(thumbyscummby PRIVATE
@@ -122,6 +154,10 @@ target_compile_options(thumbyscummby PRIVATE
 
 target_link_libraries(thumbyscummby PRIVATE
     thumbyscummby_engine
+    pico_malloc           # our oom_malloc.c — pico_runtime skipped it
+                          # because the target didn't yet exist when its
+                          # CMakeLists ran (pico_runtime conditionally
+                          # links pico_malloc only "if (TARGET ...)" )
     pico_stdlib
     pico_multicore
     hardware_spi
@@ -134,6 +170,7 @@ target_link_libraries(thumbyscummby PRIVATE
     hardware_timer
     hardware_flash
 )
+
 
 # Use the SDK-provided float/double implementations. dbopl's
 # InitTables calls pow/sin/log10 at startup; with `none` the SDK

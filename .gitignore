@@ -47,3 +47,6 @@ scummvm
 
 # Runtime config (host-side persistent settings)
 thumbyscummby.cfg
+
+# SCUMM script disassemblies (descumm output)
+/disasm/

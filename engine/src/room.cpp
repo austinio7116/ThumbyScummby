@@ -175,7 +175,16 @@ void ScummEngine::startScene(int room, Actor *a, int objectNr) {
 	// for unrelated rooms get released.
 	tsb::telemetry::set_event("PURGE");
 	tsb::telemetry::checkpoint();
-	_res->publicExpireResources(0);
+	// THUMBY-PORT: bumped from publicExpireResources(0) to a large
+	// "needed bytes" hint that drives the eviction loop below the
+	// minHeapThreshold (48 KB).  Bug 1 (room 85 OOM in iMUSE startSound
+	// after ENCD's startScript(17,[1])) confirmed via panic-handler
+	// telemetry that some non-resmgr alloc fails near peak heap.
+	// Expiring more aggressively at room boundaries leaves more newlib
+	// chunks free for iMUSE / OPL2 / engine-internal allocs that
+	// bypass createResource.  Locked resources (charset, current
+	// scripts) can't be dropped — eviction stops naturally there.
+	_res->publicExpireResources(96 * 1024);
 	tsb::telemetry::set_event("PURGED");
 	tsb::telemetry::set_heap((uint32_t)_res->getHeapSize(), 0);
 	tsb::telemetry::checkpoint();
