@@ -147,9 +147,7 @@ void OSystem_Thumby::renderSnapshotToFramebuffer() {
                       _lcdStamps, _lcdStampCount,
                       strip_text, verb_prefix_len,
                       /*send_to_lcd=*/false,
-                      /*panel_active=*/_verbPanelActive,
-                      /*cursor_tooltip=*/nullptr,
-                      _miFontLines, _miFontLineCount);
+                      /*panel_active=*/_verbPanelActive);
 }
 
 // Bridge — string.cpp drawString slot 2 captures the rendered
@@ -716,8 +714,7 @@ void OSystem_Thumby::updateScreen() {
                       strip_text, verb_prefix_len,
                       /*send_to_lcd*/ true,
                       /*panel_active*/ _verbPanelActive,
-                      cursor_tooltip,
-                      _miFontLines, _miFontLineCount);
+                      cursor_tooltip);
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM
@@ -1061,8 +1058,7 @@ int OSystem_Thumby::sceneToLcdY(int src_y) const {
 void OSystem_Thumby::clearLcdTextOverlay() {
     // Drop the stamp list and any buffered line — SCUMM cleared
     // _textSurface, so any text we'd queued was meant to be cleared too.
-    _lcdStampCount   = 0;
-    _miFontLineCount = 0;
+    _lcdStampCount = 0;
     _lcdLineCount  = 0;
     _lcdLineWidth  = 0;
     _lcdLineMaxH   = 4;
@@ -1113,7 +1109,8 @@ void OSystem_Thumby::emitStamp(const LcdGlyph &g, int dst_x, int dst_y) {
     s.cmap[2] = g.cmap[2];
     s.cmap[3] = g.cmap[3];
     // Per-stamp downsample scale.  FullScale lines render 1:1; everything
-    // else uses the user-configurable speech text scale (75..100%).
+    // else uses the user-configurable speech text scale (75..100%) —
+    // applies uniformly to SCUMM and MI font glyphs.
     if (_lcdLineFullScale) {
         s.scale_num = 1;
         s.scale_den = 1;
@@ -1196,72 +1193,12 @@ void OSystem_Thumby::flushLcdLine() {
             line_y = 2;  // top margin
         }
     }
-    // MI-font speech-render branch.  When the user has enabled the MI
-    // font toggle and this line belongs to a speech slot (0=actor talk,
-    // 1=banner, 3=modal), build the line's text from the buffered char
-    // codes and paint it once via tsb::mi_font::draw — bypassing the
-    // SCUMM CHAR stamp pipeline entirely.  Slot 4 (verbs) and slot 2
-    // (sentence strip) already use the MI font through other paths.
-    // Highlighted lines stay on the stamp path so the marquee scroll
-    // still works (only relevant for hovered verbs / dialog options).
-    const bool mi_font_eligible = _useMiFontForSpeech &&
-                                  !_lcdLineHighlighted &&
-                                  (_lcdLineSlot == 0 ||
-                                   _lcdLineSlot == 1 ||
-                                   _lcdLineSlot == 3);
-    if (mi_font_eligible) {
-        // Recover the line text from glyph chars.  kLcdLineMax = 32 so
-        // a 33-byte stack buffer always fits.
-        char text[kLcdLineMax + 1];
-        int n = 0;
-        for (int i = 0; i < _lcdLineCount && n < kLcdLineMax; i++) {
-            text[n++] = (char)_lcdLine[i].chr;
-        }
-        text[n] = 0;
-        // Re-clamp against the MI-font width because mi_font glyphs are
-        // narrower than the SCUMM stamps the wrap was sized against —
-        // the line tends to be a bit shorter.
-        const int mi_w = (n > 0) ? tsb::mi_font::text_width(text) : 0;
-        int mi_origin = origin_x;
-        if (_lcdLineCenter) {
-            mi_origin = sceneToLcdX(_lcdLineXHint, _lcdLineSrcY) - mi_w / 2;
-            if (mi_origin < 0 || mi_origin + mi_w > kLcdOverlayW)
-                mi_origin = (kLcdOverlayW - mi_w) / 2;
-        }
-        if (mi_origin + mi_w > kLcdOverlayW) mi_origin = kLcdOverlayW - mi_w;
-        if (mi_origin < 0) mi_origin = 0;
-        // Pick foreground from the first glyph's primary cmap entry —
-        // that's the talk-tint the engine selected (per-actor colour).
-        // Convert the 24-bit palette entry to RGB565 inline.
-        const uint8_t pal_idx = _lcdLine[0].cmap[1];
-        const uint8_t pr = _palette[pal_idx * 3 + 0];
-        const uint8_t pg = _palette[pal_idx * 3 + 1];
-        const uint8_t pb = _palette[pal_idx * 3 + 2];
-        const uint16_t fg = (uint16_t)(((pr >> 3) << 11) |
-                                       ((pg >> 2) << 5)  |
-                                        (pb >> 3));
-        // Push into the parallel MI-line buffer — present() re-paints
-        // them every frame so they persist (mi_font::draw writes pixels
-        // directly, so a one-shot paint here would vanish on the next
-        // present() framebuffer rebuild).
-        if (_miFontLineCount < kMiFontLineMax && n > 0) {
-            platform::MiFontLine &out = _miFontLines[_miFontLineCount++];
-            out.dst_x = (int16_t)mi_origin;
-            out.dst_y = (int16_t)line_y;
-            out.color = fg;
-            for (int i = 0; i <= n && i < (int)sizeof(out.text); i++)
-                out.text[i] = text[i];
-            out.text[sizeof(out.text) - 1] = 0;
-        }
-        _lcdLineMaxH = 8;   // MI font is ~7 px tall; advance by 8.
-    } else {
-        int pen = origin_x;
-        for (int i = 0; i < _lcdLineCount; i++) {
-            const LcdGlyph &g = _lcdLine[i];
-            // Baseline alignment via per-glyph offsY (LCD-px, halved).
-            emitStamp(g, pen, line_y + g.offsY);
-            pen += g.width;
-        }
+    int pen = origin_x;
+    for (int i = 0; i < _lcdLineCount; i++) {
+        const LcdGlyph &g = _lcdLine[i];
+        // Baseline alignment via per-glyph offsY (LCD-px, halved).
+        emitStamp(g, pen, line_y + g.offsY);
+        pen += g.width;
     }
     // For highlighted (marquee-scroll) lines, capture the full line
     // width and reset the scroll animation when the highlighted source
@@ -1353,6 +1290,13 @@ void OSystem_Thumby::beginLcdLine(int slot, bool center, int scumm_xpos, int scu
         _lcdNextHighlighted = false;
         _lcdLineFullScale   = _lcdNextFullScale;
         _lcdNextFullScale   = false;
+        // Latch the MI-font decision per line.  Highlighted lines
+        // stay on SCUMM CHAR so the marquee scroll is undisturbed;
+        // verbs (slot 4) and the sentence strip (slot 2) already use
+        // the MI font through other paths and aren't affected here.
+        _lcdLineUseMi = _useMiFontForSpeech &&
+                        !_lcdLineHighlighted &&
+                        (slot == 0 || slot == 1 || slot == 3);
     }
     if (!continuation || !_lcdLineActive) {
         if (_lcdLineFullScale && scumm_ypos >= 144) {
@@ -1397,14 +1341,53 @@ void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
         _lcdLineActive = true;
     }
 
-    // Per-line scale: pulled from _speechScalePct (default 75% = 3:4).
-    // FullScale lines (wide curRect dialog options, flagged by drawVerb
-    // via setNextFullScale) always render at 100% for legibility.
-    // Pct is in [75, 100], so scaleNum=pct, scaleDen=100 — no reduction
-    // needed because the multiply is small enough to stay in int range.
+    // MI-overlay-font substitution.  When the user has the SPCH FONT
+    // toggle on AND this line belongs to a speech slot (0/1/3),
+    // replace the SCUMM CHAR glyph data with the MI font's own
+    // bitmap.  The rest of the pipeline (wrap, persistence, drop-by-
+    // tag, palette+cmap colour at present time) is identical to the
+    // SCUMM path — only the bitmap source changes.  Slot 4 (verbs)
+    // and slot 2 (sentence strip) already use the MI font through
+    // other paths and aren't routed here; highlighted lines stay on
+    // the SCUMM font so the marquee scroll is unaffected.
+    // Per-line scale: 75% (3:4) by default, slider overrides up to 100%.
+    // FullScale lines (wide curRect dialog options) always render 1:1.
+    // The MI-font path uses the slider value too — the user picks how
+    // big speech should be, regardless of which font is rendering it.
     const int scaleNum = _lcdLineFullScale ? 100 : _speechScalePct;
     const int scaleDen = 100;
-    int lcd_w = (src_width  * scaleNum) / scaleDen;
+
+    // Layout width = the pen advance for this glyph.  For SCUMM CHAR
+    // glyphs that's the bitmap width (inter-glyph spacing is baked
+    // into the bitmap).  For MI glyphs the advance is bitmap width
+    // + 1 px explicit gap, so we read it from GlyphInfo.advance and
+    // pass it into the scale math separately from src_width (which
+    // remains the bitmap pixel width for the platform stamp loop).
+    int layout_w = src_width;
+
+    // MI-overlay-font substitution.  When the user has the SPCH FONT
+    // toggle on AND this line belongs to a speech slot (0/1/3),
+    // replace the SCUMM CHAR glyph data with the MI font's own
+    // bitmap.  The rest of the pipeline (wrap, persistence, drop-by-
+    // tag, palette+cmap colour at present time) is identical to the
+    // SCUMM path — only the bitmap source changes.  Slot 4 (verbs)
+    // and slot 2 (sentence strip) already use the MI font through
+    // other paths and aren't routed here; highlighted lines stay on
+    // the SCUMM font so the marquee scroll is unaffected.
+    if (_lcdLineUseMi) {
+        tsb::mi_font::GlyphInfo gi;
+        if (tsb::mi_font::get_glyph((char)chr, &gi)) {
+            charPtr    = gi.bitmap;          // null → phantom (skip in emit)
+            bpp        = 1;
+            src_width  = gi.width;            // bitmap pixel width
+            src_height = gi.height;
+            src_offsY  = gi.offsY;
+            layout_w   = gi.advance;          // bitmap width + 1 spacing
+        }
+        // Char outside MI range → fall through with SCUMM glyph data.
+    }
+
+    int lcd_w = (layout_w   * scaleNum) / scaleDen;
     int lcd_h = (src_height * scaleNum) / scaleDen;
     if (lcd_w == 0 && src_width  > 0) lcd_w = 1;     // never advance by 0
     const int lcd_offsY = (src_offsY * scaleNum) / scaleDen;
@@ -1469,9 +1452,6 @@ void OSystem_Thumby::renderGlyphToTextOverlay(const uint8_t *charPtr, int bpp,
     g.srcH    = (uint8_t)src_height;
     g.offsY   = (int8_t)lcd_offsY;
     g.isBreak = isBlank;
-    // Record the printable char so flushLcdLine can re-emit the line
-    // through the MI overlay font when the speech-font toggle is on.
-    g.chr     = (chr >= 0x20 && chr <= 0x7E) ? (uint8_t)chr : (uint8_t)'?';
     g.cmap[0] = cmap[0];
     g.cmap[1] = cmap[1];
     g.cmap[2] = cmap[2];

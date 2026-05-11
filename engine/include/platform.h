@@ -99,22 +99,11 @@ struct TextStamp {
     uint8_t  scale_den;         // downsample denominator (e.g. 4 for 75%);
                                 // scale_num == scale_den ⇒ 1:1 fast path
 };
-// Stamp flag bits (legacy — kept for the talk-area overlay).  The
-// scene-only redesign drops the verb-panel marquee/full-scale paths;
-// only basic talk-area glyph placement remains.
+// Stamp flag bits.  The scene-only redesign retired the marquee scroll
+// path; FullScale is kept as a legacy 1:1 marker (kNum == kDen also
+// triggers the same fast path).
 constexpr uint8_t kTextStampFlagScroll    = 0x01;   // unused now
-constexpr uint8_t kTextStampFlagFullScale = 0x02;   // unused now
-
-// One line of pre-rendered MI-overlay text passed to present() — used
-// when the user has the SPCH FONT toggle set to MI.  present() iterates
-// these and calls tsb::mi_font::draw per line, so the text re-paints
-// on every frame (otherwise the per-pixel writes get wiped by the next
-// framebuffer rebuild).
-struct MiFontLine {
-    int16_t  dst_x, dst_y;      // top-left in LCD coords
-    uint16_t color;             // RGB565 talk colour
-    char     text[33];          // null-terminated, kLcdLineMax + 1
-};
+constexpr uint8_t kTextStampFlagFullScale = 0x02;
 
 // Sentence strip layout — ALWAYS painted by present() at the bottom of
 // the LCD, even with no menu overlay.  Visible during gameplay,
@@ -163,14 +152,7 @@ void present(const uint8_t *virt, const uint8_t *text,
              // cursor sprite (e.g. "bartender" or "Talk to bartender"
              // when the cursor is over an actor).  Empty string or
              // nullptr → nothing painted.
-             const char *cursor_tooltip = nullptr,
-             // Speech text rendered in the MI overlay font.  When the
-             // user has the SPCH FONT toggle set to MI, OSystem_Thumby
-             // emits each finished line into this list instead of
-             // generating per-glyph TextStamps.  present() iterates
-             // and re-paints them every frame so they persist.
-             const MiFontLine *mi_lines = nullptr,
-             int mi_line_count = 0);
+             const char *cursor_tooltip = nullptr);
 
 // ---------------------------------------------------------------------------
 // Input

@@ -399,9 +399,11 @@ static inline void blit_text_stamp(uint16_t *fb,
     const int kNum = (s.scale_num > 0) ? (int)s.scale_num : 3;
     const int kDen = (s.scale_den > 0) ? (int)s.scale_den : 4;
 
-    // 1:1 fast path — used both for FullScale talk-area stamps and for
-    // the 100% setting on the speech text scale slider.  Skipping the
-    // area-weighted downsample preserves sharp glyph edges.
+    // 1:1 fast path — FullScale talk-area stamps, the 100% slider
+    // setting, and every MI-overlay-font speech glyph (already at LCD
+    // resolution).  All stamps share the palette+cmap path: cmap[1]
+    // holds whichever talk-colour palette index the engine chose for
+    // the line — identical for both SCUMM and MI glyphs.
     if (kNum == kDen || (s.flags & kTextStampFlagFullScale)) {
         for (int sy = 0; sy < s.height; sy++) {
             const int fb_y = s.dst_y + sy;
@@ -499,8 +501,7 @@ void present(const uint8_t *virt, const uint8_t *text,
              const TextStamp *text_stamps, int text_stamp_count,
              const char *sentence, int verb_prefix_len,
              bool send_to_lcd, bool panel_active,
-             const char *cursor_tooltip,
-             const MiFontLine *mi_lines, int mi_line_count) {
+             const char *cursor_tooltip) {
     // Source-row count visible this frame.  Panel-active gameplay
     // hides rows 144..199 (legacy panel area, now in overlay UI);
     // cutscene / map / title screens show the full 0..199 source.
@@ -599,16 +600,6 @@ void present(const uint8_t *virt, const uint8_t *text,
         const TextStamp &s = text_stamps[i];
         if (s.dst_y >= kSentenceLcdY) continue;
         blit_text_stamp(fb, s, palette);
-    }
-
-    // ---------- MI-overlay-font speech lines ----------
-    // Re-painted every frame so they persist across the framebuffer
-    // rebuild — same pattern as the cursor tooltip and sentence strip
-    // below.
-    for (int i = 0; i < mi_line_count; i++) {
-        const MiFontLine &l = mi_lines[i];
-        if (l.dst_y >= kSentenceLcdY) continue;
-        tsb::mi_font::draw(l.dst_x, l.dst_y, l.text, l.color);
     }
 
     // ---------- Cursor (clipped to scene area) ----------

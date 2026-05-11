@@ -330,9 +330,6 @@ public:
         uint8_t  bpp;               // 1, 2, or 4
         int8_t   offsY;             // LCD-px, halved
         bool     isBreak;           // glyph bitmap is all-zero (a space)
-        uint8_t  chr;               // ASCII char code — used by the MI-font
-                                    // speech-render path to recover the
-                                    // text from the buffered glyph stream.
     };
     static constexpr int kLcdLineMax = 32;
     LcdGlyph _lcdLine[kLcdLineMax];
@@ -367,11 +364,17 @@ public:
     bool _lcdLineHighlighted = false;
     bool _lcdNextFullScale   = false;
     bool _lcdLineFullScale   = false;
+    // Per-line "use MI font" decision, latched in beginLcdLine so that
+    // every glyph appended to the line buffer (and every stamp emitted
+    // at flush time) sees the same answer — even if the user toggles
+    // the menu mid-line, the in-flight line keeps its initial choice.
+    bool _lcdLineUseMi       = false;
 
     // Speech text scale + font, settable from the save menu.
     // _speechScalePct in [75, 100] — see kSpeechScaleDefaultPct.
     // _useMiFontForSpeech: when true, slots 0/1/3 (actor talk, banner,
-    // modal) render via tsb::mi_font instead of SCUMM CHAR stamps.
+    // modal) substitute MI overlay-font glyph bitmaps in place of the
+    // SCUMM CHAR ones — same stamp pipeline, different bitmap source.
     int  _speechScalePct      = kSpeechScaleDefaultPct;
     bool _useMiFontForSpeech  = false;
     LcdStampTag _lcdHighlightedTag = { -1, -1 };  // resets offset on change
@@ -386,16 +389,6 @@ public:
     platform::TextStamp _lcdStamps[kLcdStampMax];
     LcdStampTag         _lcdStampTags[kLcdStampMax];
     int                 _lcdStampCount = 0;
-
-    // Parallel buffer for the MI-overlay-font speech path.  flushLcdLine
-    // pushes one entry per finished line when _useMiFontForSpeech is on
-    // for a slot 0/1/3 line.  present() iterates and re-paints them
-    // every frame so the lines persist across the framebuffer rebuild
-    // (mi_font::draw writes pixels directly — without the per-frame
-    // re-paint they'd vanish on the next present()).
-    static constexpr int kMiFontLineMax = 16;
-    platform::MiFontLine _miFontLines[kMiFontLineMax];
-    int                  _miFontLineCount = 0;
 
 public:
     // drawVerb signals "next drawString is the hovered (hicolor) verb".

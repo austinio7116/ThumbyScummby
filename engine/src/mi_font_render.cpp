@@ -98,6 +98,21 @@ void draw_clipped(int x, int y, const char *str, uint16_t fg,
 	}
 }
 
+bool get_glyph(char c, GlyphInfo *out) {
+	if (!out) return false;
+	const int i = idx(c);
+	if (i < 0) return false;
+	const Glyph &g = kGlyphs[i];
+	out->bitmap  = (g.bitmap_offset == 0xFFFF) ? nullptr
+	                                           : &kBitmaps[g.bitmap_offset];
+	out->width   = g.width;
+	out->height  = g.height;
+	out->offsX   = g.offsX;
+	out->offsY   = g.offsY;
+	out->advance = (uint8_t)advance(g);
+	return true;
+}
+
 int marquee_offset(int text_w, int lcd_w, uint32_t frame) {
 	if (text_w <= lcd_w) return 0;
 	const int over = text_w - lcd_w;

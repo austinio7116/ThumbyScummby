@@ -40,5 +40,21 @@ void draw_clipped(int x, int y, const char *str, uint16_t fg_rgb565,
 // returned offset and add to the text origin x to scroll left.
 int marquee_offset(int text_w, int lcd_w, uint32_t frame);
 
+// Per-glyph metadata exposed for callers that want to feed MI glyph
+// bitmaps into another rendering pipeline (e.g. OSystem_Thumby's
+// SCUMM stamp loop substitutes MI bitmaps when the SPCH FONT toggle
+// is on).  Returns true if `c` has a renderable glyph; false for
+// out-of-range chars or chars with no bitmap.  Bitmap data is 1bpp
+// MSB-first, contiguous (width*height bits, byte-padded).
+struct GlyphInfo {
+    const uint8_t *bitmap;     // pointer into the static MI bitmap blob;
+                               // null when the glyph is non-renderable
+                               // (advance-only — e.g. ' ').
+    uint8_t  width, height;
+    int8_t   offsX, offsY;
+    uint8_t  advance;          // pen advance — usually width + 1
+};
+bool get_glyph(char c, GlyphInfo *out);
+
 }  // namespace mi_font
 }  // namespace tsb
