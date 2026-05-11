@@ -1035,6 +1035,14 @@ public:
 	// Public accessors used by the platform-side overlay UI.
 	int numVerbs() const { return _numVerbs; }
 	int userPut() const  { return _userPut; }
+	// THUMBY-PORT — combined "is the player actually in control" check
+	// used to gate the hold-LB SAVE option.  Original SCUMM only let
+	// the user click the SAVE verb in the panel when both conditions
+	// held — we mirror that to avoid mid-walk / mid-cutscene saves
+	// that resume into "I cannot reach it" pathfinding lock-ups.
+	bool publicIsPlayerInControl() const {
+		return _userPut > 0 && vm.cutSceneStackPointer == 0;
+	}
 	const byte *publicGetObjOrActorName(int obj) { return getObjOrActorName(obj); }
 	// THUMBY-PORT: expand SCUMM 0xFF control sequences (variable
 	// expansion, name-of-object expansion, etc.) into a plain string

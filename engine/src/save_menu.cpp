@@ -58,7 +58,8 @@ constexpr int kTextScaleMin  = 75;
 constexpr int kTextScaleMax  = 100;
 constexpr int kTextScaleStep = 5;
 
-void paint_menu(OSystem_Thumby *osys, int sel, bool has_save, const char *status) {
+void paint_menu(OSystem_Thumby *osys, int sel, bool has_save,
+                bool can_save, const char *status) {
 	// Refresh the scene under the menu — the engine isn't ticking but
 	// the cached _staging frame is what the player saw last.  This also
 	// repaints the always-visible sentence strip.
@@ -78,14 +79,23 @@ void paint_menu(OSystem_Thumby *osys, int sel, bool has_save, const char *status
 
 	draw_text(kBoxX + 4, kBoxY + 3, "MENU", kHilite);
 	for (int i = 0; i < kMenuItems; i++) {
-		const bool greyed = (i == CHOICE_LOAD && !has_save);
+		const bool greyed = (i == CHOICE_LOAD && !has_save) ||
+		                    (i == CHOICE_SAVE && !can_save);
 		uint16_t color = greyed ? kDim : kWhite;
 		if (i == sel) color = greyed ? kDim : kHilite;
 		const int y = kBoxY + 12 + i * 9;
 		draw_text(kBoxX + 8, y, kLabels[i], color);
 	}
+	// Status sits right-aligned on the SAVE row so it doesn't overlap
+	// the menu items below.  Same slot is reused for the persistent
+	// "CAN'T SAVE NOW" (locked state) and transient "SAVING..." /
+	// "SAVED" / "LOAD FAILED" / etc. as the user works through the
+	// menu — all are short enough to clear the SAVE label on the left.
 	if (status && status[0]) {
-		draw_text(kBoxX + 4, kBoxY + 61, status, kHilite);
+		const int sw = tsb::mi_font::text_width(status);
+		const int sx = kBoxX + kBoxW - sw - 4;
+		const int sy = kBoxY + 12 + CHOICE_SAVE * 9;
+		draw_text(sx, sy, status, kHilite);
 	}
 
 	tsb::platform::lcd_present_now();
@@ -347,20 +357,26 @@ void run(ScummEngine *engine) {
 		: nullptr;
 	int sel = CHOICE_SAVE;
 	bool has = save_backend::has_save();
-	const char *status = nullptr;
+	// Snapshot the in-control state ONCE at menu open.  Avoids the
+	// SAVE row flickering between greyed and active if a script
+	// toggles _userPut while the menu is open.  Matches the original
+	// SCUMM verb panel which checked save-allowed at the moment the
+	// panel was drawn, not at every redraw.
+	const bool can_save = engine->publicIsPlayerInControl();
+	const char *status = can_save ? nullptr : "CAN'T SAVE NOW";
 	bool prev_up = false, prev_down = false;
 
 	// Wait for LB to be released first so we don't immediately re-fire.
 	{
 		tsb::platform::Input in{};
 		while (tsb::platform::poll_input(&in) && in.button_lb) {
-			paint_menu(osys, sel, has, status);
+			paint_menu(osys, sel, has, can_save, status);
 			tsb::platform::sleep_ms(16);
 		}
 	}
 
 	while (true) {
-		paint_menu(osys, sel, has, status);
+		paint_menu(osys, sel, has, can_save, status);
 
 		tsb::platform::Input in{};
 		if (!tsb::platform::poll_input(&in)) return;  // quit
@@ -383,19 +399,26 @@ void run(ScummEngine *engine) {
 			if (sel == CHOICE_CANCEL) return;
 
 			if (sel == CHOICE_SAVE) {
+				if (!can_save) {
+					// Original SCUMM scripts disabled the SAVE verb in
+					// these states — match that and decline.  No status
+					// flicker; the persistent "CAN'T SAVE NOW" stays.
+					tsb::platform::sleep_ms(120);
+					continue;
+				}
 				status = "SAVING...";
-				paint_menu(osys, sel, has, status);
+				paint_menu(osys, sel, has, can_save, status);
 				bool ok = engine->saveSlot0("Slot 0");
 				status = ok ? "SAVED" : "SAVE FAILED";
 				has = save_backend::has_save();
-				paint_menu(osys, sel, has, status);
+				paint_menu(osys, sel, has, can_save, status);
 				tsb::platform::sleep_ms(900);
 				return;
 			}
 
 			if (sel == CHOICE_LOAD && has) {
 				status = "LOADING...";
-				paint_menu(osys, sel, has, status);
+				paint_menu(osys, sel, has, can_save, status);
 				bool ok = engine->loadSlot0();
 				if (ok) {
 					// scummvm v5 saveload restores _grabbedCursor +
@@ -412,7 +435,7 @@ void run(ScummEngine *engine) {
 					if (osys) osys->forceVisibleCrosshairCursor();
 				}
 				status = ok ? "LOADED" : "LOAD FAILED";
-				paint_menu(osys, sel, has, status);
+				paint_menu(osys, sel, has, can_save, status);
 				tsb::platform::sleep_ms(900);
 				return;
 			}
