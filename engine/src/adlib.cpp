@@ -204,12 +204,76 @@ struct AdlibChannel {
     // ships its own AdLib FM definitions per channel rather than GM
     // program numbers. See adlib_set_channel_instrument().
     bool             has_custom_instrument;
+    // `sysex_v5_level_scaling` differentiates v4 vs v5 instrument
+    // semantics. v4 AD-resource instruments carry the desired operator
+    // total-level (TL) directly in the level bytes; v5 SCUMM SysEx 16/17
+    // instruments use 0x3F (max attenuation) as a placeholder and expect
+    // the driver to substitute velocity- and part-volume-scaled TL at
+    // note-on. Mirrors upstream's
+    // `(modScalingOutputLevel & ~0x3F) | (vol1 & 0x3F)` substitution in
+    // MidiDriver_ADLIB::adlibSetupChannel. Set by the SysEx-driven
+    // setter; cleared by adlib_set_channel_instrument.
+    bool             sysex_v5_level_scaling;
     AdlibInstrument  custom_instrument;
 };
 
 static AdlibVoice s_voices[9];
 static AdlibChannel s_channels[16];
 static uint16_t s_age_counter = 0;
+
+// Velocity / part-volume scaling tables for v5 SCUMM AdLib instruments.
+// Ported verbatim from scummvm-upstream/audio/adlib.cpp:862-921.
+//
+// `g_volume_lookup[i][j]` = (i * (j+1)) >> 5 for j > 0; column 0 = 0.
+// Built once at adlib_init via build_volume_lookup().
+//
+// `g_volume_table[]` is the final-stage curve (64 entries).
+//
+// Per upstream mcKeyOn (the non-_scummSmallHeader path), the per-operator
+// TL byte written to OPL register 0x40+op for a v5 SysEx instrument is:
+//
+//   vol = (instr_level & 0x3F) + g_volume_lookup[velocity >> 1][wave >> 2]
+//   clamp vol to 0x3F
+//   if (operator scales with part volume — see below):
+//     vol = g_volume_table[g_volume_lookup[vol][part_volume >> 2]]
+//   reg_byte = (instr_level & 0xC0) | (vol & 0x3F)
+//
+// "Operator scales with part volume" is true for the carrier always, and
+// for the modulator only when `feedback & 1` (additive / two-operator
+// mode). In FM mode (feedback bit 0 clear), the modulator's TL still
+// receives velocity scaling but skips the part-volume curve — modulator
+// level then controls timbre brightness rather than loudness.
+//
+// Note: the second index into g_volume_lookup is `wave_byte >> 2`. So
+// each instrument's wave-select byte's high 6 bits encode velocity
+// sensitivity (not just the OPL waveform selector at bits 1..0). Hide
+// this from program_voice: it just looks up the table.
+static uint8_t g_volume_lookup[64][32];
+static const uint8_t g_volume_table[64] = {
+    0,  4,  7, 11, 13, 16, 18, 20, 22, 24, 26, 27, 29, 30, 31, 33,
+    34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 44, 45, 46, 47, 47,
+    48, 49, 49, 50, 51, 51, 52, 53, 53, 54, 54, 55, 55, 56, 56, 57,
+    57, 58, 58, 59, 59, 60, 60, 60, 61, 61, 62, 62, 62, 63, 63, 63
+};
+
+static void build_volume_lookup() {
+    for (int i = 0; i < 64; i++) {
+        int sum = i;
+        for (int j = 0; j < 32; j++) {
+            g_volume_lookup[i][j] = (uint8_t)(sum >> 5);
+            sum += i;
+        }
+    }
+    for (int i = 0; i < 64; i++) g_volume_lookup[i][0] = 0;
+}
+
+// v5 SCUMM iMUSE global AdLib instrument bank: indexed by MIDI program
+// (0..127), populated by SysEx code 17, looked up on Program Change.
+// `s_global_bank_valid[p]` is true once a SysEx 17 has defined slot `p`;
+// undefined slots fall back to the GM table (which is what AD-format v4
+// games rely on for any channel that never had a SysEx 16).
+static uint8_t s_global_bank[128][11];
+static bool    s_global_bank_valid[128];
 
 // MIDI-note-to-OPL frequency table per spec_04. fnum_table[0] = C, [11] = B.
 static const uint16_t kFnumTable[12] = {
@@ -251,27 +315,81 @@ static void program_voice(int v_idx, uint8_t midi_ch, uint8_t note, uint8_t velo
     uint8_t op1 = kOp1Offset[v_idx];
     uint8_t op2 = kOp2Offset[v_idx];
 
-    // Set FM characteristics + envelopes. The AD instrument layout
-    // matches the OPL2 register byte format directly — `mod_attack_decay`
-    // is already (attack << 4) | decay, ready to be written as-is to
-    // register 0x60. The previous code applied a bitwise NOT, producing
-    // essentially random envelope settings (slow attacks, fast decays,
-    // silent sustains) — symptom: clicks instead of full notes.
+    // Compute operator total-level bytes and envelope bytes. Two paths:
+    //   * v4 AD-resource (our SCUMM v3/v4 small-header path): instrument
+    //     bytes are pre-baked into OPL-ready form — write verbatim. Our
+    //     existing v4 path applied `scale_level_small_header` to the
+    //     level bytes and wrote AD/SR verbatim, which works because the
+    //     AD-resource ships those bytes that way.
+    //   * v5 SCUMM SysEx-supplied instruments (this is the case for the
+    //     ADL chunks in Atlantis / MI2-floppy / etc): the bytes follow
+    //     scummvm's internal AdLibInstrument layout, which is NOT in
+    //     OPL-ready form. Specifically:
+    //       - TL bits (low 6 of level) are a placeholder (typically
+    //         0x3F = silent). Final OPL byte is
+    //         `(level | 0x3F) - vol` (mirroring upstream
+    //         adlibSetupChannel:2113) where vol is velocity + part-volume
+    //         scaled via the g_volume_* lookup tables.
+    //       - Attack/Decay and Sustain/Release bytes are bitwise-NOT'd
+    //         before being written to OPL regs 0x60 / 0x80 (upstream
+    //         adlibSetupChannel:2114-2115).
+    //     The KSL bits and modCharacteristic/feedback/waveform bytes are
+    //     written through unchanged.
+    auto compute_v5_level = [&](uint8_t inst_level, uint8_t inst_wave,
+                                bool scale_with_part_volume) -> uint8_t {
+        int vol = (inst_level & 0x3F) + g_volume_lookup[velocity >> 1][inst_wave >> 2];
+        if (vol > 0x3F) vol = 0x3F;
+        if (vol < 0)    vol = 0;
+        if (scale_with_part_volume) {
+            int c = mch.volume >> 2;
+            if (c > 31) c = 31;
+            if (c < 0)  c = 0;
+            vol = g_volume_table[g_volume_lookup[vol][c]];
+        }
+        // Upstream: (instr->level | 0x3F) - vol — vol is a 6-bit
+        // *loudness*, subtracted from a max-attenuation byte (preserving
+        // KSL bits in 7..6 and forcing low 6 to 0x3F before subtracting).
+        return (uint8_t)((inst_level | 0x3F) - (uint8_t)vol);
+    };
+
+    uint8_t mod_level_byte, car_level_byte;
+    uint8_t mod_ad_byte,    car_ad_byte;
+    uint8_t mod_sr_byte,    car_sr_byte;
+
+    if (mch.sysex_v5_level_scaling) {
+        car_level_byte = compute_v5_level(inst.car_level, inst.car_wave, true);
+        // Modulator always receives velocity scaling; part-volume only
+        // applies in additive (two-op) mode (feedback bit 0). In FM
+        // mode the modulator's TL controls timbre brightness, not
+        // loudness — so we skip the CC 7 stage for it. Mirrors
+        // upstream's `voice->_twoChan` gate in mcKeyOn.
+        const bool two_chan = (inst.feedback & 0x01) != 0;
+        mod_level_byte = compute_v5_level(inst.mod_level, inst.mod_wave, two_chan);
+        // v5 envelopes need bitwise-NOT before reaching OPL regs.
+        mod_ad_byte = (uint8_t)(~inst.mod_attack_decay);
+        car_ad_byte = (uint8_t)(~inst.car_attack_decay);
+        mod_sr_byte = (uint8_t)(~inst.mod_sustain_release);
+        car_sr_byte = (uint8_t)(~inst.car_sustain_release);
+    } else {
+        mod_level_byte = scale_level_small_header(inst.mod_level);
+        car_level_byte = scale_level_small_header(inst.car_level);
+        mod_ad_byte    = inst.mod_attack_decay;
+        car_ad_byte    = inst.car_attack_decay;
+        mod_sr_byte    = inst.mod_sustain_release;
+        car_sr_byte    = inst.car_sustain_release;
+    }
+
     opl2_write_reg(0x20 + op1, inst.mod_freq);
-    opl2_write_reg(0x40 + op1, scale_level_small_header(inst.mod_level));
-    opl2_write_reg(0x60 + op1, inst.mod_attack_decay);
-    opl2_write_reg(0x80 + op1, inst.mod_sustain_release);
+    opl2_write_reg(0x40 + op1, mod_level_byte);
+    opl2_write_reg(0x60 + op1, mod_ad_byte);
+    opl2_write_reg(0x80 + op1, mod_sr_byte);
     opl2_write_reg(0xE0 + op1, inst.mod_wave & 3);
 
     opl2_write_reg(0x20 + op2, inst.car_freq);
-    opl2_write_reg(0x40 + op2, scale_level_small_header(inst.car_level));
-    opl2_write_reg(0x60 + op2, inst.car_attack_decay);
-    opl2_write_reg(0x80 + op2, inst.car_sustain_release);
+    opl2_write_reg(0x40 + op2, car_level_byte);
+    opl2_write_reg(0x60 + op2, car_ad_byte);
+    opl2_write_reg(0x80 + op2, car_sr_byte);
     opl2_write_reg(0xE0 + op2, inst.car_wave & 3);
-    (void)velocity; // small-header keyOn ignores velocity for level
-                    // (per scummvm adlib.cpp:2026 mcKeyOn _scummSmallHeader
-                    // branch); per-channel volume CC is also no-op at keyOn,
-                    // although it affects the running voice via CC 7 below.
 
     opl2_write_reg(0xC0 + v_idx, inst.feedback);
 
@@ -372,6 +490,7 @@ static void all_notes_off_on_channel(uint8_t midi_ch) {
 }
 
 void adlib_init() {
+    build_volume_lookup();              // populate g_volume_lookup (v5 path)
     memset(s_voices, 0, sizeof(s_voices));
     memset(s_channels, 0, sizeof(s_channels));
     for (int i = 0; i < 16; i++) {
@@ -383,7 +502,8 @@ void adlib_init() {
         // _pitchBendFactor = 2 (default ±2-semitone wheel range).
         s_channels[i].pitch_bend_factor = 2;
         s_channels[i].pedal = false;
-        s_channels[i].has_custom_instrument = false;
+        s_channels[i].has_custom_instrument   = false;
+        s_channels[i].sysex_v5_level_scaling  = false;
     }
     s_age_counter = 0;
     // Wave-select enable + reset some registers
@@ -404,13 +524,7 @@ void adlib_silence_all() {
     }
 }
 
-void adlib_set_channel_instrument(uint8_t midi_ch, const uint8_t *def_11) {
-    if (midi_ch >= 16) return;
-    if (def_11 == nullptr) {
-        s_channels[midi_ch].has_custom_instrument = false;
-        return;
-    }
-    AdlibInstrument &inst = s_channels[midi_ch].custom_instrument;
+static void copy_instrument_bytes(AdlibInstrument &inst, const uint8_t *def_11) {
     inst.mod_freq             = def_11[0];
     inst.mod_level            = def_11[1];
     inst.mod_attack_decay     = def_11[2];
@@ -422,13 +536,51 @@ void adlib_set_channel_instrument(uint8_t midi_ch, const uint8_t *def_11) {
     inst.car_sustain_release  = def_11[8];
     inst.car_wave             = def_11[9];
     inst.feedback             = def_11[10];
-    s_channels[midi_ch].has_custom_instrument = true;
+}
+
+void adlib_set_channel_instrument(uint8_t midi_ch, const uint8_t *def_11) {
+    if (midi_ch >= 16) return;
+    if (def_11 == nullptr) {
+        s_channels[midi_ch].has_custom_instrument = false;
+        s_channels[midi_ch].sysex_v5_level_scaling = false;
+        return;
+    }
+    copy_instrument_bytes(s_channels[midi_ch].custom_instrument, def_11);
+    s_channels[midi_ch].has_custom_instrument   = true;
+    s_channels[midi_ch].sysex_v5_level_scaling  = false;  // v4 verbatim levels
+}
+
+void adlib_set_channel_instrument_v5_sysex(uint8_t midi_ch, const uint8_t *def_11) {
+    if (midi_ch >= 16) return;
+    if (def_11 == nullptr) {
+        s_channels[midi_ch].has_custom_instrument = false;
+        s_channels[midi_ch].sysex_v5_level_scaling = false;
+        return;
+    }
+    copy_instrument_bytes(s_channels[midi_ch].custom_instrument, def_11);
+    s_channels[midi_ch].has_custom_instrument   = true;
+    s_channels[midi_ch].sysex_v5_level_scaling  = true;   // v5 velocity/volume scaling
 }
 
 void adlib_clear_channel_instruments() {
     for (int i = 0; i < 16; i++) {
-        s_channels[i].has_custom_instrument = false;
+        s_channels[i].has_custom_instrument   = false;
+        s_channels[i].sysex_v5_level_scaling  = false;
     }
+}
+
+void adlib_set_global_instrument(uint8_t program, const uint8_t *def_11) {
+    if (program >= 128) return;
+    if (def_11 == nullptr) {
+        s_global_bank_valid[program] = false;
+        return;
+    }
+    memcpy(s_global_bank[program], def_11, 11);
+    s_global_bank_valid[program] = true;
+}
+
+void adlib_clear_global_instruments() {
+    for (int i = 0; i < 128; i++) s_global_bank_valid[i] = false;
 }
 
 void adlib_midi_event(uint8_t status, uint8_t d1, uint8_t d2) {
@@ -480,22 +632,48 @@ void adlib_midi_event(uint8_t status, uint8_t d1, uint8_t d2) {
                           : GM_INSTRUMENTS[s_channels[ch].program & 0x7F];
                     uint8_t op1 = kOp1Offset[i];
                     uint8_t op2 = kOp2Offset[i];
-                    // Carrier always scales with volume.
-                    auto attenuate = [volEff](uint8_t lvl) -> uint8_t {
-                        // Larger TL value = quieter on OPL2.
-                        // Increase TL by (127 - volEff) * (0x3F - TL) / 127
+                    // Two attenuation strategies depending on instrument
+                    // origin (same split as program_voice):
+                    //   v4 path: instrument TL is meaningful — scale it
+                    //     down from its baseline with `extra_attn`.
+                    //   v5 path: instrument TL is a placeholder — derive
+                    //     TL from velocity*volume directly (we use the
+                    //     voice's stored velocity).
+                    auto attenuate_v4 = [volEff](uint8_t lvl) -> uint8_t {
                         int tl = lvl & 0x3F;
                         int extra_attn = ((0x3F - tl) * (127 - volEff)) / 127;
                         int new_tl = tl + extra_attn;
                         if (new_tl > 0x3F) new_tl = 0x3F;
                         return (uint8_t)((lvl & 0xC0) | new_tl);
                     };
-                    opl2_write_reg(0x40 + op2, attenuate(inst.car_level));
+                    auto attenuate_v5 = [volEff, &voice](uint8_t lvl, uint8_t wave) -> uint8_t {
+                        // Match upstream Player::send CC 7 path: rebuild
+                        // vol1/vol2 from cached velocity + new part vol,
+                        // then `(lvl | 0x3F) - vol`. We don't cache
+                        // pre-CC-7 vol per voice yet — recompute from
+                        // velocity + waveform on the fly.
+                        int vol = (lvl & 0x3F)
+                                + g_volume_lookup[voice.velocity >> 1][wave >> 2];
+                        if (vol > 0x3F) vol = 0x3F;
+                        if (vol < 0)    vol = 0;
+                        int c = volEff >> 2;
+                        if (c > 31) c = 31;
+                        if (c < 0)  c = 0;
+                        vol = g_volume_table[g_volume_lookup[vol][c]];
+                        return (uint8_t)((lvl | 0x3F) - (uint8_t)vol);
+                    };
+                    const bool v5 = s_channels[ch].sysex_v5_level_scaling;
+                    // Carrier always scales with volume.
+                    opl2_write_reg(0x40 + op2,
+                        v5 ? attenuate_v5(inst.car_level, inst.car_wave)
+                           : attenuate_v4(inst.car_level));
                     // Modulator op scales only when feedback selects
                     // two-operator additive (FM-mode bit 0). Mirrors
                     // scummvm's _twoChan check (adlib.cpp:1175-1178).
                     if (inst.feedback & 0x01) {
-                        opl2_write_reg(0x40 + op1, attenuate(inst.mod_level));
+                        opl2_write_reg(0x40 + op1,
+                            v5 ? attenuate_v5(inst.mod_level, inst.mod_wave)
+                               : attenuate_v4(inst.mod_level));
                     }
                 }
                 break;
@@ -548,9 +726,23 @@ void adlib_midi_event(uint8_t status, uint8_t d1, uint8_t d2) {
         }
         break;
     }
-    case 0xC0:                                          // Program Change
-        s_channels[ch].program = d1 & 0x7F;
+    case 0xC0: {                                        // Program Change
+        uint8_t prog = d1 & 0x7F;
+        s_channels[ch].program = prog;
+        // v5 SCUMM SysEx-driven path: if the global bank has a custom
+        // instrument for this program, install it as the channel's
+        // current voice. Mirrors upstream's IMuseInternal::
+        // copyGlobalInstrument call from sysex_scumm.cpp case 0, applied
+        // here on bare Program Change events too (which v5 floppy ADL
+        // streams use to switch instruments mid-song without re-sending
+        // SysEx 16).
+        if (s_global_bank_valid[prog]) {
+            // Global-bank entries are populated from SysEx 17, so apply
+            // v5 velocity/volume scaling at note-on for them too.
+            adlib_set_channel_instrument_v5_sysex(ch, s_global_bank[prog]);
+        }
         break;
+    }
     case 0xD0:                                          // Channel Pressure
         break;
     case 0xE0: {                                        // Pitch Bend

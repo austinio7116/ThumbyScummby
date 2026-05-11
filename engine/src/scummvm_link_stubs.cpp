@@ -18,8 +18,10 @@
 #include "scumm/file.h"
 #include "scumm/resource.h"
 #include "scumm/charset.h"
+#include "scumm/sound.h"
 #include "scumm/actor.h"
 
+#include "audio/mixer.h"
 #include "common/system.h"
 #include "common/mutex.h"
 #include "common/random.h"
@@ -64,7 +66,19 @@ int  RandomSource::getRandomNumberRngSigned(int min, int max) {
 namespace Common {
 ConfigManager::ConfigManager() {}
 bool ConfigManager::getBool(const String &, const String &) const   { return false; }
-int  ConfigManager::getInt (const String &, const String &) const   { return 0; }
+int  ConfigManager::getInt (const String &key, const String &) const {
+    // We don't persist a real key/value store on this port, but
+    // ScummEngine::syncSoundSettings reads music_volume / sfx_volume on
+    // boot (scumm.cpp:2635-2636) and feeds the result straight into
+    // MusicEngine::setMusicVolume / setSfxVolume. Returning 0 silences
+    // all output. Default to the mixer's full-volume constant so audio
+    // is audible without the user having to open the volume menu (which
+    // can't persist its setting anyway given setInt is a no-op).
+    if (key == "music_volume" || key == "sfx_volume" || key == "speech_volume") {
+        return Audio::Mixer::kMaxMixerVolume;
+    }
+    return 0;
+}
 const String &ConfigManager::get(const String &) const { static String s; return s; }
 const String &ConfigManager::get(const String &, const String &) const { static String s; return s; }
 Path   ConfigManager::getPath(const String &, const String &) const { return Path(); }
@@ -671,7 +685,80 @@ Common::Path ScummEngine::generateFilename(int room) const {
     }
     return Common::Path(result, Common::Path::kNoSeparator);
 }
-int  ScummEngine::readSoundResource(uint16) { return 0; }
+// THUMBY-PORT: SCUMM v5 sound resource loader, narrowed to the SO/ADL
+// path (AdLib) for the iMUSE -> OPL2 -> PWM pipeline we run on RP2350.
+// Upstream scummvm sound.cpp:1279 also handles ROL/GMD/SBL/MAC/SPK
+// sub-blocks for other music types — we ignore those; iMUSE here is
+// AdLib-only.  Other base tags (MIDI/iMUS/Mac0/etc) similarly skipped
+// — none are produced by the v5 floppy games this port targets.
+//
+// XIP fast path: once we know the ADL sub-block's flash offset + size,
+// borrow a flash pointer via getRawPointer and mark the resource
+// off-heap.  This keeps SCUMM sound resources at zero heap cost on
+// device, same as scripts/costumes/rooms.
+int ScummEngine::readSoundResource(ResId idx) {
+	// Caller (loadResource) has seek'd to the SOUN resource block start
+	// and rewound 8 bytes so we re-read the (tag, size) wrapper here.
+	// Layout:
+	//   [0..3]   tag        (e.g. 'SOUN', read but discarded)
+	//   [4..7]   total size (BE, includes the 8-byte wrapper)
+	//   [8..11]  inner tag  (BE 4cc — 'SO  ' for AdLib container)
+	//   [12..15] inner size (BE — total of contained sub-blocks)
+	_fileHandle->readUint32LE();
+	(void)_fileHandle->readUint32BE();   // max_total_size — unused for our SO path
+	uint32 basetag    = _fileHandle->readUint32BE();
+	uint32 total_size = _fileHandle->readUint32BE();
+
+	if (basetag != MKTAG('S','O','U',' ')) {
+		// Not an SO container — caller proceeds without a sound resource.
+		// MIDI / iMUS / Mac0 / RIFF / DIGI / TALK etc. would be handled
+		// here in a full port; not needed for v5 floppy AdLib.
+		return 0;
+	}
+
+	// Walk sub-blocks looking for 'ADL '.  v5 floppy games typically
+	// have exactly one per sound; if multiple are present we take the
+	// first (matches upstream's pri==10 selection for MDT_ADLIB).
+	int  best_offs = -1;
+	uint32 best_size = 0;
+	uint32 pos = 0;
+	while (pos < total_size) {
+		const uint32 tag  = _fileHandle->readUint32BE();
+		const uint32 size = _fileHandle->readUint32BE() + 8;   // includes the 8-byte sub-header
+		pos += size;
+
+		if (tag == MKTAG('A','D','L',' ')) {
+			best_offs = (int)_fileHandle->pos();
+			best_size = size;
+			break;
+		}
+
+		// Advance past this sub-block's payload (size minus the 8 we
+		// already consumed for tag+size).
+		_fileHandle->seek(size - 8, SEEK_CUR);
+	}
+
+	if (best_offs == -1) {
+		return 0;   // no AdLib block in this sound — silent for this slot
+	}
+
+	// Rewind to the sub-block start (offset is INSIDE the block — we
+	// already consumed its 8-byte header).  Resource bytes include the
+	// header so iMUSE's parser sees the canonical 'ADL '+size prefix.
+	_fileHandle->seek(best_offs - 8, SEEK_SET);
+
+	// XIP fast path — borrow a pointer into the flash blob.
+	const void *rawPtr = _fileHandle->getRawPointer(best_size);
+	if (rawPtr) {
+		_res->_types[rtSound][idx]._address = const_cast<byte *>((const byte *)rawPtr);
+		_res->_types[rtSound][idx]._size    = best_size;
+		_res->setOffHeap(rtSound, idx);
+	} else {
+		// Heap fallback (host build).
+		_fileHandle->read(_res->createResource(rtSound, idx, best_size), best_size);
+	}
+	return 1;
+}
 // readSoundResourceSmallHeader is implemented in audio_shim.cpp.
 // verifyMI2MacBootScript lives in resource.cpp.
 

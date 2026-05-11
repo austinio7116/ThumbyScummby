@@ -49,8 +49,35 @@ void adlib_silence_all();
 // (the low-level driver bitwise-NOTs them when programming the OPL2 reg).
 void adlib_set_channel_instrument(uint8_t midi_ch, const uint8_t *def_11);
 
+// Variant for v5 SCUMM SysEx-supplied instruments (codes 16 and 17/program-
+// change). Same 11-byte payload, but the level bytes' low 6 bits are
+// treated as placeholders — at note-on, the driver substitutes a velocity-
+// and CC 7 volume-scaled total level (preserving the KSL bits 7..6).
+// Without this distinction, v5 instruments — which ship 0x3F (max
+// attenuation) in their level bytes — would play silent.
+void adlib_set_channel_instrument_v5_sysex(uint8_t midi_ch, const uint8_t *def_11);
+
 // Clear all per-channel custom instrument overrides, returning channels
 // to GM lookup mode. Called by imuse_start_sound when starting a new song.
 void adlib_clear_channel_instruments();
+
+// SCUMM v5 iMUSE AdLib instrument bank (128 slots, 11 bytes each).
+//
+// v5 SCUMM AdLib songs program their instruments via SysEx messages
+// embedded in the MIDI stream rather than carrying them as v4-style
+// AD-resource preludes. SysEx code 17 ("AdLib instrument definition,
+// global") stores a definition keyed by program number; SysEx code 0
+// ("allocate part") names a program for a channel; subsequent Program
+// Change (0xC0) events in the stream also look up this bank.
+//
+// `program` is 0..127; out-of-range writes are ignored. `def_11` follows
+// the same 11-byte layout as `adlib_set_channel_instrument`; nullptr
+// invalidates the slot.
+void adlib_set_global_instrument(uint8_t program, const uint8_t *def_11);
+
+// Wipe the global bank. Called by imuse_start_sound when starting a v5
+// SMF song so leftover instruments from a previous song can't bleed
+// through if the new song doesn't redefine every program it uses.
+void adlib_clear_global_instruments();
 
 }  // namespace tsb

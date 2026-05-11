@@ -160,6 +160,15 @@ static inline uint32_t rd_u32_le(const uint8_t *p, uint32_t off) {
          | ((uint32_t)p[off+3] << 24);
 }
 
+// Read a 4-byte big-endian uint32 at p+off (no bounds check).  Used for
+// v5 SCUMM block sizes ('ADL ' sub-block etc).
+static inline uint32_t rd_u32_be(const uint8_t *p, uint32_t off) {
+    return ((uint32_t)p[off] << 24)
+         | ((uint32_t)p[off+1] << 16)
+         | ((uint32_t)p[off+2] << 8)
+         |  (uint32_t)p[off+3];
+}
+
 // Walk the SO/SOUN payload and return the byte offset of the AD sub-chunk's
 // PAYLOAD (i.e. just past its 6-byte header), and the AD payload length.
 // Returns -1 if no AD chunk is found.
@@ -260,18 +269,40 @@ static int autodetect(Span data, ParserType *parser_out, uint32_t *body_off_out)
             *body_off_out = off;
             return 0;
         }
-        // 'ADL ' = ADL music resource synthesized by scummvm; we don't see
-        // those in stock data files - it's only built up internally.
+        // 'ADL ' tag — two distinct payload shapes inside the body:
+        //   1. SCUMM-MIDI: body[0..3] == 'MDhd'  -> SMF MIDI wrapped in
+        //      a SCUMM 'MDhd' header.  Used by v5 floppy DOS (Atlantis,
+        //      MI2 etc.).  Skip past the MDhd block to the embedded
+        //      MThd track header -> PT_SMF.
+        //   2. Raw AdLib: anything else -> PT_AD with body at +8.
+        //      Matches the v4 'AD' payload layout (instrument table +
+        //      sequence) so init_ad_song can parse it unchanged.
+        //
+        // We gate the MThd scan on actually seeing 'MDhd' first, so
+        // raw-AdLib payloads with byte sequences that happen to spell
+        // 'MThd' don't get misclassified as SMF.
         if (p[off]=='A'&&p[off+1]=='D'&&p[off+2]=='L'&&p[off+3]==' ') {
-            // Body is at +8 (ADL  + size4) and contains MDhd/MThd; we
-            // jump straight to MThd.
-            for (uint32_t s = off + 8; s + 4 < (uint32_t)data.size && s < off + 64; s++) {
-                if (p[s]=='M'&&p[s+1]=='T'&&p[s+2]=='h'&&p[s+3]=='d') {
-                    *parser_out = PT_SMF;
-                    *body_off_out = s;
-                    return 0;
+            const uint32_t body_start = off + 8;
+            const bool has_mdhd = (body_start + 4 <= data.size)
+                                && p[body_start+0]=='M'
+                                && p[body_start+1]=='D'
+                                && p[body_start+2]=='h'
+                                && p[body_start+3]=='d';
+            if (has_mdhd) {
+                // Walk past MDhd to find MThd.
+                for (uint32_t s = body_start + 8; s + 4 < (uint32_t)data.size && s < off + 64; s++) {
+                    if (p[s]=='M'&&p[s+1]=='T'&&p[s+2]=='h'&&p[s+3]=='d') {
+                        *parser_out   = PT_SMF;
+                        *body_off_out = s;
+                        return 0;
+                    }
                 }
+                // MDhd present but no MThd in the first 64 bytes — fall
+                // through to PT_AD as a defensive default.
             }
+            *parser_out   = PT_AD;
+            *body_off_out = body_start;
+            return 0;
         }
     }
     return -1;
@@ -368,11 +399,6 @@ bool imuse_start_sound(int sound_id, Span sound_resource) {
     ParserType pt;
     uint32_t body_off;
     if (autodetect(sound_resource, &pt, &body_off) < 0) {
-        // Print first bytes for debugging
-        const uint8_t *p = sound_resource.data;
-        size_t n = sound_resource.size < 16 ? sound_resource.size : 16;
-        char hex[64]; int hn = 0;
-        for (size_t i = 0; i < n; i++) hn += snprintf(hex+hn, sizeof(hex)-hn, "%02X ", p[i]);
         return false;
     }
 
@@ -381,7 +407,13 @@ bool imuse_start_sound(int sound_id, Span sound_resource) {
         adlib_silence_all();
     }
     // Always clear leftover per-channel custom instruments from a prior AD
-    // song; PT_RO/PT_SMF rely on GM lookup.
+    // or v5 SMF song; PT_RO/PT_SMF rely on GM lookup until a SysEx 16 (per
+    // part) or 17 (global) reprograms.
+    //
+    // We intentionally do NOT clear the global instrument bank
+    // (adlib_clear_global_instruments) between songs — upstream's
+    // IMuseInternal keeps it persistent across Players, so later songs
+    // can rely on bank entries uploaded by earlier ones.
     adlib_clear_channel_instruments();
 
     g_song.playing = true;
@@ -404,16 +436,31 @@ bool imuse_start_sound(int sound_id, Span sound_resource) {
         g_song.ppqn = kRoPpqn;
         g_song.tempo_us_per_tick = kRoTempoUsPerTick;
     } else if (pt == PT_AD) {
-        // Compute AD payload size. The autodetect points us at the START
-        // of the AD payload; we need the size from the small-chunk header
-        // 6 bytes earlier.
-        uint32_t ad_chunk_off = body_off - 6;
-        uint32_t ad_chunk_sz  = rd_u32_le(sound_resource.data, ad_chunk_off);
-        if (ad_chunk_sz < 6 || ad_chunk_sz > (uint32_t)sound_resource.size - ad_chunk_off) {
+        // Two header shapes feed into the same AD payload parser:
+        //   body_off == 6  -> v4 small-chunk: [size_LE][2-byte tag]
+        //   body_off == 8  -> v5 SCUMM ADL:   [4-char tag][size_BE]
+        uint32_t payload_size = 0;
+        if (body_off == 6) {
+            uint32_t ad_chunk_sz = rd_u32_le(sound_resource.data, 0);
+            if (ad_chunk_sz < 6 || ad_chunk_sz > (uint32_t)sound_resource.size) {
+                g_song.playing = false;
+                return false;
+            }
+            payload_size = ad_chunk_sz - 6;
+        } else if (body_off >= 8) {
+            // v5 ADL: size at offset (body_off - 4) BE.  Value is the
+            // payload size (excluding 8-byte header) per upstream
+            // sound.cpp:1389 where best_size = readUint32BE() + 8.
+            uint32_t ad_chunk_sz = rd_u32_be(sound_resource.data, body_off - 4);
+            if (ad_chunk_sz > (uint32_t)sound_resource.size - body_off) {
+                g_song.playing = false;
+                return false;
+            }
+            payload_size = ad_chunk_sz;
+        } else {
             g_song.playing = false;
             return false;
         }
-        uint32_t payload_size = ad_chunk_sz - 6;
         if (!init_ad_song(sound_resource, body_off, payload_size)) {
             g_song.playing = false;
             return false;
@@ -514,6 +561,95 @@ static void peek_next_ro_event() {
     }
 }
 
+// SCUMM nibble-packed-byte decoder. SCUMM iMUSE SysEx data is encoded as
+// 2 source bytes → 1 destination byte, where each source byte carries 4
+// bits in its low nibble (and 4 in its high). Mirrors upstream
+// Player::decode_sysex_bytes (imuse_player.cpp:486).
+static void scumm_decode_nibbles(const uint8_t *src, uint8_t *dst, int src_len) {
+    int i = 0;
+    while (src_len >= 2) {
+        dst[i++] = (uint8_t)(((src[0] << 4) & 0xF0) | (src[1] & 0x0F));
+        src += 2;
+        src_len -= 2;
+    }
+}
+
+// Dispatch a SCUMM iMUSE SysEx message. `payload` points at the byte
+// immediately following the F0 status (i.e. the manufacturer ID is
+// payload[0]); `plen` is the byte count including manufacturer ID and
+// the trailing F7 terminator (if present).
+//
+// We handle the three codes that program AdLib instruments for v5
+// floppy SCUMM (INDY4/Atlantis, MI2 floppy AdLib). Other codes
+// (parameter adjust, jumps, transposes, markers) are no-ops here — they
+// affect playback flow but not instrument timbre, so leaving them out
+// loses musicality (e.g. fades) but not "recognisable instrument."
+//
+// Mirrors scummvm-upstream/engines/scumm/imuse/sysex_scumm.cpp cases
+// 0/16/17; layout assumptions documented inline.
+static void scumm_handle_sysex(const uint8_t *payload, uint32_t plen) {
+    if (plen < 1) return;
+    if (payload[0] != 0x7D) return;        // IMUSE_SYSEX_ID; ignore other vendors
+    // Strip trailing F7 if the parser passed it through.
+    if (plen > 0 && payload[plen - 1] == 0xF7) plen -= 1;
+    if (plen < 2) return;
+
+    uint8_t code = payload[1];
+    const uint8_t *d = payload + 2;
+    uint32_t dlen = plen - 2;
+
+    uint8_t buf[64];
+    switch (code) {
+    case 0: {
+        // Allocate part: d[0] bits 0..3 = channel; nibble-packed config
+        // follows. Decoded byte 8 is the initial program. Other decoded
+        // bytes (priority, volume, pan, transpose, detune, pitchbend) are
+        // not used by our minimal driver — Program Change + CC 7 in the
+        // MIDI stream handle volume/program updates on their own.
+        if (dlen < 1) return;
+        uint8_t channel = d[0] & 0x0F;
+        // Decode into buf+1 to mirror upstream's buf[1..] indexing.
+        scumm_decode_nibbles(d + 1, buf + 1, (int)dlen - 1);
+        uint32_t decoded = ((int)dlen - 1) / 2;
+        if (decoded >= 9) {
+            uint8_t program = buf[8] & 0x7F;
+            adlib_midi_event((uint8_t)(0xC0 | channel), program, 0);
+        }
+        break;
+    }
+    case 16: {
+        // Per-part AdLib instrument:
+        //   d[0]:  channel (low nibble)
+        //   d[1]:  hardware type (skip — single OPL2 target here)
+        //   d[2..]: nibble-packed 11-byte (or 30-byte) instrument.
+        if (dlen < 2) return;
+        uint8_t channel = d[0] & 0x0F;
+        scumm_decode_nibbles(d + 2, buf, (int)dlen - 2);
+        uint32_t decoded = ((int)dlen - 2) / 2;
+        if (decoded >= 11) {
+            adlib_set_channel_instrument_v5_sysex(channel, buf);
+        }
+        break;
+    }
+    case 17: {
+        // Global instrument bank entry:
+        //   d[0..1]: hardware type / pad
+        //   d[2]:    program number (0..127)
+        //   d[3..]:  nibble-packed instrument bytes.
+        if (dlen < 3) return;
+        uint8_t program = d[2] & 0x7F;
+        scumm_decode_nibbles(d + 3, buf, (int)dlen - 3);
+        uint32_t decoded = ((int)dlen - 3) / 2;
+        if (decoded >= 11) {
+            adlib_set_global_instrument(program, buf);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 static void peek_next_smf_event() {
     g_song.next.valid = false;
     g_song.next.meta_type = 0;
@@ -556,6 +692,14 @@ static void peek_next_smf_event() {
         if (status == 0xF0 || status == 0xF7) {
             uint32_t mlen = read_vlq(g_song.stream_base, &g_song.pos, g_song.stream_size);
             if (g_song.pos + mlen > g_song.stream_size) return;
+            // F0 SysEx: dispatch SCUMM iMUSE messages inline (so instrument
+            // programming applies as the song time-line reaches the SysEx,
+            // not later when we'd otherwise drop the bytes). F7-only
+            // continuation SysEx events have no manufacturer ID and are
+            // ignored by scumm_handle_sysex's vendor check.
+            if (status == 0xF0) {
+                scumm_handle_sysex(g_song.stream_base + g_song.pos, mlen);
+            }
             g_song.pos += mlen;
             g_song.next.delta_ticks = delta;
             g_song.next.status = 0;
