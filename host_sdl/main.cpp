@@ -219,27 +219,19 @@ int main(int argc, char **argv) {
             osys.setUseMiFontForSpeech(use_mi);
     }
 
-    // Construct the canonical engine.  MI1 VGA Floppy is GID_MONKEY (v4)
-    // — but our 100% transcribed runtime uses ScummEngine_v5 dispatch
-    // (v5 is the dominant SCUMM5 variant; our MI1 floppy works in v5
-    // codepath via DetectorResult.version=4 + DetectorResult.platform).
+    // Indy 4 — Fate of Atlantis (SCUMM v5 floppy DOS, HD-installed).
     tsb::DetectorResult dr;
-    // GID_MONKEY_VGA is the floppy v4 (with copy-protection screen).
-    // GID_MONKEY is the v5 CD release.  Setting v4=GID_MONKEY made
-    // scummvm-upstream's copy-protection bypass workaround
-    // (script_v5.cpp:2964 — `if (_game.id == GID_MONKEY_VGA && script == 152) return;`)
-    // not fire, so script 152 ran and the boot got stuck waiting for a
-    // dial-code answer the engine has no way to provide.
-    dr.game.id           = (int)tsb::GID_MONKEY_VGA;
-    dr.game.version      = 4;
+    dr.game.id           = (int)tsb::GID_INDY4;
+    dr.game.variant      = "Floppy";   // input.cpp:1098 strcmps this for GID_INDY4
+    dr.game.version      = 5;
     dr.game.platform     = Common::kPlatformDOS;
-    dr.game.features     = tsb::GF_SMALL_HEADER | tsb::GF_USE_KEY;
+    dr.game.features     = tsb::GF_USE_KEY;
     dr.game.heversion    = 0;
     dr.language          = Common::EN_ANY;
     dr.extra             = "";
-    // ScummEngine ctor reads dr.md5 as a 32-char hex string.  Use the
-    // canonical MI1 VGA Floppy DOS English MD5.
-    dr.md5               = "8e4ee4db46954bfcb6d2654dde0aae25";
+    dr.md5               = "1875b90fade138c9253a8e967007031a";
+    dr.fp.pattern        = "atlantis.%03d";
+    dr.fp.genMethod      = tsb::kGenDiskNum;
 
     // ScummVM hierarchy: ScummEngine_v4 inherits ScummEngine_v5
     // (older > newer numbering by inheritance).  For MI1 floppy we

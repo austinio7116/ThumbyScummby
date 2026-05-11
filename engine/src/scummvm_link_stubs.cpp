@@ -131,15 +131,19 @@ void ArchiveMember::listChildren(ArchiveMemberList &, const char *) const {}
 namespace Common {
 
 // Common::File — backed by tsb::platform::data_* chunk readers.  scummvm
-// opens 000.LFL / DISK01.LEC..DISK04.LEC / 901.LFL..904.LFL by name; we
-// resolve those via platform helpers.  All other paths fail.
-File::File()  : _handle(nullptr) {}
-File::~File() { delete _handle; }
-
-bool File::open(const Path &p) {
-    String name = p.baseName();
+// opens game files by name; we resolve them via platform helpers.
+//   v4 floppy layout: 000.LFL / DISK01..04.LEC / 901..904.LFL
+//   v5 HD-installed:  <BASE>.000 (index) + <BASE>.001 (data)  e.g. ATLANTIS.*
+// Suffix-based lookup handles v5 generically for any base name; exact
+// matches handle the v4 floppy file names.
+static tsb::Span resolve_game_file(const String &name) {
     tsb::Span s{};
-    if (name.equalsIgnoreCase("000.LFL"))      s = tsb::platform::data_master_index();
+    if      (name.hasSuffixIgnoreCase(".000"))   s = tsb::platform::data_master_index();
+    else if (name.hasSuffixIgnoreCase(".001"))   s = tsb::platform::data_disk(1);
+    else if (name.hasSuffixIgnoreCase(".002"))   s = tsb::platform::data_disk(2);
+    else if (name.hasSuffixIgnoreCase(".003"))   s = tsb::platform::data_disk(3);
+    else if (name.hasSuffixIgnoreCase(".004"))   s = tsb::platform::data_disk(4);
+    else if (name.equalsIgnoreCase("000.LFL"))    s = tsb::platform::data_master_index();
     else if (name.equalsIgnoreCase("DISK01.LEC")) s = tsb::platform::data_disk(1);
     else if (name.equalsIgnoreCase("DISK02.LEC")) s = tsb::platform::data_disk(2);
     else if (name.equalsIgnoreCase("DISK03.LEC")) s = tsb::platform::data_disk(3);
@@ -148,6 +152,15 @@ bool File::open(const Path &p) {
     else if (name.equalsIgnoreCase("902.LFL"))    s = tsb::platform::data_helper(902);
     else if (name.equalsIgnoreCase("903.LFL"))    s = tsb::platform::data_helper(903);
     else if (name.equalsIgnoreCase("904.LFL"))    s = tsb::platform::data_helper(904);
+    return s;
+}
+
+File::File()  : _handle(nullptr) {}
+File::~File() { delete _handle; }
+
+bool File::open(const Path &p) {
+    String name = p.baseName();
+    tsb::Span s = resolve_game_file(name);
     if (s.data && s.size) {
         delete _handle;
         _handle = new MemoryReadStream((const byte *)s.data, (uint32)s.size);
@@ -492,16 +505,7 @@ bool Archive::getChildren(const Path &, Common::Array<Common::String> &, ListMod
 // scummvm's SearchMan.createReadStreamForMember finds 000.LFL etc.
 SeekableReadStream *SearchSet::createReadStreamForMember(const Path &p) const {
     String name = p.baseName();
-    tsb::Span s{};
-    if (name.equalsIgnoreCase("000.lfl"))      s = tsb::platform::data_master_index();
-    else if (name.equalsIgnoreCase("disk01.lec")) s = tsb::platform::data_disk(1);
-    else if (name.equalsIgnoreCase("disk02.lec")) s = tsb::platform::data_disk(2);
-    else if (name.equalsIgnoreCase("disk03.lec")) s = tsb::platform::data_disk(3);
-    else if (name.equalsIgnoreCase("disk04.lec")) s = tsb::platform::data_disk(4);
-    else if (name.equalsIgnoreCase("901.lfl"))    s = tsb::platform::data_helper(901);
-    else if (name.equalsIgnoreCase("902.lfl"))    s = tsb::platform::data_helper(902);
-    else if (name.equalsIgnoreCase("903.lfl"))    s = tsb::platform::data_helper(903);
-    else if (name.equalsIgnoreCase("904.lfl"))    s = tsb::platform::data_helper(904);
+    tsb::Span s = resolve_game_file(name);
     if (s.data && s.size)
         return new MemoryReadStream((const byte *)s.data, (uint32)s.size);
     return nullptr;
@@ -639,15 +643,31 @@ void ScummEngine::playNESTitleScreens() {}
 // and the rest of the actor rendering online).
 bool ScummEngine::hasFeature(Engine::EngineFeature) const { return false; }
 // generateFilename: real impl from scummvm-upstream/scumm/metaengine.cpp:53.
-// We only support v4 path (MI1).
+// v4 keeps its hardcoded floppy naming; v5 uses _filenamePattern (set
+// from DetectorResult.fp during setupScumm) so a single binary works
+// with any base name (atlantis.%03d, monkey2.%03d, tentacle.%03d, ...).
 Common::Path ScummEngine::generateFilename(int room) const {
     Common::String result;
+    const int diskNumber = (room > 0) ? _res->_types[rtRoom][room]._roomno : 0;
     if (_game.version == 4) {
         if (room == 0 || room >= 900)
             result = Common::String::format("%03d.lfl", room);
         else
-            result = Common::String::format("disk%02d.lec",
-                                            _res->_types[rtRoom][room]._roomno);
+            result = Common::String::format("disk%02d.lec", diskNumber);
+    } else if (_filenamePattern.pattern && *_filenamePattern.pattern) {
+        switch (_filenamePattern.genMethod) {
+        case kGenDiskNum:
+            result = Common::String::format(_filenamePattern.pattern, diskNumber);
+            break;
+        case kGenRoomNum:
+            result = Common::String::format(_filenamePattern.pattern, room);
+            break;
+        default:
+            // Other genMethods (Steam, HE Mac/PC/iOS, Unchanged) aren't
+            // wired up — fall through to empty so the caller's
+            // "Cannot find file: ''" surfaces the misconfiguration.
+            break;
+        }
     }
     return Common::Path(result, Common::Path::kNoSeparator);
 }

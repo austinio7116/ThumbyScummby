@@ -49,20 +49,23 @@ target_compile_options(thumbyscummby_engine PRIVATE
 # this file from CMAKE_CURRENT_BINARY_DIR.
 # ----------------------------------------------------------------------
 set(DATA_BLOB ${CMAKE_CURRENT_BINARY_DIR}/data_blob.bin)
-set(DATA_DIR  ${CMAKE_CURRENT_LIST_DIR}/../data/mi1_vga)
+set(DATA_DIR  ${CMAKE_CURRENT_LIST_DIR}/../data/atlantis/install/ATLANTIS)
 set(PACK_TOOL ${CMAKE_CURRENT_LIST_DIR}/../tools/pack_device.py)
 
 # Glob the source files so the blob rebuilds if any of them change.
+# pack_device.py auto-detects v4 floppy (000.LFL + DISK*.LEC + 9xx.LFL)
+# vs v5 HD-installed (<BASE>.000 + <BASE>.001).
 file(GLOB DATA_SOURCES
     ${DATA_DIR}/000.LFL
     ${DATA_DIR}/DISK01.LEC ${DATA_DIR}/DISK02.LEC
     ${DATA_DIR}/DISK03.LEC ${DATA_DIR}/DISK04.LEC
     ${DATA_DIR}/901.LFL ${DATA_DIR}/902.LFL
-    ${DATA_DIR}/903.LFL ${DATA_DIR}/904.LFL)
+    ${DATA_DIR}/903.LFL ${DATA_DIR}/904.LFL
+    ${DATA_DIR}/*.000 ${DATA_DIR}/*.001)
 
 add_custom_command(
     OUTPUT ${DATA_BLOB}
-    COMMAND ${CMAKE_COMMAND} -E echo "Packing MI1 data blob..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Packing game data blob..."
     COMMAND python3 ${PACK_TOOL} ${DATA_DIR} ${DATA_BLOB}
     DEPENDS ${PACK_TOOL} ${DATA_SOURCES}
     COMMENT "Packing data blob -> ${DATA_BLOB}"

@@ -21,6 +21,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <strings.h>
 
 namespace tsb::platform_sdl {
 
@@ -106,33 +108,75 @@ bool load_data_dir(const char *path) {
         return load_file(lower, enc, dst_data, dst_size);
     };
 
-    // 000.LFL — unencrypted master index
+    // Try v4 floppy layout first: 000.LFL + DISK01-04.LEC + 9xx.LFL.
     snprintf(buf, sizeof(buf), "%s/000.LFL", path);
-    if (!load_file(buf, 0, &g.master.data, &g.master.size)) {
+    bool have_v4 = load_file(buf, 0, &g.master.data, &g.master.size);
+    if (!have_v4) {
         snprintf(buf, sizeof(buf), "%s/000.lfl", path);
-        if (!load_file(buf, 0, &g.master.data, &g.master.size)) {
-            tsb::platform::log("error: cannot open 000.LFL in %s\n", path);
+        have_v4 = load_file(buf, 0, &g.master.data, &g.master.size);
+    }
+
+    if (have_v4) {
+        tsb::platform::log("loaded 000.LFL: %zu bytes (unencrypted)\n", g.master.size);
+
+        // DISK01-04.LEC — kept RAW (encrypted). ScummFile::read applies
+        // the 0x69 XOR per scummvm getEncByte() rules; pre-decrypting here
+        // would double-XOR and scramble all bytes.
+        for (int i = 1; i <= 4; i++) {
+            if (try_open("%s/DISK%02d.LEC", i, 0, &g.disk[i-1].data, &g.disk[i-1].size)) {
+                tsb::platform::log("loaded DISK%02d.LEC: %zu bytes (raw)\n", i, g.disk[i-1].size);
+            } else {
+                tsb::platform::log("warning: cannot open DISK%02d.LEC\n", i);
+            }
+        }
+
+        // 901-904.LFL — unencrypted (charsets and helpers)
+        for (int i = 901; i <= 904; i++) {
+            if (try_open("%s/%d.LFL", i, 0, &g.helper[i-900].data, &g.helper[i-900].size)) {
+                tsb::platform::log("loaded %d.LFL: %zu bytes (unencrypted)\n", i, g.helper[i-900].size);
+            }
+        }
+        return true;
+    }
+
+    // v5 HD-installed: <BASE>.000 (index) + <BASE>.001 (data). Both
+    // XOR-encrypted with 0x69; loaded RAW so ScummFile applies the XOR
+    // per getEncByte() rules (v5 returns 0x69 for every room).
+    {
+        DIR *d = opendir(path);
+        if (!d) {
+            tsb::platform::log("error: cannot open dir %s\n", path);
             return false;
         }
-    }
-    tsb::platform::log("loaded 000.LFL: %zu bytes (unencrypted)\n", g.master.size);
-
-    // DISK01-04.LEC — kept RAW (encrypted). ScummFile::read applies
-    // the 0x69 XOR per scummvm getEncByte() rules; pre-decrypting here
-    // would double-XOR and scramble all bytes.
-    for (int i = 1; i <= 4; i++) {
-        if (try_open("%s/DISK%02d.LEC", i, 0, &g.disk[i-1].data, &g.disk[i-1].size)) {
-            tsb::platform::log("loaded DISK%02d.LEC: %zu bytes (raw)\n", i, g.disk[i-1].size);
-        } else {
-            tsb::platform::log("warning: cannot open DISK%02d.LEC\n", i);
+        char base[256] = {0};
+        struct dirent *de;
+        while ((de = readdir(d))) {
+            size_t n = strlen(de->d_name);
+            if (n >= 4) {
+                const char *suf = de->d_name + n - 4;
+                if (strcasecmp(suf, ".000") == 0) {
+                    snprintf(base, sizeof(base), "%.*s", (int)(n - 4), de->d_name);
+                    break;
+                }
+            }
         }
-    }
-
-    // 901-904.LFL — unencrypted (charsets and helpers)
-    for (int i = 901; i <= 904; i++) {
-        if (try_open("%s/%d.LFL", i, 0, &g.helper[i-900].data, &g.helper[i-900].size)) {
-            tsb::platform::log("loaded %d.LFL: %zu bytes (unencrypted)\n", i, g.helper[i-900].size);
+        closedir(d);
+        if (!base[0]) {
+            tsb::platform::log("error: no v4 floppy or v5 HD layout found in %s\n", path);
+            return false;
         }
+        snprintf(buf, sizeof(buf), "%s/%s.000", path, base);
+        if (!load_file(buf, 0, &g.master.data, &g.master.size)) {
+            tsb::platform::log("error: cannot open %s.000\n", base);
+            return false;
+        }
+        tsb::platform::log("loaded %s.000: %zu bytes (v5 HD, raw)\n", base, g.master.size);
+        snprintf(buf, sizeof(buf), "%s/%s.001", path, base);
+        if (!load_file(buf, 0, &g.disk[0].data, &g.disk[0].size)) {
+            tsb::platform::log("error: cannot open %s.001\n", base);
+            return false;
+        }
+        tsb::platform::log("loaded %s.001: %zu bytes (v5 HD, raw)\n", base, g.disk[0].size);
     }
     return true;
 }
@@ -862,6 +906,26 @@ void log(const char *fmt, ...) {
     va_end(ap);
 }
 void log_flush() { fflush(stderr); }
+
+size_t heap_free() {
+#if defined(__GLIBC__)
+    struct mallinfo2 mi = mallinfo2();
+    return (size_t)mi.fordblks;
+#else
+    return 0;
+#endif
+}
+size_t heap_used() {
+#if defined(__GLIBC__)
+    struct mallinfo2 mi = mallinfo2();
+    return (size_t)mi.uordblks;
+#else
+    return 0;
+#endif
+}
+
+// No-op on host — log lines already go to stderr.
+void log_show_previous_boot() {}
 
 [[noreturn]] void panic(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);

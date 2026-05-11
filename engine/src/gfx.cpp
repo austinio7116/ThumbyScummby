@@ -330,10 +330,23 @@ void ScummEngine::initScreens(int b, int h) {
 	int i;
 	int adj = 0;
 
+	// THUMBY-PORT: skip the unconditional nuke of all virtscreen slots.
+	// Upstream nukes here so the subsequent initVirtScreen always
+	// allocates fresh — but that defeats the rtBuffer reuse short-circuit
+	// at resource.cpp:912, and on this port (where we pre-reserve main
+	// primary + back + Z at full size in init() to prevent fragmentation
+	// during room-2 transitions on v5) it'd unconditionally free those
+	// reservations and re-fragment the heap. Letting createResource
+	// handle the decision: existing >= requested -> memset + reuse;
+	// existing < requested -> nuke + realloc (already in createResource).
+#if 0
 	for (i = 0; i < 4; i++) {
 		_res->nukeResource(rtBuffer, i + 1);
 		_res->nukeResource(rtBuffer, i + 5);
 	}
+#else
+	(void)i;
+#endif
 
 #ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
 	if (_townsScreen) {
@@ -373,7 +386,17 @@ void ScummEngine::initScreens(int b, int h) {
 
 	initVirtScreen(kMainVirtScreen, b + adj, _screenWidth, h - b, true, true);
 	initVirtScreen(kTextVirtScreen, adj, _screenWidth, b, false, false);
-	initVirtScreen(kVerbVirtScreen, h + adj, _screenWidth, _screenHeight - h - adj, false, false);
+	// THUMBY-PORT: the verb virtscreen (320x56 = 18 KB) is allocated by
+	// the engine for its verb panel + inventory text, but our scene-only
+	// redesign + overlay UI means platform::present() never reads it.
+	// Force height to 0 → ~2-byte degenerate allocation, freeing 18 KB.
+	// The engine's verb-draw paths bound writes by vs->h, so a 0-height
+	// buffer is safe (loops degenerate to no-op).
+	int verbHeight = _screenHeight - h - adj;
+#ifdef THUMBY_DEVICE
+	verbHeight = 0;
+#endif
+	initVirtScreen(kVerbVirtScreen, h + adj, _screenWidth, verbHeight, false, false);
 	_screenB = b;
 	_screenH = h;
 
@@ -389,6 +412,13 @@ void ScummEngine::initVirtScreen(VirtScreenNumber slot, int top, int width, int 
 													 bool scrollable) {
 	VirtScreen *vs = &_virtscr[slot];
 	int size;
+
+	// Compact <21 chars: v<slot> wXhY 2<b> u<used>
+	// Drop scroll (always matches twobufs for main vs); kept w/h to spot
+	// out-of-range sizes; size of buf logged in subsequent b{idx} line.
+	tsb::platform::log("v%d %dx%d 2%d u%u\n",
+		(int)slot, width, height, (int)twobufs,
+		(unsigned)tsb::platform::heap_used());
 
 	assert(height >= 0);
 	assert((int)slot >= 0 && (int)slot < 4);

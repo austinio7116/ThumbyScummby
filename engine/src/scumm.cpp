@@ -166,6 +166,25 @@ struct dbgChannelDesc {
 
 const char *const insaneKeymapId = "scumm-insane";
 
+// THUMBY-PORT: compact phase heap-usage capture. tsb_ph_mark(N) stores
+// heap_used (in KB) at slot N. tsb_ph_dump emits one log line with all
+// 9 phases so they fit in the 15-line LCD overlay even after lots of
+// later boot-script logs scroll above. Phase index legend:
+//   0=preSet 1=preMus 2=postMus 3=postTxt 4=cmpBuf
+//   5=postSet 6=postIdx 7=postRst 8=preBoot 9=postBoot
+static unsigned s_ph[10] = {0};
+static void tsb_ph_mark(int slot) {
+	if ((unsigned)slot < 10)
+		s_ph[slot] = (unsigned)tsb::platform::heap_used() / 1024;
+}
+static void tsb_ph_dump() {
+	// Two log lines, each <21 chars to avoid overlay truncation.
+	tsb::platform::log("Ph %u %u %u %u %u\n",
+		s_ph[0], s_ph[1], s_ph[2], s_ph[3], s_ph[4]);
+	tsb::platform::log("Ph %u %u %u %u %u\n",
+		s_ph[5], s_ph[6], s_ph[7], s_ph[8], s_ph[9]);
+}
+
 ScummEngine::ScummEngine(OSystem *syst, const DetectorResult &dr)
 	: Engine(syst),
 	  _game(dr.game),
@@ -1550,9 +1569,34 @@ Common::Error ScummEngine::init() {
 
 	_outputPixelFormat = _system->getScreenFormat();
 
+	tsb_ph_mark(0);   // preSet
 	setupScumm(macResourceFile);
+	tsb_ph_mark(5);   // postSet (after all setupScumm internals)
 
 	readIndexFile();
+	tsb_ph_mark(6);   // postIdx
+
+	// THUMBY-PORT: pre-reserve main virtscreen primary + back-buffer + Z
+	// buf at their MAX (full-screen) sizes BEFORE resetScumm's pass-1
+	// initVirtScreens. Pass 1 uses default room geometry (smaller
+	// 320x56-ish main); without pre-reserve it allocates ~17 KB-sized
+	// buffers, then runBootscript's pass-2 nukes them and tries to
+	// realloc at full 320x200 (65 KB each) — heap fragments and the
+	// back-buffer realloc OOM-hangs newlib malloc. Pre-reserving at
+	// full size means pass-1 and pass-2 both hit the rtBuffer reuse
+	// short-circuit at resource.cpp:912 (existing >= requested) → no
+	// nuke+realloc. Net heap cost ~67 KB more than the pre-reserve-off
+	// path, but sustained (vs +130 KB transient growth without).
+	// Requires allocResTypeData(rtBuffer, 0, 10, ...) to have run
+	// already; setupScumm() does that ~10 lines down from its top.
+	{
+		const uint32 max_main_buf = (uint32)(_screenWidth * _screenHeight + _screenWidth * 4);
+		_res->createResource(rtBuffer, kMainVirtScreen + 1, max_main_buf);
+		_res->createResource(rtBuffer, kMainVirtScreen + 5, max_main_buf);
+		const uint32 strips = (uint32)_screenWidth / 8;
+		const uint32 max_zbuf = ((uint32)_screenHeight + 4) * strips * 4;
+		_res->createResource(rtBuffer, 9, max_zbuf);
+	}
 
 	// ThumbyScummby: skip the in-engine REPL debugger and Keymapper —
 	// see resetScumm() comment.  Both saved heap on device and dodged
@@ -1560,6 +1604,7 @@ Common::Error ScummEngine::init() {
 	_insaneKeymap = nullptr;
 
 	resetScumm();
+	tsb_ph_mark(7);   // postRst
 
 	resetScummVars();
 
@@ -1715,8 +1760,10 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	else
 		_sound = new Sound(this, _mixer, useReplacementAudioTracks);
 
+	tsb_ph_mark(1);   // preMus
 	// Setup the music engine
 	setupMusic(_game.midi);
+	tsb_ph_mark(2);   // postMus
 
 	// Load localization data, if present
 	loadLanguageBundle();
@@ -1726,19 +1773,21 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 
 	// Create and clear the text surface
 	_textSurface.create(_screenWidth * _textSurfaceMultiplier, _screenHeight * _textSurfaceMultiplier, Graphics::PixelFormat::createFormatCLUT8());
+	tsb_ph_mark(3);   // postTxt
 	clearTextSurface();
 
 	// THUMBY-PORT: pre-reserve the rtBuffer slots that the engine sizes
-	// per room (main virtscreen primary + back buffer + Z buffer).  Each
-	// can grow to ~65 KB for full-screen scrollable rooms (Mêlée map at
-	// 320*200 + 320*4 = 65280 B).  Allocating them eagerly here while
-	// the heap is still pristine pins them at the heap floor.  Combined
-	// with the rtBuffer reuse short-circuit in createResource(), later
-	// initVirtScreens / initBGBuffers calls just zero and reuse the
-	// pre-allocated blocks instead of nuke+realloc.  Without this,
-	// returning to a wide room after intermediate room transitions
-	// fragments the heap (~89 KB free across 12 chunks observed) and
-	// the back-buffer alloc fails despite enough total free memory.
+	// per room (main virtscreen primary + back buffer + Z buffer).
+	// NOTE: this block runs before allocResTypeData(rtBuffer, ...) below,
+	// so validateResource rejects each createResource and these calls
+	// are effectively no-ops (3 "Illegal Glob type Buffer" warnings
+	// every boot). Left in place because turning it on (by moving the
+	// allocResTypeData earlier) reserves ~163 KB at the heap floor —
+	// fine for MI1 v4 but starves v5 Atlantis init on the 352 KB device
+	// heap so the engine can't even reach room 0. Keeping as-is means
+	// MI1 still benefits from the rtBuffer reuse short-circuit at
+	// resource.cpp:912 (the real room-85 OOM fix) and v5 Atlantis at
+	// least boots to LucasArts.
 	{
 		const uint32 max_main_buf = (uint32)(_screenWidth * _screenHeight + _screenWidth * 4);
 		_res->createResource(rtBuffer, kMainVirtScreen + 1, max_main_buf);
@@ -1859,6 +1908,7 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	                                _textSurfaceMultiplier *
 	                                _textSurfaceMultiplier *
 	                                _outputPixelFormat.bytesPerPixel * 2);
+	tsb_ph_mark(4);   // cmpBuf
 
 	// MI2 NI DOS Demo, load demo.rec playback file if present
 	if ((_game.id == GID_MONKEY2) && (_game.features & GF_DEMO) && (_game.platform == Common::kPlatformDOS) && !ConfMan.getBool("disable_mi2_ni_demo"))
@@ -2719,7 +2769,13 @@ Common::Error ScummEngine::go() {
 		if (_game.platform == Common::kPlatformNES && _game.id == GID_MANIAC && !(_game.features & GF_DEMO)) {
 			playNESTitleScreens();
 		}
+		tsb_ph_mark(8);   // preBoot
+		tsb_ph_dump();    // one compact line with all 9 phase heap_used in KB
+		extern void logResourceStats();
+		logResourceStats();
 		runBootscript();
+		tsb_ph_mark(9);   // postBoot
+		tsb_ph_dump();
 	} else {
 		_loadFromLauncher = true; // The only purpose of this is triggering the IQ points update for INDY3/4
 		_saveLoadFlag = 0;

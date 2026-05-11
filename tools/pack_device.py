@@ -62,6 +62,47 @@ def find_file(data_dir, name):
     return None
 
 
+def detect_layout(data_dir):
+    """Pick between v4 floppy and v5 HD-installed.
+
+    Returns (layout_name, files) where files is a 9-tuple list mapping
+    each TOC slot (master, disk1-4, helper901-904) to (src_filename,
+    xor_byte). src_filename=None means "leave that slot empty".
+    Returns (None, None) if no recognised game data is present.
+    """
+    if find_file(data_dir, "000.LFL") is not None:
+        # v4 floppy: 000.LFL + DISK01-04.LEC + 901-904.LFL.
+        return "v4-floppy", [
+            ("000.LFL",    0),
+            ("DISK01.LEC", 0x69),
+            ("DISK02.LEC", 0x69),
+            ("DISK03.LEC", 0x69),
+            ("DISK04.LEC", 0x69),
+            ("901.LFL",    0),
+            ("902.LFL",    0),
+            ("903.LFL",    0),
+            ("904.LFL",    0),
+        ]
+    # v5 HD-installed: <BASE>.000 (index) + <BASE>.001 (combined data).
+    # Map .000 -> master slot, .001 -> disk1 slot; leave disk2-4 and
+    # helpers empty.
+    for fname in sorted(os.listdir(data_dir)):
+        if fname.lower().endswith(".000"):
+            base = fname[:-4]
+            return "v5-hd", [
+                (base + ".000", 0x69),
+                (base + ".001", 0x69),
+                (None, 0),
+                (None, 0),
+                (None, 0),
+                (None, 0),
+                (None, 0),
+                (None, 0),
+                (None, 0),
+            ]
+    return None, None
+
+
 def main():
     if len(sys.argv) != 3:
         print(f"usage: {sys.argv[0]} <data-dir> <out-blob>", file=sys.stderr)
@@ -69,21 +110,16 @@ def main():
 
     data_dir, out_path = sys.argv[1], sys.argv[2]
 
-    # Pre-decrypt LECs (XOR with 0x69) so that on flash they're plain
-    # text. Combined with engine_init forcing _encbyte=0 for these files,
-    # the resource loader can return flash pointers directly, no heap
-    # alloc / no copy. Critical for fitting MI1 in 376 KB heap.
-    files = [
-        ("000.LFL",     0),
-        ("DISK01.LEC",  0x69),
-        ("DISK02.LEC",  0x69),
-        ("DISK03.LEC",  0x69),
-        ("DISK04.LEC",  0x69),
-        ("901.LFL",     0),
-        ("902.LFL",     0),
-        ("903.LFL",     0),
-        ("904.LFL",     0),
-    ]
+    # Pre-decrypt encrypted files (XOR with 0x69) so on flash they're
+    # plain. Combined with engine_init forcing _encbyte=0 on
+    # THUMBY_DEVICE, the resource loader can return flash pointers
+    # directly — no heap alloc / no copy. Critical for fitting in the
+    # 376 KB heap.
+    layout_name, files = detect_layout(data_dir)
+    if files is None:
+        print(f"error: no recognised game data in {data_dir}", file=sys.stderr)
+        return 1
+    print(f"  layout: {layout_name}", file=sys.stderr)
 
     bodies = []
     sizes = []
@@ -91,10 +127,15 @@ def main():
 
     cur_off = HEADER_SIZE
 
-    for name, xor_byte in files:
-        p = find_file(data_dir, name)
+    for src_name, xor_byte in files:
+        if src_name is None:
+            bodies.append(b"")
+            sizes.append(0)
+            offsets.append(0)
+            continue
+        p = find_file(data_dir, src_name)
         if not p:
-            print(f"warning: {name} not found in {data_dir}", file=sys.stderr)
+            print(f"warning: {src_name} not found in {data_dir}", file=sys.stderr)
             bodies.append(b"")
             sizes.append(0)
             offsets.append(0)
@@ -109,7 +150,7 @@ def main():
         sizes.append(len(body))
         offsets.append(cur_off)
         cur_off += len(body)
-        print(f"  {name:>14}: {len(body):>9} bytes -> off 0x{offsets[-1]:08x}",
+        print(f"  {src_name:>14}: {len(body):>9} bytes -> off 0x{offsets[-1]:08x}",
               file=sys.stderr)
 
     # Build header

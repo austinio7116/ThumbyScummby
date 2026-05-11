@@ -223,6 +223,16 @@ void log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 // guaranteed visible even if a crash follows. Host: no-op.
 void log_flush();
 
+// Heap accounting. Device: mallinfo via newlib. Host: same.
+// Used by debug logs to localise OOM hangs.
+size_t heap_free();
+size_t heap_used();
+
+// Survive-reset log ring: render previous boot's log to LCD and wait
+// for the user to dismiss. Called after platform_init, before engine
+// bringup. No-op on host or when ring is empty.
+void log_show_previous_boot();
+
 // Fatal error — print and halt. Engine calls this on unrecoverable
 // problems (missing resource, unimplemented opcode in critical path).
 [[noreturn]] void panic(const char *fmt, ...)

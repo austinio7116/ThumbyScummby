@@ -20,6 +20,7 @@ extern "C" {
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <malloc.h>
 #include <string.h>
 
 // ---------------------------------------------------------------------------
@@ -661,6 +662,41 @@ void sleep_ms(uint32_t ms) {
 
 static void logAppendChar(char c);  // forward decl
 static void logRenderToFb();        // forward decl
+// Survive-reset SRAM log ring. Lives in uninitialized SRAM so the
+// contents persist across watchdog/soft reset (RP2350 only loses
+// non-NoInit SRAM on full power cycle). After a hang, hold MENU on the
+// next boot to view this ring before engine init runs.
+#define TSB_LOG_RING_MAGIC 0xCAFE1234u
+#define TSB_LOG_RING_SIZE  4096
+struct LogRing {
+    uint32_t magic;
+    uint32_t head;
+    uint32_t wrapped;
+    char     buf[TSB_LOG_RING_SIZE];
+};
+__attribute__((section(".uninitialized_data")))
+static LogRing g_logRing;
+
+static void logRingReset() {
+    g_logRing.magic   = TSB_LOG_RING_MAGIC;
+    g_logRing.head    = 0;
+    g_logRing.wrapped = 0;
+    for (int i = 0; i < TSB_LOG_RING_SIZE; i++) g_logRing.buf[i] = 0;
+}
+static inline void logRingEnsureValid() {
+    // First boot after power-on: SRAM is random garbage, magic almost
+    // certainly doesn't match. Initialise.
+    if (g_logRing.magic != TSB_LOG_RING_MAGIC) logRingReset();
+}
+static void logRingAppend(const char *s, int n) {
+    logRingEnsureValid();
+    for (int i = 0; i < n; i++) {
+        g_logRing.buf[g_logRing.head] = s[i];
+        g_logRing.head = (g_logRing.head + 1) % TSB_LOG_RING_SIZE;
+        if (g_logRing.head == 0) g_logRing.wrapped = 1;
+    }
+}
+
 void log(const char *fmt, ...) {
     char buf[128];
     va_list ap; va_start(ap, fmt);
@@ -668,9 +704,25 @@ void log(const char *fmt, ...) {
     va_end(ap);
     if (n < 0) return;
     if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
+    // Persist to the survive-reset ring first (cheap, no LCD I/O).
+    logRingAppend(buf, n);
+    // Mirror to bottom-of-screen FB overlay (kept for boot-time visibility
+    // before the engine starts painting full-screen frames).
     for (int i = 0; i < n; i++) logAppendChar(buf[i]);
 }
 void log_flush() { logRenderToFb(); }
+
+size_t heap_free() {
+    struct mallinfo mi = mallinfo();
+    return (size_t)mi.fordblks;
+}
+size_t heap_used() {
+    struct mallinfo mi = mallinfo();
+    return (size_t)mi.uordblks;
+}
+
+// log_show_previous_boot defined further down — body lives after
+// kFont5x7's definition so name lookup resolves.
 
 // Boot diagnostic splash — paints a 128×128 solid frame so a hang
 // inside engine_init can be localised by the colour on screen.
@@ -787,7 +839,9 @@ static const uint8_t kFont5x7[95][5] = {
 };
 
 // 8 lines × 21 chars (uses 6 px per char, fits 128 / 6 = 21).
-static constexpr int kLogLines = 8;
+// 15 lines × 8 px = 120 px, + 8 px header = full 128 px LCD coverage.
+// User reads these directly off the LCD during boot — no reset needed.
+static constexpr int kLogLines = 15;
 static constexpr int kLogCols  = 21;
 static char     g_logBuf[kLogLines][kLogCols + 1] = {{0}};
 static int      g_logCursor = 0;  // current line being filled
@@ -914,6 +968,129 @@ void lcd_dim_box(int x, int y, int w, int h) {
             row[dx] = (row[dx] >> 1) & 0x7BEFu;
         }
     }
+}
+
+// Render previous boot's log ring to LCD with paging, then clear it
+// for the new boot. Called from main() between platform_init and
+// engine bringup. If ring is empty or magic invalid, returns
+// immediately (first boot after power-on, or no prior log).
+//
+// Controls:
+//   UP/DOWN  scroll one line
+//   LB/RB    scroll one page
+//   A        dismiss, continue to engine
+void log_show_previous_boot() {
+    using namespace tsb::platform_pico;
+    if (g_logRing.magic != TSB_LOG_RING_MAGIC) {
+        logRingReset();
+        return;
+    }
+    if (g_logRing.head == 0 && !g_logRing.wrapped) return;
+
+    // Linearise the ring (oldest -> newest) into a temp buffer.
+    static char lin[TSB_LOG_RING_SIZE + 1];
+    size_t total = 0;
+    if (g_logRing.wrapped) {
+        for (uint32_t i = g_logRing.head; i < TSB_LOG_RING_SIZE; i++)
+            lin[total++] = g_logRing.buf[i];
+    }
+    for (uint32_t i = 0; i < g_logRing.head; i++)
+        lin[total++] = g_logRing.buf[i];
+    lin[total] = 0;
+
+    // Index lines, wrapping at 21 chars OR newline so nothing in the
+    // ring gets truncated on screen.
+    constexpr int kMaxLines = 512;
+    constexpr int kRowChars = 21;
+    static const char *line_ptr[kMaxLines];
+    static int         line_len[kMaxLines];
+    int line_count = 0;
+    {
+        size_t pos = 0;
+        while (pos < total && line_count < kMaxLines) {
+            size_t row_start = pos;
+            int row_chars = 0;
+            while (pos < total && lin[pos] != '\n' && row_chars < kRowChars) {
+                pos++;
+                row_chars++;
+            }
+            line_ptr[line_count] = lin + row_start;
+            line_len[line_count] = row_chars;
+            line_count++;
+            if (pos < total && lin[pos] == '\n') pos++;
+        }
+    }
+    if (line_count == 0) { logRingReset(); return; }
+
+    const int rows_visible = 15;
+    int scroll = (line_count > rows_visible) ? (line_count - rows_visible) : 0;
+
+    auto draw_glyph = [](int px, int py, char c, uint16_t fg) {
+        if (c < 0x20 || c > 0x7E) c = '?';
+        const uint8_t *glyph = kFont5x7[c - 0x20];
+        for (int gx = 0; gx < 5; gx++) {
+            uint8_t bits = glyph[gx];
+            for (int gy = 0; gy < 7; gy++) {
+                if (bits & (1 << gy)) {
+                    int x = px + gx, y = py + gy;
+                    if (x >= 0 && x < DISPLAY_W && y >= 0 && y < DISPLAY_H)
+                        g_fb[y * DISPLAY_W + x] = fg;
+                }
+            }
+        }
+    };
+
+    auto render = [&]() {
+        for (int i = 0; i < DISPLAY_W * DISPLAY_H; i++) g_fb[i] = 0;
+        for (int y = 0; y < 8; y++)
+            for (int x = 0; x < DISPLAY_W; x++)
+                g_fb[y * DISPLAY_W + x] = 0xF800;
+        const char hdr[] = "BOOT LOG A=GO U/D=SCRL";
+        for (int col = 0; col < 21 && hdr[col]; col++)
+            draw_glyph(col * 6, 0, hdr[col], 0xFFFF);
+        for (int row = 0; row < rows_visible; row++) {
+            int idx = scroll + row;
+            if (idx >= line_count) break;
+            int py = 8 + row * 8;
+            const char *txt = line_ptr[idx];
+            int len = line_len[idx];
+            for (int col = 0; col < 21 && col < len; col++)
+                draw_glyph(col * 6, py, txt[col], 0xFFFF);
+        }
+        lcd_present(g_fb);
+        lcd_wait_idle();
+    };
+
+    struct buttons_state prev = {}, bs = {};
+    buttons_read(&prev);
+    render();
+    while (true) {
+        sleep_ms(30);
+        buttons_read(&bs);
+        bool dirty = false;
+        if (bs.a && !prev.a) break;
+        if (bs.up && !prev.up) {
+            if (scroll > 0) { scroll--; dirty = true; }
+        }
+        if (bs.down && !prev.down) {
+            if (scroll + rows_visible < line_count) { scroll++; dirty = true; }
+        }
+        if (bs.lb && !prev.lb) {
+            scroll -= rows_visible - 1;
+            if (scroll < 0) scroll = 0;
+            dirty = true;
+        }
+        if (bs.rb && !prev.rb) {
+            scroll += rows_visible - 1;
+            int max = line_count - rows_visible;
+            if (max < 0) max = 0;
+            if (scroll > max) scroll = max;
+            dirty = true;
+        }
+        prev = bs;
+        if (dirty) render();
+    }
+    logRingReset();
 }
 
 }  // namespace tsb::platform

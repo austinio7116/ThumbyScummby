@@ -7,6 +7,7 @@
 #include "scummvm_compat.h"
 #include "scumm/scumm.h"
 #include "scumm/scumm_v4.h"
+#include "scumm/scumm_v5.h"
 #include "scumm/detection.h"
 #include "common/events.h"
 #include "common/keyboard.h"
@@ -309,6 +310,11 @@ int main() {
 
     tsb::platform_pico::init_all();
 
+    // If the previous boot hung mid-engine, its log ring survives in
+    // .uninitialized_data. Show it now (A to dismiss) before booting
+    // into the engine, then clear for a fresh log.
+    tsb::platform::log_show_previous_boot();
+
     if (!tsb::platform_pico::blob_ok()) {
         // No game data on flash — splash dark red and halt.
         tsb::platform::debug_splash(0x8000);
@@ -356,17 +362,25 @@ int main() {
             osys.setUseMiFontForSpeech(use_mi);
     }
 
+    // Indy 4 — Fate of Atlantis (SCUMM v5 floppy DOS, HD-installed).
+    // _filenamePattern + kGenDiskNum tells setupScumm to build names
+    // like "atlantis.000" / "atlantis.001"; the link-stubs file
+    // resolver maps the .000/.001 suffixes onto data_master_index /
+    // data_disk(1).
     tsb::DetectorResult dr;
-    dr.game.id        = (int)tsb::GID_MONKEY_VGA;
-    dr.game.version   = 4;
+    dr.game.id        = (int)tsb::GID_INDY4;
+    dr.game.variant   = "Floppy";   // input.cpp:1098 strcmps this for GID_INDY4
+    dr.game.version   = 5;
     dr.game.platform  = Common::kPlatformDOS;
-    dr.game.features  = tsb::GF_SMALL_HEADER | tsb::GF_USE_KEY;
+    dr.game.features  = tsb::GF_USE_KEY;
     dr.game.heversion = 0;
     dr.language       = Common::EN_ANY;
     dr.extra          = "";
-    dr.md5            = "8e4ee4db46954bfcb6d2654dde0aae25";
+    dr.md5            = "1875b90fade138c9253a8e967007031a";
+    dr.fp.pattern     = "atlantis.%03d";
+    dr.fp.genMethod   = tsb::kGenDiskNum;
 
-    tsb::ScummEngine *eng = new tsb::ScummEngine_v4(&osys, dr);
+    tsb::ScummEngine *eng = new tsb::ScummEngine_v5(&osys, dr);
     osys.setEngine(eng);
 
     Common::Error err = eng->init();

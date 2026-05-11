@@ -2568,7 +2568,10 @@ void ScummEngine_v5::o5_roomOps() {
 				error("SO_SAVE_STRING: Unsupported filename %s", filename.c_str());
 			}
 
-			Common::OutSaveFile *file = _saveFileMan->openForSaving(filename);
+			// ThumbyScummby — _saveFileMan is intentionally null in this
+			// build (see scummvm_link_stubs.cpp); skip the SO_SAVE_STRING
+			// silently so Indy 4's boot-time IQ-points save doesn't crash.
+			Common::OutSaveFile *file = _saveFileMan ? _saveFileMan->openForSaving(filename) : nullptr;
 			if (file != nullptr) {
 				byte *ptr;
 				ptr = getResourceAddress(rtString, a);
@@ -2597,7 +2600,8 @@ void ScummEngine_v5::o5_roomOps() {
 				error("SO_LOAD_STRING: Unsupported filename %s", filename.c_str());
 			}
 
-			Common::InSaveFile *file = _saveFileMan->openForLoading(filename);
+			// Same _saveFileMan-is-null guard as SO_SAVE_STRING above.
+			Common::InSaveFile *file = _saveFileMan ? _saveFileMan->openForLoading(filename) : nullptr;
 			if (file != nullptr) {
 				byte *ptr;
 				const int len = file->size();
