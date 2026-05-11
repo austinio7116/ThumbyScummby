@@ -310,11 +310,6 @@ int main() {
 
     tsb::platform_pico::init_all();
 
-    // If the previous boot hung mid-engine, its log ring survives in
-    // .uninitialized_data. Show it now (A to dismiss) before booting
-    // into the engine, then clear for a fresh log.
-    tsb::platform::log_show_previous_boot();
-
     if (!tsb::platform_pico::blob_ok()) {
         // No game data on flash — splash dark red and halt.
         tsb::platform::debug_splash(0x8000);

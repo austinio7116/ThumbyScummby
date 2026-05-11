@@ -817,6 +817,74 @@ void CharsetRendererPC::drawBits1(Graphics::Surface &dest, int x, int y, const b
 	}
 }
 
+// THUMBY-PORT: PackedTextSurface overload. Mirrors the Graphics::Surface
+// version but writes via PackedTextSurface::setPixel — slower per pixel
+// but safe across the 4bpp packed storage. Glyph rendering isn't on the
+// per-frame hot path; this fires only when new text appears.
+//
+// On THUMBY_DEVICE the _thumbyLcdTextMode path short-circuits text
+// rendering before this call (charset.cpp:1254 early return), so this
+// is effectively only used by the host build.
+void CharsetRendererPC::drawBits1(Scumm::PackedTextSurface &dest, int x, int y, const byte *src, int drawTop, int width, int height) {
+	if (_vm->_useCJKMode && _vm->isScummvmKorTarget()) {
+		// CJK Korean path uses pointer arithmetic into a Graphics::Surface;
+		// not adapted for packed storage. No CJK in v5 Atlantis/MI1 EN.
+		return;
+	}
+
+	if (_shadowType == kOutlineShadowType) {
+		x++;
+		y++;
+	}
+
+	uint8 col = _color;
+	int savedX = x;
+	byte bits = 0;
+	byte prevBits = 0;
+	bool leftShadePixel = false;
+
+	for (int yy = 0; yy < height && yy + drawTop < dest.h; yy++) {
+		for (int xx = 0; xx < width; xx++) {
+			if ((xx % 8) == 0) {
+				prevBits = ~bits;
+				bits = *src++;
+				leftShadePixel = true;
+			}
+			if ((bits & revBitMask(xx % 8)) && yy + drawTop >= 0) {
+				const int px = x + xx;
+				const int py = y + yy;
+				if (_shadowType == kNormalShadowType) {
+					dest.setPixel(px + 1, py,     _shadowColor);
+					dest.setPixel(px + 1, py + 1, _shadowColor);
+					if (!_vm->_isIndy4Jap)
+						dest.setPixel(px,     py + 1, _shadowColor);
+				} else if (_shadowType == kHorizontalShadowType) {
+					dest.setPixel(px + 1, py, _shadowColor);
+				} else if (_shadowType == kOutlineShadowType) {
+					dest.setPixel(px + 1, py,     _shadowColor);
+					dest.setPixel(px,     py + 1, _shadowColor);
+					dest.setPixel(px + 1, py + 1, _shadowColor);
+					if (leftShadePixel) {
+						dest.setPixel(px - 1, py, _shadowColor);
+						leftShadePixel = false;
+					}
+					if (prevBits & revBitMask(xx % 8))
+						dest.setPixel(px, py - 1, _shadowColor);
+				}
+
+				// Same C64 X-axis guard as the Graphics::Surface variant.
+				if (_vm->_game.platform != Common::kPlatformC64 || (savedX + xx < dest.pitch)) {
+					dest.setPixel(px, py, col);
+				}
+			} else if (!(bits & revBitMask(xx % 8))) {
+				leftShadePixel = true;
+				if (yy < height - 1 && _vm->_useCJKMode && _vm->_game.platform == Common::kPlatformSegaCD)
+					dest.setPixel(x + xx, y + yy, 0);
+			}
+		}
+	}
+}
+
 void CharsetRendererPC::drawBits1Kor(Graphics::Surface &dest, int x1, int y1, const byte *src, int drawTop, int width, int height) {
 	byte *dst = (byte *)dest.getBasePtr(x1, y1);
 
@@ -1319,8 +1387,18 @@ void CharsetRendererClassic::printCharIntern(bool is2byte, const byte *charPtr, 
 			dstSurface = *vs;
 			dstPtr = vs->getPixels(_left, drawTop);
 		} else {
+#ifdef THUMBY_DEVICE
+			// THUMBY-PORT: _textSurface is PackedTextSurface (4bpp) on
+			// device; the assignment + getBasePtr below don't compile.
+			// This branch is unreachable here because the function
+			// early-returns at line ~1264 when _thumbyLcdTextMode is on
+			// (always true on device). Return defensively in case any
+			// future code path bypasses that short-circuit.
+			return;
+#else
 			dstSurface = _vm->_textSurface;
 			dstPtr = (byte *)_vm->_textSurface.getBasePtr(_left * _vm->_textSurfaceMultiplier, (_top - _vm->_screenTop) * _vm->_textSurfaceMultiplier);
+#endif
 		}
 
 		if (_blitAlso && vs->hasTwoBuffers) {
@@ -1962,6 +2040,13 @@ byte CharsetRendererMac::getTextShadowColor() {
 }
 
 void CharsetRendererMac::printCharInternal(int chr, int color, bool shadow, int x, int y) {
+#ifdef THUMBY_DEVICE
+	// THUMBY-PORT: Mac charset renderer is never instantiated on device.
+	// Body references _textSurface as Graphics::Surface but it's a
+	// PackedTextSurface here — function body excluded from compilation.
+	(void)chr; (void)color; (void)shadow; (void)x; (void)y;
+}
+#else
 	if (_vm->_game.id == GID_LOOM) {
 		x++;
 		y++;
@@ -2019,6 +2104,7 @@ void CharsetRendererMac::printCharInternal(int chr, int color, bool shadow, int 
 		}
 	}
 }
+#endif  // !THUMBY_DEVICE  (closes the printCharInternal body guard at ~line 2042)
 
 void CharsetRendererMac::setColor(byte color, bool) {
 	_color = color;
@@ -2227,8 +2313,10 @@ void CharsetRendererNES::printChar(int chr, bool ignoreCharsetMask) {
 
 	if (ignoreCharsetMask || !vs->hasTwoBuffers)
 		drawBits1(*vs, _left + vs->xstart + offset, drawTop, charPtr, drawTop, origWidth, origHeight);
+#ifndef THUMBY_DEVICE
 	else
 		drawBits1(_vm->_textSurface, _left + offset, _top, charPtr, drawTop, origWidth, origHeight);
+#endif
 
 	if (_str.left > _left)
 		_str.left = _left;

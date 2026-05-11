@@ -42,6 +42,7 @@ add_library(thumbyscummby_engine STATIC
     src/graphics/surface.cpp
     src/graphics/palette.cpp
     src/graphics/managed_surface.cpp
+    src/packed_text_surface.cpp
 
     # ---- Group 1: scummvm engines/scumm/ — transcribed ----
     # Currently enabled (build clean):

@@ -153,6 +153,11 @@ public:
 protected:
 	virtual void setShadowMode(ShadowType mode);
 	virtual void drawBits1(Graphics::Surface &dest, int x, int y, const byte *src, int drawTop, int width, int height);
+	// THUMBY-PORT: overload for 4bpp packed _textSurface. Uses setPixel
+	// per glyph pixel (not hot path — text rendering isn't every frame).
+	// On THUMBY_DEVICE with _thumbyLcdTextMode this is unreachable (the
+	// LCD-overlay path returns early), but it must compile.
+	void drawBits1(Scumm::PackedTextSurface &dest, int x, int y, const byte *src, int drawTop, int width, int height);
 	void drawBits1Kor(Graphics::Surface &dest, int x1, int y1, const byte *src, int drawTop, int width, int height);
 };
 

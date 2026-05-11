@@ -45,6 +45,7 @@
 #include "scumm/detection.h"
 #include "scumm/script.h"
 #include "scumm/serializer.h"
+#include "scumm/packed_text_surface.h"
 
 #ifdef __DS__
 /* This disables the dual layer mode which is used in FM-Towns versions
@@ -1821,7 +1822,17 @@ public:
 	 * All text is normally rendered into this overlay surface. Then later
 	 * drawStripToScreen() composits it over the game graphics.
 	 */
+	// THUMBY-PORT: on RP2350 the engine state crowds the heap budget.
+	// Replacing _textSurface's 64 KB CLUT8 storage with 32 KB 4bpp
+	// packed storage frees enough heap to fit v5 Atlantis. Host build
+	// uses the original Graphics::Surface (no memory pressure there;
+	// keeps Mac/CJK/HE paths working unchanged).  See
+	// engine/include/scumm/packed_text_surface.h for the API.
+#ifdef THUMBY_DEVICE
+	Scumm::PackedTextSurface _textSurface;
+#else
 	Graphics::Surface _textSurface;
+#endif
 	int _textSurfaceMultiplier = 0;
 
 	// THUMBY-PORT: when true (default for our build), CharsetRendererClassic

@@ -413,13 +413,6 @@ void ScummEngine::initVirtScreen(VirtScreenNumber slot, int top, int width, int 
 	VirtScreen *vs = &_virtscr[slot];
 	int size;
 
-	// Compact <21 chars: v<slot> wXhY 2<b> u<used>
-	// Drop scroll (always matches twobufs for main vs); kept w/h to spot
-	// out-of-range sizes; size of buf logged in subsequent b{idx} line.
-	tsb::platform::log("v%d %dx%d 2%d u%u\n",
-		(int)slot, width, height, (int)twobufs,
-		(unsigned)tsb::platform::heap_used());
-
 	assert(height >= 0);
 	assert((int)slot >= 0 && (int)slot < 4);
 
@@ -666,7 +659,7 @@ void ScummEngine::drawStripToScreen(VirtScreen *vs, int x, int width, int top, i
 	// Some paranoia checks
 	assert(top >= 0 && bottom <= vs->h);
 	assert(x >= 0 && width <= vs->pitch);
-	assert(_textSurface.getPixels());
+	assert(_textSurface.w > 0);
 
 	// Some extra vertical alignment for certain render modes. It matters for MI1EGA. The dithering patterns require the alignment,
 	// otherwise there will be visible glitches. It can be found in the original interpreters.
@@ -716,11 +709,13 @@ void ScummEngine::drawStripToScreen(VirtScreen *vs, int x, int width, int top, i
 
 		// Compute pointer to the text surface
 		assert(_compositeBuf);
+#ifndef THUMBY_DEVICE
 		const void *text = _textSurface.getBasePtr(x * m, y * m);
 
 		// The values x, width, etc. are all multiples of 8 at this point,
 		// so loop unrolloing might be a good idea...
 		assert(IS_ALIGNED(text, 4));
+#endif
 		assert(0 == (width & 3));
 
 #ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
@@ -732,9 +727,31 @@ void ScummEngine::drawStripToScreen(VirtScreen *vs, int x, int width, int top, i
 		// Compose the text over the game graphics
 		if (_outputPixelFormat.bytesPerPixel == 2) {
 			const byte *srcPtr = (const byte *)src;
-			const byte *textPtr = (byte *)_textSurface.getBasePtr(x * m, y * m);
 			byte *dstPtr = _compositeBuf;
-
+#ifdef THUMBY_DEVICE
+			// THUMBY-PORT: _textSurface is 4bpp packed; unpack a row at a
+			// time into stack scratch then read as 8bpp.  Per-row unpack
+			// (~320 bytes) is cheap vs the palette lookup that follows.
+			byte text_row[640];
+			for (int h = 0; h < height * m; ++h) {
+				_textSurface.readRow(text_row, y * m + h, x * m, width * m);
+				const byte *textPtr = text_row;
+				for (int w = 0; w < width * m; ++w) {
+					uint16 tmp = *textPtr++;
+					if (tmp == CHARSET_MASK_TRANSPARENCY) {
+						tmp = READ_UINT16(srcPtr);
+						WRITE_UINT16(dstPtr, tmp); dstPtr += 2;
+					} else if (_game.heversion != 0) {
+						error ("16Bit Color HE Game using old charset");
+					} else {
+						WRITE_UINT16(dstPtr, _16BitPalette[tmp]); dstPtr += 2;
+					}
+					srcPtr += vs->format.bytesPerPixel;
+				}
+				srcPtr += vsPitch;
+			}
+#else
+			const byte *textPtr = (byte *)_textSurface.getBasePtr(x * m, y * m);
 			for (int h = 0; h < height * m; ++h) {
 				for (int w = 0; w < width * m; ++w) {
 					uint16 tmp = *textPtr++;
@@ -751,6 +768,7 @@ void ScummEngine::drawStripToScreen(VirtScreen *vs, int x, int width, int top, i
 				srcPtr += vsPitch;
 				textPtr += _textSurface.pitch - width * m;
 			}
+#endif
 		} else {
 #ifdef USE_ARM_GFX_ASM
 			asmDrawStripToScreen(height, width, text, src, _compositeBuf, vs->pitch, width, _textSurface.pitch);
@@ -761,30 +779,35 @@ void ScummEngine::drawStripToScreen(VirtScreen *vs, int x, int width, int top, i
 
 			vsPitch >>= 2;
 
+#ifdef THUMBY_DEVICE
+			byte text_row[640];
+			for (int h = 0; h < height * m; ++h) {
+				_textSurface.readRow(text_row, y * m + h, x * m, width * m);
+				const uint32 *text32 = (const uint32 *)text_row;
+				for (int w = width * m; w > 0; w -= 4) {
+					uint32 temp = *text32++;
+					uint32 mask = temp ^ CHARSET_MASK_TRANSPARENCY_32;
+					mask = (((mask & 0x7f7f7f7f) + 0x7f7f7f7f) | mask) & 0x80808080;
+					mask = ((mask >> 7) + 0x7f7f7f7f) ^ 0x80808080;
+					*dst32++ = ((temp ^ *src32++) & mask) ^ temp;
+				}
+				src32 += vsPitch;
+			}
+#else
 			const uint32 *text32 = (const uint32 *)text;
 			const int textPitch = (_textSurface.pitch - width * m) >> 2;
 			for (int h = height * m; h > 0; --h) {
 				for (int w = width * m; w > 0; w -= 4) {
 					uint32 temp = *text32++;
-
-					// Generate a byte mask for those text pixels (bytes) with
-					// value CHARSET_MASK_TRANSPARENCY. In the end, each byte
-					// in mask will be either equal to 0x00 or 0xFF.
-					// Doing it this way avoids branches and bytewise operations,
-					// at the cost of readability ;).
 					uint32 mask = temp ^ CHARSET_MASK_TRANSPARENCY_32;
 					mask = (((mask & 0x7f7f7f7f) + 0x7f7f7f7f) | mask) & 0x80808080;
 					mask = ((mask >> 7) + 0x7f7f7f7f) ^ 0x80808080;
-
-					// The following line is equivalent to this code:
-					//   *dst32++ = (*src32++ & mask) | (temp & ~mask);
-					// However, some compilers can generate somewhat better
-					// machine code for this equivalent statement:
 					*dst32++ = ((temp ^ *src32++) & mask) ^ temp;
 				}
 				src32 += vsPitch;
 				text32 += textPitch;
 			}
+#endif
 #endif
 		}
 		src = _compositeBuf;
@@ -1268,27 +1291,39 @@ void ScummEngine::restoreBackground(Common::Rect rect, byte backColor) {
 		if (vs->number == kMainVirtScreen && _charset->_hasMask) {
 #ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
 			if (_game.platform == Common::kPlatformFMTowns) {
-				byte *mask = (byte *)_textSurface.getBasePtr(rect.left * _textSurfaceMultiplier, (rect.top + vs->topline) * _textSurfaceMultiplier);
-				fill(mask, _textSurface.pitch, 0, width * _textSurfaceMultiplier, height * _textSurfaceMultiplier, _textSurface.format.bytesPerPixel);
+				const int mx = rect.left * _textSurfaceMultiplier;
+				const int my = (rect.top + vs->topline) * _textSurfaceMultiplier;
+				const int mw = width * _textSurfaceMultiplier;
+				const int mh = height * _textSurfaceMultiplier;
+				_textSurface.fillRect(Common::Rect(mx, my, mx + mw, my + mh), 0);
 			} else
 #endif
 			{
-				byte *mask = (byte *)_textSurface.getBasePtr(rect.left, rect.top - _screenTop);
-				fill(mask, _textSurface.pitch, CHARSET_MASK_TRANSPARENCY, width * _textSurfaceMultiplier, height * _textSurfaceMultiplier, _textSurface.format.bytesPerPixel);
+				const int mx = rect.left;
+				const int my = rect.top - _screenTop;
+				const int mw = width * _textSurfaceMultiplier;
+				const int mh = height * _textSurfaceMultiplier;
+				_textSurface.fillRect(Common::Rect(mx, my, mx + mw, my + mh), CHARSET_MASK_TRANSPARENCY);
 			}
 		}
 	} else {
 #ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
 		if (_game.platform == Common::kPlatformFMTowns) {
 			backColor |= (backColor << 4);
-			byte *mask = (byte *)_textSurface.getBasePtr(rect.left * _textSurfaceMultiplier, (rect.top + vs->topline) * _textSurfaceMultiplier);
-			fill(mask, _textSurface.pitch, backColor, width * _textSurfaceMultiplier, height * _textSurfaceMultiplier, _textSurface.format.bytesPerPixel);
+			const int mx = rect.left * _textSurfaceMultiplier;
+			const int my = (rect.top + vs->topline) * _textSurfaceMultiplier;
+			const int mw = width * _textSurfaceMultiplier;
+			const int mh = height * _textSurfaceMultiplier;
+			_textSurface.fillRect(Common::Rect(mx, my, mx + mw, my + mh), backColor);
 		}
 #endif
 
 		if (_macScreen) {
-			byte *mask = (byte *)_textSurface.getBasePtr(rect.left * _textSurfaceMultiplier, (rect.top + vs->topline) * _textSurfaceMultiplier);
-			fill(mask, _textSurface.pitch, CHARSET_MASK_TRANSPARENCY, width * _textSurfaceMultiplier, height * _textSurfaceMultiplier, _textSurface.format.bytesPerPixel);
+			const int mx = rect.left * _textSurfaceMultiplier;
+			const int my = (rect.top + vs->topline) * _textSurfaceMultiplier;
+			const int mw = width * _textSurfaceMultiplier;
+			const int mh = height * _textSurfaceMultiplier;
+			_textSurface.fillRect(Common::Rect(mx, my, mx + mw, my + mh), CHARSET_MASK_TRANSPARENCY);
 		}
 
 		if (_game.features & GF_16BIT_COLOR)
@@ -1357,11 +1392,13 @@ extern void thumby_clear_lcd_text_overlay();
 
 void ScummEngine::clearTextSurface() {
 	towns_fillTopLayerRect(0, 0, _textSurface.w, _textSurface.h, 0);
-	fill((byte *)_textSurface.getPixels(), _textSurface.pitch,
+	// fillRect works for both Graphics::Surface and PackedTextSurface
+	// (the latter encodes 0xFD -> 0xF nibble internally).
+	_textSurface.fillRect(Common::Rect(0, 0, _textSurface.w, _textSurface.h),
 #ifndef DISABLE_TOWNS_DUAL_LAYER_MODE
 		_game.platform == Common::kPlatformFMTowns ? 0 :
 #endif
-		CHARSET_MASK_TRANSPARENCY,  _textSurface.w, _textSurface.h, _textSurface.format.bytesPerPixel);
+		CHARSET_MASK_TRANSPARENCY);
 
 	// THUMBY-PORT: keep the LCD-resolution text overlay in lockstep
 	// with _textSurface — when the engine clears the latter (banner
@@ -1585,8 +1622,11 @@ void ScummEngine::drawBox(int x, int y, int x2, int y2, int color) {
 
 			blit(backbuff, vs->pitch, bgbuff, vs->pitch, width, height, vs->format.bytesPerPixel);
 			if (_charset->_hasMask) {
-				byte *mask = (byte *)_textSurface.getBasePtr(x * _textSurfaceMultiplier, (y - _screenTop) * _textSurfaceMultiplier);
-				fill(mask, _textSurface.pitch, CHARSET_MASK_TRANSPARENCY, width * _textSurfaceMultiplier, height * _textSurfaceMultiplier, _textSurface.format.bytesPerPixel);
+				const int mx = x * _textSurfaceMultiplier;
+				const int my = (y - _screenTop) * _textSurfaceMultiplier;
+				const int mw = width * _textSurfaceMultiplier;
+				const int mh = height * _textSurfaceMultiplier;
+				_textSurface.fillRect(Common::Rect(mx, my, mx + mw, my + mh), CHARSET_MASK_TRANSPARENCY);
 			}
 		}
 	} else if (_game.heversion >= 72) {
@@ -1653,8 +1693,11 @@ void ScummEngine::drawBox(int x, int y, int x2, int y2, int color) {
 					byte *mask = _virtscr[kBannerVirtScreen].getPixels(x, y);
 					fill(mask, vs->pitch, color, width * _textSurfaceMultiplier, height * _textSurfaceMultiplier, vs->format.bytesPerPixel);
 				} else {
-					byte *mask = (byte *)_textSurface.getBasePtr(x * _textSurfaceMultiplier, (y - _screenTop + vs->topline) * _textSurfaceMultiplier);
-					fill(mask, _textSurface.pitch, color, width * _textSurfaceMultiplier, height * _textSurfaceMultiplier, _textSurface.format.bytesPerPixel);
+					const int mx = x * _textSurfaceMultiplier;
+					const int my = (y - _screenTop + vs->topline) * _textSurfaceMultiplier;
+					const int mw = width * _textSurfaceMultiplier;
+					const int mh = height * _textSurfaceMultiplier;
+					_textSurface.fillRect(Common::Rect(mx, my, mx + mw, my + mh), color);
 				}
 
 				if (_game.id != GID_MONKEY && !(_game.version == 3 && vs->number == kTextVirtScreen))
@@ -1663,8 +1706,11 @@ void ScummEngine::drawBox(int x, int y, int x2, int y2, int color) {
 #endif
 
 			if (_macScreen) {
-				byte *mask = (byte *)_textSurface.getBasePtr(x * _textSurfaceMultiplier, (y - _screenTop + vs->topline) * _textSurfaceMultiplier);
-				fill(mask, _textSurface.pitch, CHARSET_MASK_TRANSPARENCY, width * _textSurfaceMultiplier, height * _textSurfaceMultiplier, _textSurface.format.bytesPerPixel);
+				const int mx = x * _textSurfaceMultiplier;
+				const int my = (y - _screenTop + vs->topline) * _textSurfaceMultiplier;
+				const int mw = width * _textSurfaceMultiplier;
+				const int mh = height * _textSurfaceMultiplier;
+				_textSurface.fillRect(Common::Rect(mx, my, mx + mw, my + mh), CHARSET_MASK_TRANSPARENCY);
 			}
 
 			fill(backbuff, vs->pitch, color, width, height, vs->format.bytesPerPixel);

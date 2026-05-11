@@ -55,26 +55,6 @@ enum {
 	RF_OFFHEAP = 0x40
 };
 
-// THUMBY-PORT: per-resource-type instrumentation. Counters track every
-// loadResource() call's path on device so we can verify XIP fastpath
-// fires for every type. Kept on for MI1 too — used to confirm "XIP
-// works generally and specifically for indy" (Atlantis).
-static unsigned s_xipHits[22] = {0};
-static unsigned s_xipBytes[22] = {0};
-static unsigned s_heapHits[22] = {0};
-static unsigned s_heapBytes[22] = {0};
-static unsigned s_xipTotal = 0;
-
-void logResourceStats() {
-	// Compact <21 chars per line: RS t<type> x<xip_count> h<heap_count>
-	for (int t = 1; t < 22; t++) {
-		if (s_xipHits[t] || s_heapHits[t]) {
-			tsb::platform::log("RS t%d x%u h%u\n",
-				t, s_xipHits[t], s_heapHits[t]);
-		}
-	}
-}
-
 
 
 extern const char *nameOfResType(ResType type);
@@ -96,11 +76,6 @@ void ScummEngine::openRoom(const int room) {
 	if (_lastLoadedRoom == room)
 		return;
 	_lastLoadedRoom = room;
-	// Log AFTER the dedup so we don't spam the on-screen overlay with
-	// same-room re-entries (boot script touches room 68 ~10 times in a row).
-	// Keep < 21 chars to avoid truncation on 21-col LCD overlay.
-	tsb::platform::log("r%d u%u\n",
-		room, (unsigned)tsb::platform::heap_used());
 
 	/* Room -1 means close file */
 	if (room == -1) {
@@ -757,24 +732,7 @@ int ScummEngine::loadResource(ResType type, ResId idx) {
 		_res->_types[type][idx]._address = const_cast<byte *>((const byte *)rawPtr);
 		_res->_types[type][idx]._size = size;
 		_res->setOffHeap(type, idx);
-		if ((unsigned)type < 22) {
-			s_xipHits[type]++;
-			s_xipBytes[type] += size;
-		}
-		s_xipTotal++;
 	} else {
-		// Heap fallback — log first 5 per type to localise bloat without
-		// spamming the ring. Counter keeps tracking after the 5th.
-		if ((unsigned)type < 22) {
-			s_heapHits[type]++;
-			s_heapBytes[type] += size;
-			if (s_heapHits[type] <= 5) {
-				// Compact format <21 chars: H t<type> s<size> u<used>
-				tsb::platform::log("H t%d s%u u%u\n",
-					(int)type, (unsigned)size,
-					(unsigned)tsb::platform::heap_used());
-			}
-		}
 		_fileHandle->read(_res->createResource(type, idx, size), size);
 	}
 
@@ -970,17 +928,8 @@ byte *ResourceManager::createResource(ResType type, ResId idx, uint32 size) {
 	// matched (delete[] of a malloc'd block corrupts the heap).
 	byte *ptr = (byte *)malloc(size + SAFETY_AREA);
 	if (ptr == nullptr) {
-		tsb::platform::log("O t%d s%u u%u\n",
-			(int)type, (unsigned)size,
-			(unsigned)tsb::platform::heap_used());
-		tsb::platform::log_flush();
 		_vm->_insideCreateResource--;
 		error("createResource(%s,%d): Out of memory while allocating %d", nameOfResType(type), idx, size);
-	}
-	if (type == rtBuffer) {
-		tsb::platform::log("b%d s%u u%u\n",
-			idx, (unsigned)size,
-			(unsigned)tsb::platform::heap_used());
 	}
 	memset(ptr, 0, size + SAFETY_AREA);
 

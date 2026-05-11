@@ -166,25 +166,6 @@ struct dbgChannelDesc {
 
 const char *const insaneKeymapId = "scumm-insane";
 
-// THUMBY-PORT: compact phase heap-usage capture. tsb_ph_mark(N) stores
-// heap_used (in KB) at slot N. tsb_ph_dump emits one log line with all
-// 9 phases so they fit in the 15-line LCD overlay even after lots of
-// later boot-script logs scroll above. Phase index legend:
-//   0=preSet 1=preMus 2=postMus 3=postTxt 4=cmpBuf
-//   5=postSet 6=postIdx 7=postRst 8=preBoot 9=postBoot
-static unsigned s_ph[10] = {0};
-static void tsb_ph_mark(int slot) {
-	if ((unsigned)slot < 10)
-		s_ph[slot] = (unsigned)tsb::platform::heap_used() / 1024;
-}
-static void tsb_ph_dump() {
-	// Two log lines, each <21 chars to avoid overlay truncation.
-	tsb::platform::log("Ph %u %u %u %u %u\n",
-		s_ph[0], s_ph[1], s_ph[2], s_ph[3], s_ph[4]);
-	tsb::platform::log("Ph %u %u %u %u %u\n",
-		s_ph[5], s_ph[6], s_ph[7], s_ph[8], s_ph[9]);
-}
-
 ScummEngine::ScummEngine(OSystem *syst, const DetectorResult &dr)
 	: Engine(syst),
 	  _game(dr.game),
@@ -1569,12 +1550,9 @@ Common::Error ScummEngine::init() {
 
 	_outputPixelFormat = _system->getScreenFormat();
 
-	tsb_ph_mark(0);   // preSet
 	setupScumm(macResourceFile);
-	tsb_ph_mark(5);   // postSet (after all setupScumm internals)
 
 	readIndexFile();
-	tsb_ph_mark(6);   // postIdx
 
 	// THUMBY-PORT: pre-reserve main virtscreen primary + back-buffer + Z
 	// buf at their MAX (full-screen) sizes BEFORE resetScumm's pass-1
@@ -1604,7 +1582,6 @@ Common::Error ScummEngine::init() {
 	_insaneKeymap = nullptr;
 
 	resetScumm();
-	tsb_ph_mark(7);   // postRst
 
 	resetScummVars();
 
@@ -1760,10 +1737,8 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	else
 		_sound = new Sound(this, _mixer, useReplacementAudioTracks);
 
-	tsb_ph_mark(1);   // preMus
 	// Setup the music engine
 	setupMusic(_game.midi);
-	tsb_ph_mark(2);   // postMus
 
 	// Load localization data, if present
 	loadLanguageBundle();
@@ -1772,8 +1747,11 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	setupCharsetRenderer(macFontFile);
 
 	// Create and clear the text surface
+#ifdef THUMBY_DEVICE
+	_textSurface.create(_screenWidth * _textSurfaceMultiplier, _screenHeight * _textSurfaceMultiplier);
+#else
 	_textSurface.create(_screenWidth * _textSurfaceMultiplier, _screenHeight * _textSurfaceMultiplier, Graphics::PixelFormat::createFormatCLUT8());
-	tsb_ph_mark(3);   // postTxt
+#endif
 	clearTextSurface();
 
 	// THUMBY-PORT: pre-reserve the rtBuffer slots that the engine sizes
@@ -1908,7 +1886,6 @@ void ScummEngine::setupScumm(const Common::Path &macResourceFile) {
 	                                _textSurfaceMultiplier *
 	                                _textSurfaceMultiplier *
 	                                _outputPixelFormat.bytesPerPixel * 2);
-	tsb_ph_mark(4);   // cmpBuf
 
 	// MI2 NI DOS Demo, load demo.rec playback file if present
 	if ((_game.id == GID_MONKEY2) && (_game.features & GF_DEMO) && (_game.platform == Common::kPlatformDOS) && !ConfMan.getBool("disable_mi2_ni_demo"))
@@ -2769,13 +2746,7 @@ Common::Error ScummEngine::go() {
 		if (_game.platform == Common::kPlatformNES && _game.id == GID_MANIAC && !(_game.features & GF_DEMO)) {
 			playNESTitleScreens();
 		}
-		tsb_ph_mark(8);   // preBoot
-		tsb_ph_dump();    // one compact line with all 9 phase heap_used in KB
-		extern void logResourceStats();
-		logResourceStats();
 		runBootscript();
-		tsb_ph_mark(9);   // postBoot
-		tsb_ph_dump();
 	} else {
 		_loadFromLauncher = true; // The only purpose of this is triggering the IQ points update for INDY3/4
 		_saveLoadFlag = 0;

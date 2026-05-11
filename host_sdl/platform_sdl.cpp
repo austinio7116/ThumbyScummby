@@ -907,26 +907,6 @@ void log(const char *fmt, ...) {
 }
 void log_flush() { fflush(stderr); }
 
-size_t heap_free() {
-#if defined(__GLIBC__)
-    struct mallinfo2 mi = mallinfo2();
-    return (size_t)mi.fordblks;
-#else
-    return 0;
-#endif
-}
-size_t heap_used() {
-#if defined(__GLIBC__)
-    struct mallinfo2 mi = mallinfo2();
-    return (size_t)mi.uordblks;
-#else
-    return 0;
-#endif
-}
-
-// No-op on host — log lines already go to stderr.
-void log_show_previous_boot() {}
-
 [[noreturn]] void panic(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     fprintf(stderr, "PANIC: ");
