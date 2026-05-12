@@ -1,16 +1,31 @@
 # ThumbyScummby
 
-A port of the SCUMM v4/v5 engine to the **Thumby Color** handheld, with *The
-Secret of Monkey Island* (VGA Floppy, 1990) as the reference title.  The
-engine runs natively on the device's RP2350; a Linux/SDL2 build of the same
-engine is used for development and regression testing.
+A port of the SCUMM v4/v5 engine to the **Thumby Color** handheld.  Two
+LucasArts adventures have been brought up on the device:
+
+- *The Secret of Monkey Island* (VGA Floppy, 1990) — SCUMM **v4**, the
+  initial reference title.  4 × encrypted `DISKnn.LEC` plus `000.LFL` /
+  `90n.LFL` containers, 256-colour VGA, AdLib-only music delivered as the
+  v4 `AD` payload format.
+- *Indiana Jones and the Fate of Atlantis* (Floppy DOS, 1992) — SCUMM
+  **v5**, the harder target.  HD-installed two-file container
+  (`atlantis.000` + `atlantis.001`), expanded 16-colour text overlay,
+  and an iMUSE score delivered as Standard MIDI files wrapped in a SCUMM
+  `MDhd` header with the OPL2 instrument table shipped inline as SCUMM-
+  format SysEx.
+
+The engine runs natively on the device's RP2350; a Linux/SDL2 build of the
+same engine is used for development and regression testing.  *Monkey Island
+2* (also v5 floppy) is structurally compatible with the Atlantis code path
+and uses the same SMF/MDhd music format, but has not been brought up as a
+shipping configuration.
 
 This is a fan project.  The engine code is transcribed from ScummVM (heavily
 slimmed — only the v4 and v5 code paths are retained, the HE/v6/v7/v8/NES/Mac
 engine variants are stripped) and re-shaped to fit a 520 KB SRAM budget.  No
-game data is included — you supply your own legitimately purchased Monkey
-Island install disks; the build script extracts them and embeds the resource
-files into the firmware image.
+game data is included — you supply your own legitimately purchased install
+disks; the build script extracts them and embeds the resource files into the
+firmware image.
 
 ---
 
@@ -18,13 +33,18 @@ files into the firmware image.
 
 ### What this is
 
-ThumbyScummby plays *The Secret of Monkey Island* on a 128×128 LCD that
-fits on a keyring.  The original is a 320×200, 256-colour, mouse-driven point-
-and-click adventure; the device has nine buttons and roughly one-fifth of the
-pixels.  The port preserves the original game logic exactly (the SCUMM virtual
-machine and its scripts run unchanged) but replaces the verb panel and
-sentence line with overlay UI sized for the smaller screen, and adds a
-contextual cursor tooltip that speaks for the missing right hand of a mouse.
+ThumbyScummby plays *The Secret of Monkey Island* or *Fate of Atlantis* on a
+128×128 LCD that fits on a keyring.  The originals are 320×200, 256-colour,
+mouse-driven point-and-click adventures; the device has nine buttons and
+roughly one-fifth of the pixels.  The port preserves the original game logic
+exactly (the SCUMM virtual machine and its scripts run unchanged) but
+replaces the verb panel and sentence line with overlay UI sized for the
+smaller screen, and adds a contextual cursor tooltip that speaks for the
+missing right hand of a mouse.
+
+The shipping firmware image is built against a single game's resources at
+compile time.  `device_pico/CMakeLists.txt`'s `DATA_DIR` selects which game
+the `.uf2` boots into; rebuild and reflash to swap titles.
 
 ### Hardware
 
@@ -49,13 +69,37 @@ external storage is involved.
 
 | Button | Action |
 |---|---|
-| D-pad | Move the on-screen cursor.  Cursor velocity is tuned per scale mode (Fit/Fill 2 px per frame, Crop 1 px per frame) so the time to cross the visible scene is consistent. |
-| **A** | Right-click — perform the cursor's tooltip verb on the hovered object. |
-| **B** | Left-click — apply the currently selected verb / pick the highlighted item / advance dialog. |
-| **MENU** | Cycle the scale mode: Fit (whole 320×200 frame letter-boxed) → Fill (vertical-only crop, full width) → Crop (1:1 native, scene scrolls under the cursor). |
-| **RB** | ESC — skip a cutscene, dismiss a banner. |
-| **LB + UP/DOWN** | Adjust master audio volume on a 0–20 scale.  Cursor motion is suppressed while LB is held. |
-| **LB held ~0.8 s** | Open the save / load / volume / text-size / speech-font menu. |
+| **D-pad** | Move the on-screen cursor.  Cursor velocity is tuned per scale mode (Fit/Fill 2 px per frame, Crop 1 px per frame) so the time to cross the visible scene is consistent.  In Fill / Crop the scene pans under the cursor when it reaches the visible edge. |
+| **A** | Left-click — apply the currently selected verb to the hovered object, pick the highlighted item, advance dialog. |
+| **B** | Right-click — perform the cursor's tooltip verb (the default action) on the hovered object. |
+| **LB tap** | Open the verb / dialog-response picker. |
+| **RB tap** | Open the inventory picker. |
+| **MENU tap** | Cycle the scale mode: Fit (whole 320×200 frame letter-boxed) → Fill (vertical-only crop, full width) → Crop (1:1 native, scene scrolls under the cursor). |
+| **MENU hold ~600 ms** | Open the in-game menu (SAVE / LOAD / VOLUME / TEXT SIZE / SPCH FONT / CANCEL). |
+| **LB + RB held together** | ESC — skip a cutscene, dismiss a banner. |
+
+The menu opens any time during play — volume, text size, and font are
+always reachable, including mid-cutscene.  Inside the menu only the
+two storage rows are conditional:
+
+- **SAVE** is greyed out and the row shows a right-aligned
+  "CAN'T SAVE NOW" when the player isn't currently in control of the
+  character (mid-walk, inside a `cutScene` stack frame).  This matches
+  the original SCUMM behaviour — the stock interpreter disabled the
+  SAVE verb in the same situations, because loading a mid-action save
+  resumes into a corrupted pathfinding state ("I cannot reach it"
+  lock-up).  A is silently ignored on the greyed row; no fake "SAVED"
+  message.
+- **LOAD** is greyed out until a save exists.
+
+VOLUME, TEXT SIZE, and SPCH FONT each open a sub-screen with d-pad
+adjustment and A / B / MENU to confirm-and-return.  All three persist
+across power cycles in a dedicated 4 KB flash sector below the save
+region.
+
+Host SDL build maps the buttons to keys: W/A/S/D = d-pad (arrow keys
+also work), `.` = A, `,` = B, LShift = LB, Space = RB, Return = MENU,
+Esc = ESC.
 
 ### Features that are not in the original DOS game
 
@@ -74,9 +118,12 @@ external storage is involved.
   overlay font is often more readable at 128 px.
 - **Cursor tooltip.**  Hover a clickable object and the cursor labels itself
   with the contextual default action: *Look at*, *Open*, *Pick up*, *Talk
-  to*, etc.  This is read directly from the game's own hover machinery
-  (script 23 writes the chosen verb id into Var[182] every frame); it is a
-  100% authentic match for what right-click would do, with no heuristics.
+  to*, etc.  In MI1 this is read directly from the game's own hover
+  machinery (script 23 writes the chosen verb id into Var[182] every
+  frame); it is a 100% authentic match for what right-click would do,
+  with no heuristics.  In Atlantis the same Var[182] read silently
+  yields no value, so the cursor is unlabelled — B-click still triggers
+  the engine's default verb either way.
 - **Sentence strip pinned at the bottom.**  Rows 120–127 of the LCD are
   reserved for the active verb-plus-object sentence ("Walk to bartender",
   "Use rubber chicken with broken rope") regardless of scale mode.
@@ -87,16 +134,19 @@ external storage is involved.
 
 ### Playing tips
 
-- The Mêlée Island map (room 85) is the most memory-pressured scene in the
-  game — it's a full-screen 320×200 background buffer that broke earlier
-  builds.  With the rtBuffer pinning fix described below, it is stable.
+- In MI1, the Mêlée Island map (room 85) was historically the most
+  memory-pressured scene — a full-screen 320×200 background buffer that
+  broke earlier builds.  With the rtBuffer pinning fix described below,
+  it is stable, and the same fix pre-empts the equivalent room
+  transitions in Atlantis.
 - Use **Crop** mode for dense scenes (the SCUMM Bar interior, the
-  cartographer's shop) when you want pixel-accurate detail.  The crop window
-  follows the cursor.
+  cartographer's shop, the dig sites in Atlantis) when you want
+  pixel-accurate detail.  The crop window follows the cursor.
 - Use **Fit** for cutscenes and overhead shots where seeing the whole frame
   matters more than per-pixel detail.
 - The save slot survives a firmware reflash — feel free to update the
-  firmware mid-playthrough.
+  firmware mid-playthrough.  Settings (volume, text size, speech font)
+  survive separately in their own flash sector.
 
 ---
 
@@ -326,6 +376,121 @@ the XIP-direct loaders (which cost zero heap to "load"), heap usage in
 steady state is dominated by the three pinned rtBuffer slots and the
 in-flight scratch from costume rendering and the OPL2 emulator.
 
+#### Packing the text-overlay surface to 4 bpp (v5 fit)
+
+MI1 (v4) keeps its 8 bpp `_textSurface` — a CLUT8 320×200 = 64 KB BSS
+allocation — and there is just enough heap headroom for it.  Atlantis
+(v5) pushes the heap pressure ~50 KB higher (larger costumes, more
+sound payload in flight, second-pass back-buffer chatter during pass
+transitions) and on the first attempt the engine dies on the pass-2
+main back-buffer allocation at ~440 KB attempt against the 388 KB
+ceiling: a ~52 KB shortfall.
+
+`engine/include/scumm/packed_text_surface.h` is the device-side
+replacement for `Graphics::Surface` on the `_textSurface` slot.  Two
+4-bit palette indices per byte, so the same 320×200 surface drops to
+32 KB — half the storage, same coverage:
+
+- nibble `0x0..0x0E` → palette indices 0..14
+- nibble `0x0F`      → transparent (the engine's `CHARSET_MASK_TRANSPARENCY`
+  sentinel `0xFD` at the 8 bpp boundary)
+
+ScummVM's text renderer normally writes pixels through raw pointer
+arithmetic via `Graphics::Surface::getBasePtr() + pitch`, which can't be
+silently retargeted at a packed surface (a single byte write would
+corrupt two adjacent pixels).  `PackedTextSurface` instead exposes an
+explicit-call API — `setPixel`, `fillSpan`, `fillRect`, `clearTransparent`,
+`readRow`, `spanIsAllTransparent` — and the few SCUMM call sites that
+poke `_textSurface` directly are converted at the source level.
+
+The compositor (`drawStripToScreen` in `gfx.cpp`) unpacks one row at a
+time into a 640-byte stack scratch buffer via `readRow`, then runs the
+existing inner loop unchanged.  Out-of-range palette writes (15..252)
+clamp to `0x0E` and latch a once-per-session flag so we'd find out
+empirically if any v5 text actually used those indices — none does.
+
+The `_textSurface` member type is conditional: `PackedTextSurface` on
+`THUMBY_DEVICE`, stock `Graphics::Surface` on the host build (no memory
+pressure desktop-side; keeps the Mac / CJK / HE library `Font::drawChar`
+paths working unchanged).  On device those paths are `#ifndef
+THUMBY_DEVICE`-gated — the games we ship there don't use them.
+
+Net device saving: **32 KB sustained**.
+
+#### Verb VirtScreen with height = 0 (v5 fit)
+
+Source rows 144..199 are the SCUMM verb panel.  On Thumby Color the
+verb panel is suppressed entirely — the scene-only redesign renders verbs
+and inventory as overlay UI in the small clean font (see [Display
+pipeline](#display-pipeline) and the *scene-only redesign* commit
+history).  The engine still allocates a backing `kVerbVirtScreen`
+buffer at `initVirtScreens` time even though `present()` never reads it.
+
+The fix is a one-liner in `gfx.cpp` `initScreens` under `THUMBY_DEVICE`:
+pass `height = 0` for the verb VS.  The engine still calls
+`initVirtScreen` for that slot, but with degenerate dimensions the
+backing allocation collapses to a 2-byte sentinel.  Saves **~18 KB
+sustained** (320 × 56 × 1 bpp).
+
+#### rtBuffer pre-reserve, moved earlier for v5
+
+The pre-reserve and reuse-short-circuit machinery from the [rtBuffer
+slot pinning fix](#the-rtbuffer-slot-pinning-fix-room-85-oom) had to be
+moved a few steps earlier in the boot sequence for Atlantis to fit.
+Two adjustments:
+
+1. The three `rtBuffer` slots (kMainVirtScreen primary, back buffer, Z
+   buffer) are now reserved at the heap floor *between* `readIndexFile`
+   and `resetScumm`, before any v5 resource loading begins.  On MI1 the
+   timing was less sensitive (the v4 boot doesn't load much resource
+   state ahead of the back-buffer alloc); on Atlantis there is enough
+   v5 housekeeping in the gap that the back buffer would otherwise land
+   well above the heap floor.
+
+2. The `initScreens` nuke-loop is disabled under `THUMBY_DEVICE`.  Its
+   job is to free any pre-existing rtBuffer slots before re-creating
+   them at the right size; with the slots pre-reserved at maximum size
+   the `createResource` reuse short-circuit in `resource.cpp:912` only
+   actually fires when the nuke step doesn't run first.
+
+Combined with the 4 bpp text surface and verb-VS-0, this brings the
+peak heap demand back inside the 352 KB budget.  The remaining margin
+on Atlantis is comfortable but not large.
+
+#### v5 boot infrastructure: HD-installed containers
+
+MI1's v4 layout — one master index `000.LFL`, four encrypted disk
+`DISKnn.LEC`, four uncompressed helper `90n.LFL` files — is the format
+the original v4 resource loader expects.  Atlantis ships an "HD
+installed" layout instead: `atlantis.000` (index, encrypted) and
+`atlantis.001` (combined data, encrypted), and the engine generates
+file names via `_filenamePattern` + a generation method (`kGenDiskNum`,
+`kGenHEPC`, etc.).
+
+What was needed for v5:
+
+- `tools/pack_device.py` detects the layout: `000.LFL` present →
+  v4-floppy, else look for `*.000` → v5-hd, fill in the master and
+  disk1 TOC slots with `.000` and `.001`, leave the remaining slots
+  empty.  This keeps the on-device data-blob shape unchanged.
+- `scummvm_link_stubs.cpp` resolves file requests by suffix
+  (`.000` → master, `.001` → disk 1) so v5's generated names hit the
+  XIP fast path the same way the v4 `DISKnn.LEC` names did.
+- `device_pico/main.cpp` builds a `DetectorResult` with
+  `GID_INDY4`, version 5, platform DOS, `GF_USE_KEY`,
+  `variant = "Floppy"` (required — `input.cpp:1098` strcmps that
+  string for Indy 4), `_filenamePattern = "atlantis.%03d"`, and
+  `genMethod = kGenDiskNum`.  The engine is then a
+  `ScummEngine_v5`.
+- `script_v5.cpp` null-guards `_saveFileMan` on the Indy 4 IQ-points
+  save path.  `_saveFileMan` is intentionally null on the device (the
+  port has its own single-slot save backend); v4 never went through
+  the `_saveFileMan` IQ path.
+
+The same `pack_device.py` invocation builds either game's data blob;
+the `DATA_DIR` CMake variable in `device_pico/CMakeLists.txt` is the
+only switch.
+
 ### Build pipeline
 
 `device_pico/CMakeLists.txt` builds the engine as `thumbyscummby_engine`,
@@ -334,10 +499,26 @@ links the device-side `main.cpp` against pico-sdk libraries (`pico_stdlib`,
 `hardware_timer`, `hardware_flash`), runs `tools/pack_device.py` to produce
 the data blob, and assembles `firmware_thumbyscummby.uf2`.
 
+The `DATA_DIR` CMake variable points the packer at one game's install
+directory.  `pack_device.py` auto-detects the layout:
+
+- `000.LFL` present → v4 floppy (MI1).  Pack `000.LFL` + the four
+  `DISKnn.LEC` files + the four `90n.LFL` helpers.
+- otherwise → v5 HD-installed.  Pack `<base>.000` as the master and
+  `<base>.001` as the disk-1 slot; leave the remaining seven TOC
+  entries empty.
+
+The on-device data blob keeps a fixed 9-entry TOC regardless of game;
+the empty slots add no flash bloat.  `scummvm_link_stubs.cpp` resolves
+file requests by file-suffix so v5's runtime-generated names hit the
+right slot.  Switching titles is a CMake rebuild and a UF2 reflash.
+
 `host_sdl/CMakeLists.txt` links the same engine library against SDL2 for
-the Linux dev loop.  The host build reads the `data/mi1_vga/` files at
-runtime (no XIP shenanigans needed when you have gigabytes of RAM), but
-otherwise exercises the same engine code paths as the device.
+the Linux dev loop.  The host build reads the game files from a passed-
+in directory at runtime (no XIP shenanigans needed when you have
+gigabytes of RAM); `platform_sdl.cpp`'s `load_data_dir` auto-detects
+v4-floppy vs v5-HD the same way the packer does.  Otherwise it
+exercises the same engine code paths as the device.
 
 One engine, two backends: hot-iterate on the host, ship on the device.
 
@@ -352,23 +533,28 @@ bash device_pico/build_device.sh
 # produces firmware_thumbyscummby.uf2
 ```
 
-Host keyboard mapping: W/A/S/D = dpad, `,` = B, `.` = A, Shift = LB, Space
-= RB, Enter = Menu.
+Host keyboard mapping: W/A/S/D (or arrow keys) = d-pad, `.` = A, `,` = B,
+LShift = LB, Space = RB, Return = MENU, Esc = ESC.
 
 ### SCUMM-specific lessons
 
-**Var[182] for the cursor tooltip.**  MI1 VGA's stock interpreter highlights
-verbs under the cursor by running global script 23 every frame; that script
-calls `startObject(hovered_obj, 90, [])` to invoke the OBJECT'S OWN verb-
-entry 90 ("default action"), which writes the appropriate verb id into
-Var[181].  Script 23 then highlights that verb in colour 14 and remembers
-its id in Var[182] so the next frame can un-highlight on hover-change.  The
-port reads Var[182] directly via `publicReadVar(182)` and renders the
-matching verb name as the cursor tooltip.  This is a pure read with no
-script execution and no side effects, and the result is a 100% match for
-the game's own hover-highlight intent.  Pirate → *Talk to*, door → *Open*,
-inventory item → *Pick up*, all decided by the game's scripts, not by
-heuristics in the port.
+**Var[182] for the cursor tooltip (MI1).**  MI1 VGA's stock interpreter
+highlights verbs under the cursor by running global script 23 every frame;
+that script calls `startObject(hovered_obj, 90, [])` to invoke the
+OBJECT'S OWN verb-entry 90 ("default action"), which writes the
+appropriate verb id into Var[181].  Script 23 then highlights that verb
+in colour 14 and remembers its id in Var[182] so the next frame can
+un-highlight on hover-change.  The port reads Var[182] directly via
+`publicReadVar(182)` and renders the matching verb name as the cursor
+tooltip.  This is a pure read with no script execution and no side
+effects, and the result is a 100% match for the game's own hover-
+highlight intent.  Pirate → *Talk to*, door → *Open*, inventory item →
+*Pick up*, all decided by the game's scripts, not by heuristics in the
+port.  Atlantis's scripts use a different highlight mechanism; the same
+`publicReadVar(182)` call yields no value there, the tooltip stays
+empty, and the cursor renders without a label.  Reading Var[182] in
+that case is harmless — a `getVerbEntrypoint`-based fallback exists in
+the same function and could be re-enabled if a v5 tooltip is wanted.
 
 **Inventory tooltip via OBCD verb-entry 90.**  Inventory items aren't
 verbs, but each item knows its own preview verb encoded in its OBCD
@@ -403,14 +589,16 @@ invaluable in finding the cause.  Once the bug was understood and the
 pin-and-reuse fix was in place, the shim was retired in favour of the SDK's
 default allocator.
 
-**iMUSE + DOSBox OPL2.**  `engine/src/dbopl.cpp` is the DOSBox OPL2
-emulator, hand-rolled and full-featured (9 voices, full instrument table).
-A precision-conscious experiment moved its precomputed sin/exp tables into
-flash (instead of BSS) to reclaim ~9.4 KB of heap; the result was audibly
-worse, with subtle but real artifacts on certain instruments — likely a
-precision difference between host-generated tables and a different code
-path emitting them at runtime on device.  The change was reverted; the
-tables stay in BSS and the heap savings were found elsewhere.
+**iMUSE + DOSBox OPL2.**  `engine/src/dbopl.cpp` is the upstream DOSBox
+OPL2 emulator, dropped in verbatim after an earlier hand-rolled attempt
+was retired (commit `078fc35`).  Full-featured: 9 voices, full instrument
+table.  A precision-conscious experiment moved its precomputed sin/exp
+tables into flash (instead of BSS) to reclaim ~9.4 KB of heap; the
+result was audibly worse, with subtle but real artifacts on certain
+instruments — likely a precision difference between host-generated
+tables and a different code path emitting them at runtime on device.
+The change was reverted; the tables stay in BSS and the heap savings
+were found elsewhere.
 
 **Single-core operation.**  Core 1 is unused.  An earlier attempt to run
 the audio mixer on core 1 hung the engine init in the
@@ -432,30 +620,115 @@ roughly 4.3 s in all three modes.
 
 ### Audio path
 
-iMUSE drives the AdLib path: `imuse.cpp` parses the v4 sound formats
-(`RO`, `SO`, `AD`, embedded SMF), `adlib.cpp` is the General-MIDI →
-OPL2 instrument bridge, `dbopl.cpp` is the OPL2 emulator, and
-`audio_mix.cpp` is the 22050 Hz mono mixer that the platform layer pulls
-samples from.  The platform sink writes those samples to the RP2350's PWM
-audio output via DMA.
+iMUSE drives the AdLib path: `imuse.cpp` parses the SCUMM sound formats
+(v4 `RO` / `SO` / `AD`, v5 `SOUN`/`ADL` SMF, embedded MThd MIDI),
+`adlib.cpp` is the General-MIDI → OPL2 instrument bridge, `dbopl.cpp`
+is the upstream DOSBox OPL2 emulator (9 voices, full instrument
+table), and `audio_mix.cpp` is the 22050 Hz mono mixer that the
+platform layer pulls samples from.  The platform sink writes those
+samples to the RP2350's PWM audio output via DMA.
 
 iMUSE *digital* audio (`.WAV` music, used by some later SCUMM titles) is
-not supported.  MI1 floppy doesn't have digital music, so it's not a
-player-facing limitation for this title.
+not supported.  Neither MI1 floppy nor Atlantis floppy has digital
+music, so it isn't a player-facing limitation for these titles.
+
+#### v5 AdLib music: SMF wrapped in MDhd + SCUMM SysEx instruments
+
+Atlantis (and MI2 floppy) ship their AdLib score as a Standard MIDI
+File wrapped inside the SCUMM `SOUN`/`ADL` chunk, with a small `MDhd`
+SCUMM header sitting between the chunk type and the SMF's `MThd` —
+*and* with the OPL2 instrument programs delivered as SCUMM-format
+SysEx messages (manufacturer byte `0x7D`) embedded in the SMF stream.
+That means v5 AdLib needs three things the v4 code path didn't:
+
+1. **Sound resource loading for the SO/ADL path.**  v5
+   `readSoundResource` was previously a stub on the port — only the v4
+   `AD` formats were wired through.  `scummvm_link_stubs.cpp` now
+   walks the SO chunk to pick up the embedded ADL sub-block and
+   aliases its byte range through the same XIP raw-pointer fast path
+   `loadResource` uses, so v5 sound stays off-heap on device exactly
+   like rooms, scripts, costumes, and v4 sounds (see [Game data is
+   XIP-resident](#game-data-is-xip-resident)).  Some Atlantis tracks
+   are well over 30 KB; on heap they would dominate.
+
+2. **`MDhd`-aware SMF detection in iMUSE.**  The pre-existing MThd-
+   inner-scan in `imuse.cpp` would happily fire `PT_SMF` on raw v4 AD
+   payloads that happened to contain those magic bytes inside their
+   header — false-positives that broke the v4 parser.  Detection is
+   now gated on `MDhd` magic: present → v5 SMF inside, run the inner
+   scan; absent → treat the payload as the raw v4 format the AD
+   parser was written for.
+
+3. **SCUMM SysEx for instrument programming.**  Even with the SMF
+   parsed correctly and notes reaching `adlib.cpp`, Atlantis was
+   silent — the OPL2 channels never received their instrument
+   programs.  `scumm_handle_sysex` (mirrored from upstream
+   `Player::decode_sysex_bytes`) now decodes three SCUMM SysEx codes
+   off the manufacturer-`0x7D` payload:
+
+   - **SysEx 0** — *allocate part to a channel*.  Maps an iMUSE part
+     number onto an OPL2 voice slot.
+   - **SysEx 16** — *per-part AdLib instrument*.  Programs the voice
+     directly for the named part.
+   - **SysEx 17** — *global instrument bank slot*.  Stores the
+     instrument bytes in a new 128-entry global bank that
+     `adlib.cpp`'s Program Change handler now looks up for the v5
+     code path.  The bank is populated up-front by the SMF prologue
+     and indexed at runtime by GM program number.
+
+   The nibble-decoder is a verbatim port of the upstream routine.
+
+4. **v5 program-voice / volume curve.**  `adlib.cpp` learns a v5
+   variant of the channel-instrument setter and the program-voice
+   path:
+
+   - **TL byte** = `(level | 0x3F) - vol`, where `vol` is
+     velocity- and part-volume-scaled via the `g_volume_lookup` and
+     `g_volume_table` tables ported verbatim from
+     `scummvm-upstream/audio/adlib.cpp:862-921` —
+     matches upstream `adlibSetupChannel:2113`.
+   - **AttackDecay** and **SustainRelease** bytes are bitwise-NOT'd
+     before reaching OPL regs `0x60` / `0x80` — matches upstream
+     `adlibSetupChannel:2114-2115`.
+
+   The v4 AD-resource path used for MI1 floppy is untouched (its
+   instrument bytes are already in OPL-ready form).  The CC 7
+   mid-note volume handler picks the v4 or v5 attenuation strategy
+   based on the same flag.
+
+5. **ConfMan volume defaults.**  The `ConfMan` stub previously
+   defaulted `music_volume` / `sfx_volume` / `speech_volume` to zero.
+   In v4 the engine never asked, so it never mattered; in v5 the
+   engine reads those keys at start-up and calls
+   `setMusicVolume(0)`, silencing AdLib before the score even gets a
+   note.  The stub now defaults all three to
+   `Audio::Mixer::kMaxMixerVolume`.
+
+End-to-end: SO/ADL is XIP-resident, `MDhd` triggers the SMF parser,
+SysEx programs the OPL2 chip, and v5's TL/AD/SR encoding hits the
+registers in the form `dbopl` expects.
 
 ### Known limitations
 
+- **One game per firmware image.**  `DATA_DIR` picks the title at build
+  time and the resource blob is `.incbin`'d into the UF2.  Switching from
+  MI1 to Atlantis (or vice versa) is a rebuild and a reflash.
 - **Single save slot.**  The hold-LB menu has one slot.  The 64 KB save
   region could comfortably hold eight 8 KB slots; the limit is currently
   the menu UX rather than storage.
 - **No iMUSE digital audio.**  AdLib only.  See the audio path section.
 - **Dialog response wrap is optimistic.**  Very long dialog options
-  (significantly longer than anything in the original MI1 script) may
-  overflow the picker.  Not a problem in practice for the stock game,
-  potentially relevant for fan translations and mods.
+  (significantly longer than anything in the original MI1 / Atlantis
+  scripts) may overflow the picker.  Not a problem in practice for the
+  stock games, potentially relevant for fan translations and mods.
 - **Speech text scale is global.**  The slider applies uniformly across
   actor talk, banner, and modal text.  There's no per-actor or per-speech-
   type override.
+- **Atlantis heap headroom is tight.**  After the 4 bpp text surface +
+  verb-VS-0 + rtBuffer pre-reserve, Atlantis fits with a comfortable but
+  not generous margin.  An unfortunate combination of large costume +
+  large in-flight sound + a full-screen map room could still push the
+  ceiling; the worst case observed during testing leaves ~20 KB free.
 - **Mac, FM-Towns, EGA branches stay compiled.**  The original ScummVM
   source has these intermixed with the v4/v5 paths and pulling them out
   cleanly is too invasive.  `--gc-sections` strips them at link time, so
@@ -468,11 +741,13 @@ v4/v5 file formats, opcode set, costume codec, iMUSE sequencer model, and
 DOSBox OPL2 emulator were originally engineered by LucasArts and the
 DOSBox/ScummVM communities.  The port is licensed GPL-3.0-or-later (see
 `LICENSE` and `NOTICE`) and *does not ship game data* — the user supplies
-their own legitimately-purchased Monkey Island install disks.
+their own legitimately-purchased install disks for *Monkey Island* and/or
+*Fate of Atlantis*.
 
 ### Acknowledgments
 
-- LucasArts (1990–1998) — SCUMM, Monkey Island, the entire genre.
+- LucasArts (1990–1998) — SCUMM, Monkey Island, Fate of Atlantis, the
+  entire genre.
 - The ScummVM project — reference implementation, two decades of
   algorithm spelunking, and the only reason a port like this is possible.
 - The DOSBox project — OPL2 emulator.
