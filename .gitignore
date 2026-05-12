@@ -53,5 +53,10 @@ scummvm
 # Runtime config (host-side persistent settings)
 thumbyscummby.cfg
 
+# Host-side save file (mirrors the device flash slot, one per data dir)
+thumbyscummby.sav
+*.sav
+
 # SCUMM script disassemblies (descumm output)
 /disasm/
+/dumps/
