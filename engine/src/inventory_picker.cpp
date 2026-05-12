@@ -148,29 +148,36 @@ void run(ScummEngine *engine) {
 		if (down_edge) sel = (sel + 1) % count;
 
 		if (in.a_pressed) {
-			// MI1 v5 inventory: items render as kTextVerbType verbs
-			// in the panel.  Visible item slots have verbid 101..104,
-			// curmode=1.  The slot's resource name is a SCUMM control
-			// sequence (0xff 0x06 ...) that resolves to the object
-			// name only at draw time — we can't compare names from
-			// the resource directly.  Instead, the sel-th picker
-			// entry corresponds to the sel-th visible inventory slot
-			// (both are in inventory order).
-			//
-			// Find the sel-th visible inventory verb, then dispatch
-			// its verbid via runInputScript directly.  This matches
-			// the engine's checkExecVerbs path
-			// (verbs.cpp:689 runInputScript(kVerbClickArea,
-			// _verbs[over].verbid, code)) but skips findVerbAtPos —
-			// we already know the verbid.  The verb-script reads
-			// only `val` for kVerbClickArea handling, so _mouse
-			// state doesn't need setup.
+			const int obj = entries[sel].slot_index;
+			if (obj <= 0) return;
+
+			// Preferred path: ask the engine to dispatch via the
+			// stock panel-click flow (runInputScript with verbid
+			// 101..106).  This goes through the game's verb-script
+			// which updates the sentence line, fires doSentence,
+			// drives the highlight, etc.  Returns false for games
+			// whose per-game lookup (Var index of the slot-0 obj)
+			// isn't yet wired — see ScummEngine::publicDispatchInventoryClick.
+			if (engine->publicDispatchInventoryClick(obj)) return;
+
+			// Fallback for unwired games: walk the visible inventory
+			// verbs (verbid 101..106) and dispatch the `sel`-th in
+			// slot-array order.  This is what the port used before
+			// the engine-side dispatch existed.  It is correct only
+			// when the engine's panel has not scrolled (first <=4
+			// items, no prior auto-scroll, not restored from a save
+			// taken with the panel scrolled) — picker entry order
+			// then happens to line up with verb-slot order.  Beyond
+			// that the matching breaks (the engine resolves slot S
+			// to _inventory[S + Var[118]_offset]).  This is the bug
+			// users hit with >4 items + pieces of eight, and it's
+			// the reason publicDispatchInventoryClick exists.
 			int target_verbid = 0;
 			int idx = 0;
 			for (int v = 1; v < engine->numVerbs(); ++v) {
 				const VerbSlot &vs = engine->_verbs[v];
 				if (vs.saveid || !vs.curmode || !vs.verbid) continue;
-				if (vs.verbid < 101 || vs.verbid > 104) continue;
+				if (vs.verbid < 101 || vs.verbid > 106) continue;
 				if (idx == sel) { target_verbid = vs.verbid; break; }
 				++idx;
 			}
@@ -178,8 +185,6 @@ void run(ScummEngine *engine) {
 				engine->publicRunInputScript(kVerbClickArea,
 				                             target_verbid, 1);
 			}
-			// Items outside the visible 4-slot window need scroll
-			// first — TODO via verbid 107/108 (scroll arrows).
 			return;
 		}
 		tsb::platform::sleep_ms(16);

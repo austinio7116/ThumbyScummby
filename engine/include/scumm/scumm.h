@@ -46,6 +46,7 @@
 #include "scumm/script.h"
 #include "scumm/serializer.h"
 #include "scumm/packed_text_surface.h"
+#include "scumm/verbs.h"      // ClickArea enum (publicDispatchInventoryClick)
 
 #ifdef __DS__
 /* This disables the dual layer mode which is used in FM-Towns versions
@@ -1107,6 +1108,75 @@ public:
 	// clicks an ImageVerb in the panel.
 	void publicRunInputScript(int clickArea, int val, int mode) {
 		runInputScript(clickArea, val, mode);
+	}
+
+	// THUMBY-PORT: dispatch a click on inventory item `target_obj`
+	// from the overlay picker.  Drives the same path stock SCUMM uses
+	// for a panel-slot click, so the verb-script's sentence /
+	// highlight / doSentence chain fires identically.
+	//
+	// The verb-script resolves "click panel slot S" -> object id by
+	// reading a per-game var array (MI1: Var[134..139]; populated by
+	// the inventory-script based on the current panel scroll position
+	// Var[118]).  At any moment those vars reflect the engine's panel
+	// state.  We:
+	//   1. Find which slot currently holds `target_obj`; if any,
+	//      dispatch the matching verbid (101..106) directly.
+	//   2. Otherwise `target_obj` is off-panel (engine has scrolled
+	//      past it — happens once the player owns >4 items, or after
+	//      restoring a save taken with the panel scrolled).
+	//      Temporarily overwrite the slot-0 var with `target_obj`,
+	//      dispatch verbid 101, then restore.  The verb-script reads
+	//      the slot var exactly once at dispatch and never re-reads
+	//      it before the call frame unwinds (verified against
+	//      disasm/script_004.txt [0350]/[035A] — the two read sites
+	//      are inside the inventory branch which jumps to [0382] and
+	//      falls through to common processing that touches Var[107..
+	//      110]/Var[180] only).  So the temporary write is invisible
+	//      to any other observer.  The next inventory-script run
+	//      (room change, pickup, etc.) repopulates the slot vars
+	//      authoritatively.
+	//
+	// Returns false if the per-game var lookup isn't wired for
+	// `_game.id`; caller should fall back to its previous heuristic.
+	bool publicDispatchInventoryClick(int target_obj) {
+		if (target_obj <= 0) return false;
+
+		int varBase = -1;
+		const int panelSize = 6;  // verbids 101..106 cover six slots
+		switch (_game.id) {
+		case GID_MONKEY_VGA:
+		case GID_MONKEY:
+			// MI1 floppy / CD.  disasm/script_022.txt declares
+			//   VerbOps(101..106, ..., Text(getName(Var[134..139])))
+			// and script 4 [02FD..0382] reads Var[134 + slot] for
+			// dispatch.
+			varBase = 134;
+			break;
+		// TODO: verify and wire GID_INDY4 (Atlantis), GID_MONKEY2,
+		// GID_INDY3 (Last Crusade) — likely same Var[134..139]
+		// convention since they share the v5/v4 verb-panel script
+		// idiom, but each needs a check against its boot scripts.
+		default:
+			return false;
+		}
+
+		if (varBase + panelSize > _numVariables) return false;
+
+		// Common case: target is at one of the current panel slots.
+		for (int slot = 0; slot < panelSize; ++slot) {
+			if (_scummVars[varBase + slot] == target_obj) {
+				runInputScript(kVerbClickArea, 101 + slot, 1);
+				return true;
+			}
+		}
+
+		// Off-panel case: temp-write slot 0, dispatch, restore.
+		const int saved = _scummVars[varBase];
+		writeVar(varBase, target_obj);
+		runInputScript(kVerbClickArea, 101, 1);
+		writeVar(varBase, saved);
+		return true;
 	}
 	// THUMBY-PORT: re-emit the current cursor sprite to OSystem.
 	// Called after a save→load round-trip; scummvm v5 saveload restores
