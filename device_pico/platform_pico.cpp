@@ -786,25 +786,33 @@ static const uint8_t kFont5x7[95][5] = {
     {8,4,8,0x10,8},       // ~
 };
 
-// 8 lines × 21 chars (uses 6 px per char, fits 128 / 6 = 21).
-static constexpr int kLogLines = 8;
-static constexpr int kLogCols  = 21;
+// 6 px per char fits 128 / 6 = 21 columns.  History buffer holds 32
+// lines (≈ 700 bytes) so the in-game log viewer (save menu → LOG) has
+// something to scroll through.  Overlay still paints only the most
+// recent kLogOverlayLines so it occupies the same 64 px strip as
+// before.
+static constexpr int kLogLines        = 32;
+static constexpr int kLogOverlayLines = 8;
+static constexpr int kLogCols         = 21;
 static char     g_logBuf[kLogLines][kLogCols + 1] = {{0}};
-static int      g_logCursor = 0;  // current line being filled
-static int      g_logColCur = 0;  // current column in current line
+static int      g_logCursor   = 0;  // current line being filled (index into g_logBuf)
+static int      g_logColCur   = 0;  // current column in current line
+static int      g_logFilled   = 0;  // total lines ever flushed, capped at kLogLines
 
 static void logRenderToFb() {
     using namespace tsb::platform_pico;
-    // Clear bottom 8*8=64 px of LCD framebuffer (lines 64..127).
-    const int top = DISPLAY_H - kLogLines * 8;
+    // Clear bottom kLogOverlayLines*8 px of the framebuffer.
+    const int top = DISPLAY_H - kLogOverlayLines * 8;
     for (int y = top; y < DISPLAY_H; y++)
         for (int x = 0; x < DISPLAY_W; x++)
             g_fb[y * DISPLAY_W + x] = 0x0000;  // black bg
-    // Render each log line top-down, oldest line at top.
-    // Buffer is filled circularly: g_logCursor points to NEXT line to write.
-    // Display oldest first: cursor, cursor+1, ..., cursor-1 (mod kLogLines).
-    for (int row = 0; row < kLogLines; row++) {
-        int srcLine = (g_logCursor + row) % kLogLines;
+    // Show the most recent kLogOverlayLines.  Walk backwards from the
+    // cursor (which points to the NEXT line to write).  g_logCursor - 1
+    // is the most recently flushed line; render it on the bottom row.
+    for (int row = 0; row < kLogOverlayLines; row++) {
+        // Bottom row (row = kLogOverlayLines-1) shows the newest line.
+        int age    = (kLogOverlayLines - 1) - row;
+        int srcLine = (g_logCursor - 1 - age + kLogLines * 2) % kLogLines;
         const char *txt = g_logBuf[srcLine];
         int py = top + row * 8;
         for (int col = 0; col < kLogCols && txt[col]; col++) {
@@ -833,6 +841,7 @@ static void logAppendChar(char c) {
         g_logBuf[g_logCursor][g_logColCur] = '\0';
         g_logCursor = (g_logCursor + 1) % kLogLines;
         g_logColCur = 0;
+        if (g_logFilled < kLogLines) g_logFilled++;
         memset(g_logBuf[g_logCursor], 0, sizeof(g_logBuf[g_logCursor]));
         logRenderToFb();
     } else if (g_logColCur < kLogCols) {
@@ -846,6 +855,27 @@ void checkpoint(const char *label, uint16_t /*color*/) {
         for (const char *p = label; *p; p++) logAppendChar(*p);
         logAppendChar('\n');
     }
+}
+
+// Accessors used by the LOG viewer in save_menu.cpp.  Lines are
+// indexed from the oldest still in the ring (0) to the most recent
+// (log_history_count() - 1).
+int log_history_count() {
+    return g_logFilled;
+}
+
+void log_history_get(int idx, char *out, int outsz) {
+    if (!out || outsz <= 0) return;
+    out[0] = '\0';
+    if (idx < 0 || idx >= g_logFilled) return;
+    // g_logFilled lines are the most-recent ones in the ring.
+    // The oldest live line is at (g_logCursor - g_logFilled) mod kLogLines.
+    const int oldest = (g_logCursor - g_logFilled + kLogLines * 2) % kLogLines;
+    const int src    = (oldest + idx) % kLogLines;
+    const char *txt  = g_logBuf[src];
+    int n = 0;
+    while (txt[n] && n < outsz - 1) { out[n] = txt[n]; n++; }
+    out[n] = '\0';
 }
 
 [[noreturn]] void panic(const char *fmt, ...) {

@@ -47,6 +47,9 @@
 #include "graphics/thumbnail.h"
 #include "gui/message.h"
 
+#include "platform.h"
+#include "save_backend.h"
+
 namespace Scumm {
 
 struct SaveGameHeader {
@@ -477,7 +480,9 @@ bool ScummEngine_v8::fetchInternalSaveStateThumbnail(int slotId, bool isHeapSave
 		return false;
 	}
 
-	Graphics::skipThumbnail(*in);
+	// THUMBY-PORT: scummvm thumbnail was removed from the save format
+	// — save_backend writes its own 64×40 thumbnail before the engine
+	// payload starts.  Skip the matching skipThumbnail call here.
 
 	SaveStateMetaInfos infos;
 	if (!loadInfos(in, &infos)) {
@@ -565,14 +570,23 @@ namespace save_backend {
 	Common::SeekableReadStream  *open_for_reading();
 }
 
-Common::SeekableReadStream *ScummEngine::openSaveFileForReading(int /*slot*/, bool /*compat*/, Common::String &fileName) {
-	fileName = "thumbyscummby.sav";
-	return save_backend::open_for_reading();
+Common::SeekableReadStream *ScummEngine::openSaveFileForReading(int slot, bool /*compat*/, Common::String &fileName) {
+	fileName = Common::String::format("slot%d", slot);
+	return save_backend::open_for_reading(slot);
 }
 
-Common::SeekableWriteStream *ScummEngine::openSaveFileForWriting(int /*slot*/, bool /*compat*/, Common::String &fileName) {
-	fileName = "thumbyscummby.sav";
-	return save_backend::open_for_writing();
+Common::SeekableWriteStream *ScummEngine::openSaveFileForWriting(int slot, bool /*compat*/, Common::String &fileName) {
+	fileName = Common::String::format("slot%d", slot);
+	// THUMBY-PORT — the per-save thumbnail + hint string get set on the
+	// engine by save_menu.cpp just before requesting the save.  They're
+	// consumed here, where the platform stream is opened, and then
+	// cleared so a subsequent save without explicit setup doesn't pick
+	// up stale data.
+	const uint16_t *thumb = _thumbyPendingThumbnail;
+	const char *hint = _thumbyPendingHint;
+	_thumbyPendingThumbnail = nullptr;
+	_thumbyPendingHint = nullptr;
+	return save_backend::open_for_writing(slot, thumb, hint);
 }
 
 bool ScummEngine::saveState(Common::SeekableWriteStream *out, bool writeHeader) {
@@ -582,13 +596,12 @@ bool ScummEngine::saveState(Common::SeekableWriteStream *out, bool writeHeader) 
 		Common::strlcpy(hdr.name, _saveLoadDescription.c_str(), sizeof(hdr.name));
 		saveSaveGameHeader(out, hdr);
 	}
-#if !defined(__DS__) && !defined(__N64__)
-	if (isUsingOriginalGUI() && _mainMenuIsActive) {
-		Graphics::saveThumbnail(*out, _savegameThumbnail);
-	} else {
-		Graphics::saveThumbnail(*out);
-	}
-#endif
+	// THUMBY-PORT: scummvm's 160×100 RGB565 thumbnail is ~32 KB —
+	// enough on its own to push Indy4's save past our 64 KB flash
+	// budget.  The thumbnail we actually show is 64×40 (5 KB) and is
+	// written outside this stream by save_backend::open_for_writing,
+	// before the engine's bytes start.  The corresponding
+	// Graphics::skipThumbnail in the load path is also removed.
 	saveInfos(out);
 
 	Serializer ser(nullptr, out);
@@ -675,19 +688,11 @@ bool ScummEngine::loadState(int slot, bool compat, Common::String &filename) {
 		return false;
 	}
 
-	// Since version 52 a thumbnail is saved directly after the header.
-	if (hdr.ver >= VER(52)) {
-		// Prior to version 75 we always required a thumbnail to be present
-		if (hdr.ver <= VER(74)) {
-			if (!Graphics::checkThumbnailHeader(*in)) {
-				warning("Can not load thumbnail");
-				delete in;
-				return false;
-			}
-		}
-
-		Graphics::skipThumbnail(*in);
-	}
+	// THUMBY-PORT: scummvm thumbnail was removed from the save format
+	// — save_backend writes its own 64×40 thumbnail before the engine
+	// payload starts.  Skip the matching checkThumbnailHeader /
+	// skipThumbnail calls here.  Pre-VER(52) saves never had one.
+	(void)hdr.ver;
 
 	// Since version 56 we save additional information about the creation of
 	// the save game and the save time.

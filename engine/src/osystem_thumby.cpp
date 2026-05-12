@@ -111,6 +111,29 @@ void OSystem_Thumby::synthesizeLeftClick(int x, int y) {
     _eventManager->pushEvent(ev);
 }
 
+void OSystem_Thumby::captureSlotThumbnail(uint16_t *dst, int dstW, int dstH) {
+    // Source: canonical 320x200 SCUMM game surface in _staging[].
+    // Destination: caller-owned dstW x dstH RGB565 buffer.
+    // Nearest-neighbor sampling.  For the standard 64x40 thumbnail this
+    // is an exact 5:1 ratio on both axes.
+    constexpr int kSrcW = 320;
+    constexpr int kSrcH = 200;
+    if (!dst || dstW <= 0 || dstH <= 0) return;
+    for (int dy = 0; dy < dstH; ++dy) {
+        const int sy = (dy * kSrcH) / dstH;
+        const uint8_t *srcRow = _staging + sy * kSrcW;
+        uint16_t *dstRow = dst + dy * dstW;
+        for (int dx = 0; dx < dstW; ++dx) {
+            const int sx = (dx * kSrcW) / dstW;
+            const uint8_t idx = srcRow[sx];
+            const uint8_t r = _palette[idx * 3 + 0];
+            const uint8_t g = _palette[idx * 3 + 1];
+            const uint8_t b = _palette[idx * 3 + 2];
+            dstRow[dx] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+        }
+    }
+}
+
 void OSystem_Thumby::renderSnapshotToFramebuffer() {
     // No cursor — overlays paint their own selection markers; showing
     // the game cursor under the menu would be visual noise.

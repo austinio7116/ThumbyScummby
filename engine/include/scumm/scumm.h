@@ -991,6 +991,13 @@ protected:
 	Common::String _saveLoadFileName;
 	Common::String _saveLoadDescription;
 
+	// THUMBY-PORT — pending per-slot metadata for the in-progress save.
+	// Set by save_menu just before saveSlot(), consumed inside
+	// openSaveFileForWriting.  Pointers are caller-owned and only need
+	// to be alive for the duration of saveSlot().
+	const uint16_t *_thumbyPendingThumbnail = nullptr;
+	const char     *_thumbyPendingHint = nullptr;
+
 	bool saveState(Common::SeekableWriteStream *out, bool writeHeader = true);
 	bool saveState(int slot, bool compat, Common::String &fileName);
 	bool loadState(int slot, bool compat);
@@ -1024,14 +1031,23 @@ public:
 	void requestLoad(int slot);
 
 	// ThumbyScummby — synchronous save/load entry points used by the
-	// hold-LB menu (engine/src/save_menu.cpp).  Thin wrappers around
-	// the protected saveState(int,bool,String&) / loadState(int,bool).
-	bool saveSlot0(const Common::String &description) {
+	// menu (engine/src/save_menu.cpp).  Thin wrappers around the
+	// protected saveState/loadState that thread `slot` through to
+	// save_backend, plus per-slot metadata (64x40 thumbnail + hint
+	// string) stashed on the engine and consumed inside
+	// openSaveFileForWriting.
+	bool saveSlot(int slot, const Common::String &description,
+	              const uint16_t *thumbnail, const char *hint) {
 		_saveLoadDescription = description;
+		_thumbyPendingThumbnail = thumbnail;
+		_thumbyPendingHint      = hint;
 		Common::String fname;
-		return saveState(0, false, fname);
+		bool ok = saveState(slot, false, fname);
+		_thumbyPendingThumbnail = nullptr;
+		_thumbyPendingHint      = nullptr;
+		return ok;
 	}
-	bool loadSlot0() { return loadState(0, false); }
+	bool loadSlot(int slot) { return loadState(slot, false); }
 
 	// Public accessors used by the platform-side overlay UI.
 	int numVerbs() const { return _numVerbs; }
@@ -1096,6 +1112,7 @@ public:
 	// traces.  The VALUE at this var is the script number that
 	// runs on every verb/scene click (set by the boot script).
 	byte          getVarVerbScriptIdx() const { return VAR_VERB_SCRIPT; }
+	int publicCurrentRoom() const { return (int)_currentRoom; }
 	int           publicGetEgoVar() {
 		return (VAR_EGO != 0xFF) ? VAR(VAR_EGO) : 0;
 	}

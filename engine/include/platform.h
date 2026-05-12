@@ -223,6 +223,13 @@ void log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 // guaranteed visible even if a crash follows. Host: no-op.
 void log_flush();
 
+// Log history accessors — power the in-game LOG viewer in save_menu.cpp.
+// The platform keeps a ring of the most recent log lines (32 on device,
+// fewer or zero on hosts); these read it back out as ASCII.  `idx` runs
+// 0 (oldest in the ring) .. log_history_count() - 1 (most recent).
+int  log_history_count();
+void log_history_get(int idx, char *out, int outsz);
+
 // Fatal error — print and halt. Engine calls this on unrecoverable
 // problems (missing resource, unimplemented opcode in critical path).
 [[noreturn]] void panic(const char *fmt, ...)

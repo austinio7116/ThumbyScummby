@@ -32,9 +32,9 @@ constexpr uint16_t kWhite  = 0x0460;
 constexpr uint16_t kHilite = 0xCE2C;
 constexpr uint16_t kDim    = 0x39E7;
 
-constexpr int kMenuItems = 6;
+constexpr int kMenuItems = 7;
 constexpr const char *kLabels[kMenuItems] = {
-    "SAVE", "LOAD", "VOLUME", "TEXT SIZE", "SPCH FONT", "CANCEL"
+    "SAVE", "LOAD", "VOLUME", "TEXT SIZE", "SPCH FONT", "LOG", "CANCEL"
 };
 enum {
     CHOICE_SAVE      = 0,
@@ -42,8 +42,13 @@ enum {
     CHOICE_VOLUME    = 2,
     CHOICE_TEXT_SIZE = 3,
     CHOICE_SPCH_FONT = 4,
-    CHOICE_CANCEL    = 5,
+    CHOICE_LOG       = 5,
+    CHOICE_CANCEL    = 6,
 };
+
+// Row pitch shrunk from 9 to 8 to fit a 7th menu item inside the same
+// 70-px box.  Leaves a 1-px gutter between 7-px font lines.
+constexpr int kMenuRowPitch = 8;
 
 // Two more rows pushed the box down to fit comfortably above the
 // sentence strip (kSentenceLcdY = 120).  Box now spans rows 50..119.
@@ -83,7 +88,7 @@ void paint_menu(OSystem_Thumby *osys, int sel, bool has_save,
 		                    (i == CHOICE_SAVE && !can_save);
 		uint16_t color = greyed ? kDim : kWhite;
 		if (i == sel) color = greyed ? kDim : kHilite;
-		const int y = kBoxY + 12 + i * 9;
+		const int y = kBoxY + 12 + i * kMenuRowPitch;
 		draw_text(kBoxX + 8, y, kLabels[i], color);
 	}
 	// Status sits right-aligned on the SAVE row so it doesn't overlap
@@ -94,7 +99,7 @@ void paint_menu(OSystem_Thumby *osys, int sel, bool has_save,
 	if (status && status[0]) {
 		const int sw = tsb::mi_font::text_width(status);
 		const int sx = kBoxX + kBoxW - sw - 4;
-		const int sy = kBoxY + 12 + CHOICE_SAVE * 9;
+		const int sy = kBoxY + 12 + CHOICE_SAVE * kMenuRowPitch;
 		draw_text(sx, sy, status, kHilite);
 	}
 
@@ -294,6 +299,189 @@ void paint_speech_font(OSystem_Thumby *osys, bool use_mi) {
 	tsb::platform::lcd_present_now();
 }
 
+// --------------------------------------------------------------------
+// Log viewer — scrollable read-only view of platform_pico's log ring.
+// --------------------------------------------------------------------
+constexpr int kLogVisibleRows  = 14;   // ~9 px per row × 14 ≈ 126 px
+constexpr int kLogRowPitch     = 9;
+constexpr int kLogMaxLineChars = 22;   // matches kLogCols + NUL
+
+void paint_log(int scroll, int total) {
+	tsb::platform::lcd_fill(kBlack);
+
+	// Title bar.
+	draw_text(2, 0, "LOG", kHilite);
+	// Show position indicator: e.g. "12/32".
+	char pos[16];
+	std::snprintf(pos, sizeof(pos), "%d-%d/%d",
+	              scroll + 1,
+	              (scroll + kLogVisibleRows < total) ? (scroll + kLogVisibleRows) : total,
+	              total);
+	draw_text(128 - tsb::mi_font::text_width(pos) - 2, 0, pos, kDim);
+
+	// Lines.
+	for (int row = 0; row < kLogVisibleRows; ++row) {
+		const int idx = scroll + row;
+		if (idx >= total) break;
+		char line[kLogMaxLineChars];
+		tsb::platform::log_history_get(idx, line, sizeof(line));
+		// Newest line gets highlighted.
+		const uint16_t col = (idx == total - 1) ? kHilite : kWhite;
+		draw_text(0, 12 + row * kLogRowPitch, line, col);
+	}
+
+	tsb::platform::lcd_present_now();
+}
+
+void run_log(OSystem_Thumby *osys) {
+	(void)osys;
+	const int total = tsb::platform::log_history_count();
+	// Start showing the newest page.
+	int scroll = (total > kLogVisibleRows) ? (total - kLogVisibleRows) : 0;
+	bool prev_up = false, prev_down = false;
+	while (true) {
+		paint_log(scroll, total);
+
+		tsb::platform::Input in{};
+		if (!tsb::platform::poll_input(&in)) return;
+		if (in.menu_pressed || in.b_pressed || in.a_pressed) return;
+
+		const bool up_edge   = in.dpad_up   && !prev_up;
+		const bool down_edge = in.dpad_down && !prev_down;
+		prev_up   = in.dpad_up;
+		prev_down = in.dpad_down;
+		if (up_edge   && scroll > 0)                                     --scroll;
+		if (down_edge && scroll + kLogVisibleRows < total)               ++scroll;
+		// LEFT/RIGHT: page jumps for faster review.
+		if (in.dpad_left)  scroll = (scroll > kLogVisibleRows) ? (scroll - kLogVisibleRows) : 0;
+		if (in.dpad_right) {
+			scroll += kLogVisibleRows;
+			if (scroll + kLogVisibleRows > total)
+				scroll = (total > kLogVisibleRows) ? (total - kLogVisibleRows) : 0;
+		}
+		tsb::platform::sleep_ms(16);
+	}
+}
+
+// --------------------------------------------------------------------
+// Slot picker — 2×2 grid of save slots with thumbnail previews.
+// --------------------------------------------------------------------
+enum class SlotMode { SAVE, LOAD };
+
+void blit_thumb(const uint16_t *src, int srcW, int srcH, int dstX, int dstY) {
+	// Simple uint16->lcd_pixel blit.  src may be nullptr (empty slot)
+	// in which case we just clear the area.
+	for (int y = 0; y < srcH; ++y) {
+		for (int x = 0; x < srcW; ++x) {
+			const uint16_t c = src ? src[y * srcW + x] : 0x0000;
+			tsb::platform::lcd_pixel(dstX + x, dstY + y, c);
+		}
+	}
+}
+
+void paint_slot_picker(SlotMode mode, int sel,
+                       const tsb::save_backend::SlotInfo *slots) {
+	tsb::platform::lcd_fill(kBlack);
+
+	const char *title = (mode == SlotMode::SAVE) ? "SAVE TO..." : "LOAD FROM...";
+	draw_text(2, 0, title, kHilite);
+
+	constexpr int kCellW = 64;
+	constexpr int kCellH = 64;
+	constexpr int kThumbW = tsb::save_backend::kThumbW;
+	constexpr int kThumbH = tsb::save_backend::kThumbH;
+	constexpr int kHeaderH = 9;   // title takes top 8 px; cells start at 9
+	constexpr int kCellInset = 1;  // 1-px border around thumb area
+	(void)kCellInset;
+
+	for (int s = 0; s < tsb::save_backend::kNumSlots; ++s) {
+		const int cx = (s % 2) * kCellW;
+		const int cy = kHeaderH + (s / 2) * kCellH;
+
+		// Thumbnail (or blank).
+		blit_thumb(slots[s].thumb, kThumbW, kThumbH, cx, cy);
+
+		// Label area below thumbnail (24 px tall).  Hint string +
+		// "SLOT N" line.  Empty slot: show "EMPTY".
+		char line1[24], line2[24];
+		std::snprintf(line1, sizeof(line1), "SLOT %d", s + 1);
+		if (slots[s].occupied) {
+			// Use the stored hint as line 2.  Truncate to fit.
+			std::strncpy(line2, slots[s].hint, sizeof(line2) - 1);
+			line2[sizeof(line2) - 1] = '\0';
+		} else {
+			std::strcpy(line2, "EMPTY");
+		}
+
+		const bool greyed = (mode == SlotMode::LOAD) && !slots[s].occupied;
+		const uint16_t col = greyed ? kDim : kWhite;
+		draw_text(cx + 1, cy + kThumbH + 1,  line1, col);
+		draw_text(cx + 1, cy + kThumbH + 9,  line2, col);
+
+		// Selection border on the focused cell.
+		if (s == sel) {
+			for (int x = 0; x < kCellW; ++x) {
+				tsb::platform::lcd_pixel(cx + x,             cy,             kHilite);
+				tsb::platform::lcd_pixel(cx + x,             cy + kCellH - 1, kHilite);
+			}
+			for (int y = 0; y < kCellH; ++y) {
+				tsb::platform::lcd_pixel(cx,                 cy + y, kHilite);
+				tsb::platform::lcd_pixel(cx + kCellW - 1,    cy + y, kHilite);
+			}
+		}
+	}
+
+	tsb::platform::lcd_present_now();
+}
+
+// Returns 0..kNumSlots-1 on confirm, -1 on cancel.
+int run_slot_picker(SlotMode mode) {
+	tsb::save_backend::SlotInfo slots[tsb::save_backend::kNumSlots];
+	tsb::save_backend::enumerate_slots(slots);
+	int sel = 0;
+	bool prev_up = false, prev_down = false, prev_left = false, prev_right = false;
+	bool prev_a = false;
+
+	// Drain any held A from the parent menu.
+	{
+		tsb::platform::Input in{};
+		while (tsb::platform::poll_input(&in) && in.a_pressed)
+			tsb::platform::sleep_ms(16);
+	}
+
+	while (true) {
+		paint_slot_picker(mode, sel, slots);
+
+		tsb::platform::Input in{};
+		if (!tsb::platform::poll_input(&in)) return -1;
+		if (in.menu_pressed || in.b_pressed) return -1;
+
+		const bool up_edge    = in.dpad_up    && !prev_up;
+		const bool down_edge  = in.dpad_down  && !prev_down;
+		const bool left_edge  = in.dpad_left  && !prev_left;
+		const bool right_edge = in.dpad_right && !prev_right;
+		const bool a_edge     = in.a_pressed  && !prev_a;
+		prev_up    = in.dpad_up;
+		prev_down  = in.dpad_down;
+		prev_left  = in.dpad_left;
+		prev_right = in.dpad_right;
+		prev_a     = in.a_pressed;
+
+		if (up_edge   && sel >= 2) sel -= 2;
+		if (down_edge && sel <= 1) sel += 2;
+		if (left_edge  && (sel % 2) == 1) sel -= 1;
+		if (right_edge && (sel % 2) == 0) sel += 1;
+
+		if (a_edge) {
+			// Block LOAD on empty slot; SAVE is always allowed.
+			if (mode == SlotMode::LOAD && !slots[sel].occupied)
+				continue;
+			return sel;
+		}
+		tsb::platform::sleep_ms(16);
+	}
+}
+
 void run_speech_font(OSystem_Thumby *osys) {
 	if (!osys) return;
 	bool use_mi = osys->getUseMiFontForSpeech();
@@ -356,7 +544,15 @@ void run(ScummEngine *engine) {
 		? static_cast<OSystem_Thumby *>(::g_system)
 		: nullptr;
 	int sel = CHOICE_SAVE;
-	bool has = save_backend::has_save();
+	// Update `has_any` whenever the slot table might have changed
+	// (after a save).  Used to grey out the LOAD row when every slot
+	// is empty.
+	auto compute_has_any = []() {
+		for (int s = 0; s < tsb::save_backend::kNumSlots; ++s)
+			if (save_backend::has_save(s)) return true;
+		return false;
+	};
+	bool has = compute_has_any();
 	// Snapshot the in-control state ONCE at menu open.  Avoids the
 	// SAVE row flickering between greyed and active if a script
 	// toggles _userPut while the menu is open.  Matches the original
@@ -400,26 +596,49 @@ void run(ScummEngine *engine) {
 
 			if (sel == CHOICE_SAVE) {
 				if (!can_save) {
-					// Original SCUMM scripts disabled the SAVE verb in
-					// these states — match that and decline.  No status
-					// flicker; the persistent "CAN'T SAVE NOW" stays.
 					tsb::platform::sleep_ms(120);
 					continue;
 				}
+				const int slot = run_slot_picker(SlotMode::SAVE);
+				if (slot < 0) continue;  // cancelled — back to main menu
+
+				// Capture a thumbnail of the current game scene.  Must
+				// happen BEFORE paint_menu redraws because that re-emits
+				// the snapshot atop the framebuffer (still safe — we read
+				// the cached _staging, not the LCD framebuffer).
+				static uint16_t s_thumb[tsb::save_backend::kThumbW *
+				                        tsb::save_backend::kThumbH];
+				if (osys) {
+					osys->captureSlotThumbnail(s_thumb,
+					                           tsb::save_backend::kThumbW,
+					                           tsb::save_backend::kThumbH);
+				} else {
+					std::memset(s_thumb, 0, sizeof(s_thumb));
+				}
+
+				char hint[tsb::save_backend::kHintBytes];
+				std::snprintf(hint, sizeof(hint), "Room %d",
+				              engine->publicCurrentRoom());
+
+				char desc[24];
+				std::snprintf(desc, sizeof(desc), "Slot %d", slot + 1);
+
 				status = "SAVING...";
 				paint_menu(osys, sel, has, can_save, status);
-				bool ok = engine->saveSlot0("Slot 0");
+				bool ok = engine->saveSlot(slot, desc, s_thumb, hint);
 				status = ok ? "SAVED" : "SAVE FAILED";
-				has = save_backend::has_save();
+				has = compute_has_any();
 				paint_menu(osys, sel, has, can_save, status);
 				tsb::platform::sleep_ms(900);
 				return;
 			}
 
 			if (sel == CHOICE_LOAD && has) {
+				const int slot = run_slot_picker(SlotMode::LOAD);
+				if (slot < 0) continue;
 				status = "LOADING...";
 				paint_menu(osys, sel, has, can_save, status);
-				bool ok = engine->loadSlot0();
+				bool ok = engine->loadSlot(slot);
 				if (ok) {
 					// scummvm v5 saveload restores _grabbedCursor +
 					// _cursor.* fields but never re-uploads the cursor
@@ -461,6 +680,11 @@ void run(ScummEngine *engine) {
 			if (sel == CHOICE_SPCH_FONT) {
 				drain_a();
 				run_speech_font(osys);
+				continue;
+			}
+			if (sel == CHOICE_LOG) {
+				drain_a();
+				run_log(osys);
 				continue;
 			}
 		}

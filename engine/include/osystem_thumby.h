@@ -271,6 +271,13 @@ public:
     // for calling tsb::platform::lcd_present_now() afterwards.
     void renderSnapshotToFramebuffer();
 
+    // Render a save-slot thumbnail from the cached game surface.
+    // Resolves the CLUT8 _staging into RGB565 at the destination size,
+    // sampling with a fixed 5:1 ratio from the canonical 320x200
+    // playfield (so dst must be 64x40).  The save_menu calls this just
+    // before each save to grab a fresh snapshot.
+    void captureSlotThumbnail(uint16_t *dst, int dstW, int dstH);
+
     // Inject a synthetic left-click at source-space (x, y).  Used by
     // the verb/inventory picker overlays to "click" on the engine's
     // verb hotspot without going through the input layer.  Pushes

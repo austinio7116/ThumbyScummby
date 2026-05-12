@@ -922,6 +922,14 @@ void log(const char *fmt, ...) {
 }
 void log_flush() { fflush(stderr); }
 
+// Host has no in-game LOG viewer (log goes to stderr already).  Stub
+// the accessors so the device-side viewer code compiles unchanged.
+int  log_history_count() { return 0; }
+void log_history_get(int idx, char *out, int outsz) {
+    (void)idx;
+    if (out && outsz > 0) out[0] = '\0';
+}
+
 [[noreturn]] void panic(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     fprintf(stderr, "PANIC: ");
