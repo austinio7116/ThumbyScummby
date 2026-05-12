@@ -42,14 +42,52 @@ target_compile_options(thumbyscummby_engine PRIVATE
 )
 
 # ----------------------------------------------------------------------
+# Game selection.
+#
+# One firmware = one game's resources (.incbin'd via data_section.S).
+# Override via `-DTHUMBYSCUMMBY_GAME=<name>` at configure time, or via
+# the build_device.sh wrapper:  `./build_device.sh mi1`.
+#
+# Each value here maps to:
+#   - A data dir under <repo>/data/ that pack_device.py reads from.
+#   - A TSB_GAME_<NAME> compile-time define consumed in main.cpp to
+#     pick the DetectorResult (game id, version, filenames, etc.).
+#   - A per-game UF2 output name so multiple variants can coexist on
+#     disk (firmware_thumbyscummby_<game>.uf2).
+# ----------------------------------------------------------------------
+set(THUMBYSCUMMBY_GAME "indy4" CACHE STRING
+    "Game to embed in this firmware (mi1|mi2|indy3|indy4)")
+set_property(CACHE THUMBYSCUMMBY_GAME PROPERTY STRINGS mi1 mi2 indy3 indy4)
+
+if (THUMBYSCUMMBY_GAME STREQUAL "mi1")
+    set(DATA_DIR    ${CMAKE_CURRENT_LIST_DIR}/../data/mi1_vga)
+    set(GAME_DEFINE "TSB_GAME_MI1=1")
+elseif (THUMBYSCUMMBY_GAME STREQUAL "mi2")
+    # MI2 floppy: monkey2.000 / monkey2.001 in an HD install layout.
+    set(DATA_DIR    ${CMAKE_CURRENT_LIST_DIR}/../data/mi2)
+    set(GAME_DEFINE "TSB_GAME_MI2=1")
+elseif (THUMBYSCUMMBY_GAME STREQUAL "indy3")
+    # Indy 3 (Last Crusade) EGA: standard LFL layout, SCUMM v3.
+    set(DATA_DIR    ${CMAKE_CURRENT_LIST_DIR}/../data/indy3)
+    set(GAME_DEFINE "TSB_GAME_INDY3=1")
+elseif (THUMBYSCUMMBY_GAME STREQUAL "indy4")
+    set(DATA_DIR    ${CMAKE_CURRENT_LIST_DIR}/../data/atlantis/install/ATLANTIS)
+    set(GAME_DEFINE "TSB_GAME_INDY4=1")
+else()
+    message(FATAL_ERROR
+        "Unknown THUMBYSCUMMBY_GAME='${THUMBYSCUMMBY_GAME}' "
+        "(valid values: mi1, mi2, indy3, indy4)")
+endif()
+message(STATUS "ThumbyScummby game: ${THUMBYSCUMMBY_GAME}  (DATA_DIR=${DATA_DIR})")
+
+# ----------------------------------------------------------------------
 # Bake the game data blob.
 #
-# tools/pack_device.py reads data/mi1_vga/, decrypts the LECs, and
-# writes a single binary with a 9-entry TOC. The .S below .incbin's
-# this file from CMAKE_CURRENT_BINARY_DIR.
+# tools/pack_device.py reads the selected DATA_DIR and writes a single
+# binary with a 9-entry TOC.  The .S below .incbin's this file from
+# CMAKE_CURRENT_BINARY_DIR.
 # ----------------------------------------------------------------------
 set(DATA_BLOB ${CMAKE_CURRENT_BINARY_DIR}/data_blob.bin)
-set(DATA_DIR  ${CMAKE_CURRENT_LIST_DIR}/../data/atlantis/install/ATLANTIS)
 set(PACK_TOOL ${CMAKE_CURRENT_LIST_DIR}/../tools/pack_device.py)
 
 # Glob the source files so the blob rebuilds if any of them change.
@@ -104,6 +142,7 @@ target_include_directories(thumbyscummby PRIVATE
 
 target_compile_definitions(thumbyscummby PRIVATE
     THUMBY_DEVICE=1
+    ${GAME_DEFINE}
     # Pico-SDK defaults to PICO_HEAP_SIZE=0x800 (2KB) — way too small
     # for scummvm.  RP2350 has 520 KB SRAM; static + .bss is ~140 KB;
     # stack is ~4 KB.  0x58000 (352 KB) is the largest size that fits
@@ -160,7 +199,7 @@ else()
     pico_add_extra_outputs(thumbyscummby)
 endif()
 
-# Friendlier output name to match the firmware naming convention.
+# Per-game UF2 name so MI1 / Indy 4 / etc. coexist in the build tree.
 set_target_properties(thumbyscummby PROPERTIES
-    OUTPUT_NAME "firmware_thumbyscummby"
+    OUTPUT_NAME "firmware_thumbyscummby_${THUMBYSCUMMBY_GAME}"
 )

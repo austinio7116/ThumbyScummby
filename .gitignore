@@ -7,10 +7,15 @@ data/
 # Build artifacts
 build/
 build_device/
+device_pico/build_mi1/
+device_pico/build_mi2/
+device_pico/build_indy3/
+device_pico/build_indy4/
+# Legacy build dir names (kept for old worktrees)
 build_mi1/
 build_atlantis/
-device_pico/build_mi1/
 device_pico/build_atlantis/
+device_pico/build/
 *.o
 *.a
 *.so

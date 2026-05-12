@@ -357,12 +357,64 @@ int main() {
             osys.setUseMiFontForSpeech(use_mi);
     }
 
+    // DetectorResult — which game's resources are baked into this UF2.
+    // Selected at configure time by THUMBYSCUMMBY_GAME in
+    // device_pico/CMakeLists.txt; see also build_device.sh.
+    tsb::DetectorResult dr;
+    tsb::ScummEngine *eng = nullptr;
+
+#if defined(TSB_GAME_MI1)
+    // Monkey Island 1 — VGA Floppy DOS (SCUMM v4).
+    // Standard LFL/LEC layout, GF_SMALL_HEADER for v4 disk format.
+    // Using GID_MONKEY_VGA triggers the script-152 copy-protection
+    // bypass in script_v5.cpp.
+    dr.game.id        = (int)tsb::GID_MONKEY_VGA;
+    dr.game.version   = 4;
+    dr.game.platform  = Common::kPlatformDOS;
+    dr.game.features  = tsb::GF_SMALL_HEADER | tsb::GF_USE_KEY;
+    dr.game.heversion = 0;
+    dr.language       = Common::EN_ANY;
+    dr.extra          = "";
+    dr.md5            = "8e4ee4db46954bfcb6d2654dde0aae25";
+    eng = new tsb::ScummEngine_v4(&osys, dr);
+
+#elif defined(TSB_GAME_MI2)
+    // Monkey Island 2 — LeChuck's Revenge (SCUMM v5 floppy DOS).
+    // Same HD-installed layout family as Atlantis: monkey2.000 /
+    // monkey2.001.  MD5 / variant are placeholders — verify against
+    // your install before shipping.
+    dr.game.id        = (int)tsb::GID_MONKEY2;
+    dr.game.variant   = "Floppy";
+    dr.game.version   = 5;
+    dr.game.platform  = Common::kPlatformDOS;
+    dr.game.features  = tsb::GF_USE_KEY;
+    dr.game.heversion = 0;
+    dr.language       = Common::EN_ANY;
+    dr.extra          = "";
+    dr.md5            = "";  // TODO: fill in for your install
+    dr.fp.pattern     = "monkey2.%03d";
+    dr.fp.genMethod   = tsb::kGenDiskNum;
+    eng = new tsb::ScummEngine_v5(&osys, dr);
+
+#elif defined(TSB_GAME_INDY3)
+    // Indiana Jones and the Last Crusade — EGA (SCUMM v3).
+    // v3 engine class; old LFL layout.  Not yet validated end-to-end.
+    dr.game.id        = (int)tsb::GID_INDY3;
+    dr.game.version   = 3;
+    dr.game.platform  = Common::kPlatformDOS;
+    dr.game.features  = tsb::GF_SMALL_HEADER | tsb::GF_USE_KEY;
+    dr.game.heversion = 0;
+    dr.language       = Common::EN_ANY;
+    dr.extra          = "";
+    dr.md5            = "";  // TODO: fill in for your install
+    eng = new tsb::ScummEngine_v3(&osys, dr);
+
+#elif defined(TSB_GAME_INDY4)
     // Indy 4 — Fate of Atlantis (SCUMM v5 floppy DOS, HD-installed).
     // _filenamePattern + kGenDiskNum tells setupScumm to build names
     // like "atlantis.000" / "atlantis.001"; the link-stubs file
     // resolver maps the .000/.001 suffixes onto data_master_index /
     // data_disk(1).
-    tsb::DetectorResult dr;
     dr.game.id        = (int)tsb::GID_INDY4;
     dr.game.variant   = "Floppy";   // input.cpp:1098 strcmps this for GID_INDY4
     dr.game.version   = 5;
@@ -374,8 +426,12 @@ int main() {
     dr.md5            = "1875b90fade138c9253a8e967007031a";
     dr.fp.pattern     = "atlantis.%03d";
     dr.fp.genMethod   = tsb::kGenDiskNum;
+    eng = new tsb::ScummEngine_v5(&osys, dr);
 
-    tsb::ScummEngine *eng = new tsb::ScummEngine_v5(&osys, dr);
+#else
+#  error "No TSB_GAME_* compile define set — pass -DTHUMBYSCUMMBY_GAME=<mi1|mi2|indy3|indy4> at CMake configure time."
+#endif
+
     osys.setEngine(eng);
 
     Common::Error err = eng->init();

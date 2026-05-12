@@ -39,6 +39,7 @@ namespace tsb::platform_sdl {
     bool main_loop_iter();
     void shutdown();
     bool load_data_dir(const char *path);
+    extern char g_loaded_game[16];   // set by load_data_dir: "mi1" / "indy4" / "mi2" / "v5"
 }
 
 // SDL → Common::Event translator installed in OSystem_Thumby.  Pumps
@@ -219,30 +220,57 @@ int main(int argc, char **argv) {
             osys.setUseMiFontForSpeech(use_mi);
     }
 
-    // Indy 4 — Fate of Atlantis (SCUMM v5 floppy DOS, HD-installed).
+    // Build the DetectorResult from whichever game load_data_dir
+    // detected in the directory passed on the command line.  Mirror of
+    // the per-game block in device_pico/main.cpp, with the difference
+    // that on the host the choice is runtime (data dir argument), not
+    // compile-time.
     tsb::DetectorResult dr;
-    dr.game.id           = (int)tsb::GID_INDY4;
-    dr.game.variant      = "Floppy";   // input.cpp:1098 strcmps this for GID_INDY4
-    dr.game.version      = 5;
-    dr.game.platform     = Common::kPlatformDOS;
-    dr.game.features     = tsb::GF_USE_KEY;
-    dr.game.heversion    = 0;
-    dr.language          = Common::EN_ANY;
-    dr.extra             = "";
-    dr.md5               = "1875b90fade138c9253a8e967007031a";
-    dr.fp.pattern        = "atlantis.%03d";
-    dr.fp.genMethod      = tsb::kGenDiskNum;
+    tsb::ScummEngine *eng = nullptr;
+    const char *gtag = tsb::platform_sdl::g_loaded_game;
 
-    // ScummVM hierarchy: ScummEngine_v4 inherits ScummEngine_v5
-    // (older > newer numbering by inheritance).  For MI1 floppy we
-    // instantiate v4 to get its readIndexFile / charset / decoder
-    // overrides.  v5 codepaths (FOA, MI2) would use ScummEngine_v5.
-    //
-    // The user requested support for v5 too — both classes are
-    // compiled and addressed; pick by dr.game.version.
-    tsb::ScummEngine *eng = (dr.game.version == 4)
-        ? (tsb::ScummEngine *)new tsb::ScummEngine_v4(&osys, dr)
-        : (tsb::ScummEngine *)new tsb::ScummEngine_v5(&osys, dr);
+    if (strcmp(gtag, "mi1") == 0) {
+        // Monkey Island 1 — VGA Floppy DOS (SCUMM v4).
+        dr.game.id        = (int)tsb::GID_MONKEY_VGA;
+        dr.game.version   = 4;
+        dr.game.platform  = Common::kPlatformDOS;
+        dr.game.features  = tsb::GF_SMALL_HEADER | tsb::GF_USE_KEY;
+        dr.game.heversion = 0;
+        dr.language       = Common::EN_ANY;
+        dr.extra          = "";
+        dr.md5            = "8e4ee4db46954bfcb6d2654dde0aae25";
+        eng = new tsb::ScummEngine_v4(&osys, dr);
+    } else if (strcmp(gtag, "mi2") == 0) {
+        // Monkey Island 2 — LeChuck's Revenge (SCUMM v5 floppy DOS).
+        dr.game.id        = (int)tsb::GID_MONKEY2;
+        dr.game.variant   = "Floppy";
+        dr.game.version   = 5;
+        dr.game.platform  = Common::kPlatformDOS;
+        dr.game.features  = tsb::GF_USE_KEY;
+        dr.game.heversion = 0;
+        dr.language       = Common::EN_ANY;
+        dr.extra          = "";
+        dr.md5            = "";
+        dr.fp.pattern     = "monkey2.%03d";
+        dr.fp.genMethod   = tsb::kGenDiskNum;
+        eng = new tsb::ScummEngine_v5(&osys, dr);
+    } else {
+        // Default / "indy4" / "v5" — Indy 4: Fate of Atlantis.  Also
+        // the fallback when load_data_dir saw a v5 HD layout but the
+        // base name wasn't recognised (treat as Atlantis).
+        dr.game.id        = (int)tsb::GID_INDY4;
+        dr.game.variant   = "Floppy";   // input.cpp:1098 strcmps this for GID_INDY4
+        dr.game.version   = 5;
+        dr.game.platform  = Common::kPlatformDOS;
+        dr.game.features  = tsb::GF_USE_KEY;
+        dr.game.heversion = 0;
+        dr.language       = Common::EN_ANY;
+        dr.extra          = "";
+        dr.md5            = "1875b90fade138c9253a8e967007031a";
+        dr.fp.pattern     = "atlantis.%03d";
+        dr.fp.genMethod   = tsb::kGenDiskNum;
+        eng = new tsb::ScummEngine_v5(&osys, dr);
+    }
     osys.setEngine(eng);
 
     Common::Error err = eng->run();

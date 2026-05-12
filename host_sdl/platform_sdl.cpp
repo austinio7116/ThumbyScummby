@@ -28,6 +28,15 @@ namespace tsb::platform_sdl {
 
 static const int kPreviewScale = 4;   // 4x scale of 128x128 = 512x512 window
 
+// Game detected by load_data_dir().  Read by main.cpp at startup to
+// pick the right DetectorResult.  Empty string until load_data_dir
+// runs (or if no recognised layout was found).
+//   "mi1"   — v4 floppy layout (000.LFL + DISK*.LEC)
+//   "indy4" — v5 HD-installed, base name "atlantis"
+//   "mi2"   — v5 HD-installed, base name "monkey2"
+//   "v5"    — v5 HD-installed, any other base name (fallback)
+char g_loaded_game[16] = "";
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -117,6 +126,7 @@ bool load_data_dir(const char *path) {
     }
 
     if (have_v4) {
+        snprintf(g_loaded_game, sizeof(g_loaded_game), "mi1");
         tsb::platform::log("loaded 000.LFL: %zu bytes (unencrypted)\n", g.master.size);
 
         // DISK01-04.LEC — kept RAW (encrypted). ScummFile::read applies
@@ -177,6 +187,11 @@ bool load_data_dir(const char *path) {
             return false;
         }
         tsb::platform::log("loaded %s.001: %zu bytes (v5 HD, raw)\n", base, g.disk[0].size);
+        // Pick the game tag from the base filename so main.cpp can
+        // configure the right DetectorResult.
+        if (strcasecmp(base, "atlantis") == 0)      snprintf(g_loaded_game, sizeof(g_loaded_game), "indy4");
+        else if (strcasecmp(base, "monkey2") == 0)  snprintf(g_loaded_game, sizeof(g_loaded_game), "mi2");
+        else                                        snprintf(g_loaded_game, sizeof(g_loaded_game), "v5");
     }
     return true;
 }
