@@ -570,12 +570,51 @@ namespace save_backend {
 	Common::SeekableReadStream  *open_for_reading();
 }
 
-Common::SeekableReadStream *ScummEngine::openSaveFileForReading(int slot, bool /*compat*/, Common::String &fileName) {
+// THUMBY-PORT — temporary-save buffer.  SCUMM v5's SO_ROOM_SAVEGAME
+// (script-level `saveLoad(1, 26)`) forces _saveLoadSlot=99 and sets
+// _saveTemporaryState=true; this is how close-up rooms (e.g. Indy4
+// magazine, Sophia's photo) bracket their state so the dismiss path
+// can pop back via saveLoad(2, 26).  save_backend's per-slot file/flash
+// regions only cover 0..kNumSlots-1, so we route compat opens to a
+// RAM buffer instead.  Heap-alloc on first use, persists across the
+// save→load pair; never written to disk (no wear, no user-visible slot).
+namespace {
+struct TempSave {
+	uint8_t *data = nullptr;
+	uint32_t size = 0;
+};
+TempSave g_tempSave;
+
+class TempSaveWriteStream : public Common::MemoryWriteStreamDynamic {
+public:
+	TempSaveWriteStream()
+	    : Common::MemoryWriteStreamDynamic(DisposeAfterUse::NO) {}
+	~TempSaveWriteStream() override {
+		// Steal the buffer into g_tempSave on destruction so the
+		// next openSaveFileForReading(compat=true) can serve it.
+		if (g_tempSave.data) free(g_tempSave.data);
+		g_tempSave.data = getData();
+		g_tempSave.size = (uint32_t)size();
+	}
+};
+}  // anonymous
+
+Common::SeekableReadStream *ScummEngine::openSaveFileForReading(int slot, bool compat, Common::String &fileName) {
+	if (compat) {
+		fileName = "<temp>";
+		if (!g_tempSave.data) return nullptr;
+		return new Common::MemoryReadStream(
+			g_tempSave.data, g_tempSave.size, DisposeAfterUse::NO);
+	}
 	fileName = Common::String::format("slot%d", slot);
 	return save_backend::open_for_reading(slot);
 }
 
-Common::SeekableWriteStream *ScummEngine::openSaveFileForWriting(int slot, bool /*compat*/, Common::String &fileName) {
+Common::SeekableWriteStream *ScummEngine::openSaveFileForWriting(int slot, bool compat, Common::String &fileName) {
+	if (compat) {
+		fileName = "<temp>";
+		return new TempSaveWriteStream();
+	}
 	fileName = Common::String::format("slot%d", slot);
 	// THUMBY-PORT — the per-save thumbnail + hint string get set on the
 	// engine by save_menu.cpp just before requesting the save.  They're
