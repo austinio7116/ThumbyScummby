@@ -112,26 +112,142 @@ void OSystem_Thumby::synthesizeLeftClick(int x, int y) {
 }
 
 void OSystem_Thumby::captureSlotThumbnail(uint16_t *dst, int dstW, int dstH) {
-    // Source: canonical 320x200 SCUMM game surface in _staging[].
-    // Destination: caller-owned dstW x dstH RGB565 buffer.
-    // Nearest-neighbor sampling.  For the standard 64x40 thumbnail this
-    // is an exact 5:1 ratio on both axes.
+    // Source: scene region of _staging[] — rows 0..kSceneSrcRows-1 (the
+    // non-verb part of the 320×200 SCUMM frame; rows 144..199 hold the
+    // legacy verb panel which our overlay UI replaces, so they're never
+    // included).  The source is cropped to match dstW:dstH aspect:
+    //
+    //   target wider than scene  → keep full 320 width, take only the
+    //                              top N rows (drops scene bottom)
+    //   target narrower or equal → keep full 144 height, take a centred
+    //                              column window
+    //
+    // Then downsampled into dst via the same 2×2 packed-RGB565 blend
+    // used for the live scene blit (platform_*.cpp:blend4_565 /
+    // md_core.c:601).  Each output pixel averages four source pixels
+    // (sx,sx+1) × (sy,sy+1) — softens the 4×–5× shrink considerably vs
+    // the previous pure nearest-neighbour sampling.
     constexpr int kSrcW = 320;
-    constexpr int kSrcH = 200;
+    constexpr int kSrcH = tsb::platform::kSceneSrcRows;   // 144
     if (!dst || dstW <= 0 || dstH <= 0) return;
+
+    int crop_w, crop_h, crop_x, crop_y;
+    if ((long)dstW * kSrcH > (long)dstH * kSrcW) {
+        // Target wider than scene → row crop from top.
+        crop_w = kSrcW;
+        crop_h = (kSrcW * dstH) / dstW;
+        if (crop_h > kSrcH) crop_h = kSrcH;
+        crop_x = 0;
+        crop_y = 0;
+    } else {
+        // Target narrower or equal → centred column crop.
+        crop_h = kSrcH;
+        crop_w = (kSrcH * dstW) / dstH;
+        if (crop_w > kSrcW) crop_w = kSrcW;
+        crop_x = (kSrcW - crop_w) / 2;
+        crop_y = 0;
+    }
+
+    auto pal565 = [this](uint8_t idx) -> uint16_t {
+        const uint8_t r = _palette[idx * 3 + 0];
+        const uint8_t g = _palette[idx * 3 + 1];
+        const uint8_t b = _palette[idx * 3 + 2];
+        return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+    };
+    constexpr uint32_t kMask = 0x07E0F81Fu;
+    auto blend4 = [&](uint16_t a, uint16_t b, uint16_t c, uint16_t d) -> uint16_t {
+        uint32_t ea = ((uint32_t)a | ((uint32_t)a << 16)) & kMask;
+        uint32_t eb = ((uint32_t)b | ((uint32_t)b << 16)) & kMask;
+        uint32_t ec = ((uint32_t)c | ((uint32_t)c << 16)) & kMask;
+        uint32_t ed = ((uint32_t)d | ((uint32_t)d << 16)) & kMask;
+        uint32_t ab  = ((ea + eb) >> 1) & kMask;
+        uint32_t cd  = ((ec + ed) >> 1) & kMask;
+        uint32_t avg = ((ab + cd) >> 1) & kMask;
+        return (uint16_t)((avg | (avg >> 16)) & 0xFFFFu);
+    };
+
+    const int crop_x_end = crop_x + crop_w;
+    const int crop_y_end = crop_y + crop_h;
     for (int dy = 0; dy < dstH; ++dy) {
-        const int sy = (dy * kSrcH) / dstH;
-        const uint8_t *srcRow = _staging + sy * kSrcW;
-        uint16_t *dstRow = dst + dy * dstW;
+        int sy  = crop_y + (dy * crop_h) / dstH;
+        int sy2 = sy + 1; if (sy2 >= crop_y_end) sy2 = sy;
+        const uint8_t *r1 = _staging + sy  * kSrcW;
+        const uint8_t *r2 = _staging + sy2 * kSrcW;
+        uint16_t *drow = dst + dy * dstW;
         for (int dx = 0; dx < dstW; ++dx) {
-            const int sx = (dx * kSrcW) / dstW;
-            const uint8_t idx = srcRow[sx];
-            const uint8_t r = _palette[idx * 3 + 0];
-            const uint8_t g = _palette[idx * 3 + 1];
-            const uint8_t b = _palette[idx * 3 + 2];
-            dstRow[dx] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+            int sx  = crop_x + (dx * crop_w) / dstW;
+            int sx2 = sx + 1; if (sx2 >= crop_x_end) sx2 = sx;
+            drow[dx] = blend4(pal565(r1[sx]), pal565(r1[sx2]),
+                              pal565(r2[sx]), pal565(r2[sx2]));
         }
     }
+}
+
+bool OSystem_Thumby::captureVerbIcon(ScummEngine *engine, int verb_slot,
+                                     uint16_t *dst, int dst_w, int dst_h,
+                                     uint8_t  *scratch, int scratch_pitch,
+                                     int scratch_max_w, int scratch_max_h) {
+    if (!engine || !dst || dst_w <= 0 || dst_h <= 0) return false;
+    if (!scratch || scratch_pitch <= 0) return false;
+
+    // Decode the OBIM into the caller-provided CLUT8 scratch via
+    // publicCaptureObjectIconRaw, which builds a stack VirtScreen
+    // pointing at the scratch and drives the engine's strip decoder
+    // against THAT instead of the engine's verb VirtScreen.  Removes
+    // all dependencies on the verb VS being initialised / unhidden /
+    // not already containing other panel content at capture time.
+    int src_w = 0, src_h = 0;
+    if (!engine->publicCaptureObjectIconRaw(verb_slot, scratch, scratch_pitch,
+                                            scratch_max_w, scratch_max_h,
+                                            &src_w, &src_h)) {
+        return false;
+    }
+    const uint8_t *vs_pixels = scratch;
+    const int      vs_pitch  = scratch_pitch;
+
+    // Centre-fit the src_w × src_h icon inside the dst_w × dst_h
+    // thumbnail, preserving aspect.  Same blend4 / pal565 pattern as
+    // captureSlotThumbnail.
+    auto pal565 = [this](uint8_t idx) -> uint16_t {
+        const uint8_t r = _palette[idx * 3 + 0];
+        const uint8_t g = _palette[idx * 3 + 1];
+        const uint8_t b = _palette[idx * 3 + 2];
+        return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+    };
+    constexpr uint32_t kMask = 0x07E0F81Fu;
+    auto blend4 = [&](uint16_t a, uint16_t b, uint16_t c, uint16_t d) -> uint16_t {
+        uint32_t ea = ((uint32_t)a | ((uint32_t)a << 16)) & kMask;
+        uint32_t eb = ((uint32_t)b | ((uint32_t)b << 16)) & kMask;
+        uint32_t ec = ((uint32_t)c | ((uint32_t)c << 16)) & kMask;
+        uint32_t ed = ((uint32_t)d | ((uint32_t)d << 16)) & kMask;
+        uint32_t ab  = ((ea + eb) >> 1) & kMask;
+        uint32_t cd  = ((ec + ed) >> 1) & kMask;
+        uint32_t avg = ((ab + cd) >> 1) & kMask;
+        return (uint16_t)((avg | (avg >> 16)) & 0xFFFFu);
+    };
+
+    // FULL-STRETCH (no aspect-fit) — icon source is scaled to fill the
+    // entire dst_w × dst_h cell.  Indy4 inventory icons are ~32×16 or
+    // 48×24 (aspect ~2.0) while our cell is ~40×28 (aspect ~1.43); the
+    // previous aspect-fit gave ~30% vertical padding.  Filling the
+    // cell uses the available pixels for the icon itself at the cost
+    // of mild vertical squash, which is the right trade for a tiny
+    // LCD where readability beats geometric fidelity.
+    for (int dy = 0; dy < dst_h; ++dy) {
+        int sy  = (dy * src_h) / dst_h;
+        int sy2 = sy + 1; if (sy2 >= src_h) sy2 = sy;
+        const uint8_t *r1 = vs_pixels + sy  * vs_pitch;
+        const uint8_t *r2 = vs_pixels + sy2 * vs_pitch;
+        uint16_t *drow = dst + dy * dst_w;
+        for (int dx = 0; dx < dst_w; ++dx) {
+            int sx  = (dx * src_w) / dst_w;
+            int sx2 = sx + 1; if (sx2 >= src_w) sx2 = sx;
+            drow[dx] = blend4(pal565(r1[sx]),  pal565(r1[sx2]),
+                              pal565(r2[sx]),  pal565(r2[sx2]));
+        }
+    }
+
+    return true;
 }
 
 void OSystem_Thumby::renderSnapshotToFramebuffer() {
@@ -599,7 +715,21 @@ void OSystem_Thumby::updateScreen() {
     const bool ego_talking = _engine &&
                              _engine->publicGetTalkingActor() == _engine->publicGetEgoVar() &&
                              _engine->publicGetEgoVar() != 0;
-    const char *strip_text = dialog_active ? _npcQuestionBuf
+    // During Indy4 fights, the sentence strip becomes our chord-action
+    // feedback line.  Show the move name for ~1.2 s after each chord
+    // press, then revert to whatever the engine would normally put
+    // there (which is usually empty during fights anyway).
+    const bool fight_active = _engine && _engine->publicIndy4InFight();
+    bool fight_flash = false;
+    if (fight_active && _fightFlashText[0]) {
+        if (platform::millis() - _fightFlashAt < 1200) {
+            fight_flash = true;
+        } else {
+            _fightFlashText[0] = 0;
+        }
+    }
+    const char *strip_text = fight_flash ? _fightFlashText
+                            : dialog_active ? _npcQuestionBuf
                             : (ego_talking ? "" : _sentenceBuf);
 
     // Detect verb-prefix length for cursor-sentence highlighting only;
@@ -731,13 +861,21 @@ void OSystem_Thumby::updateScreen() {
         }
     }
 
+    // During Indy4 fist fights, present() paints into the framebuffer
+    // but DOESN'T push to the LCD yet — we overpaint a 4-bar HUD
+    // strip at the top, then flush.  See paintIndy4FightHud.
+    const bool in_fight = _engine && _engine->publicIndy4InFight();
     platform::present(_staging, nullptr, _palette,
                       _scaleMode, _cropX, _cropY, cur_ptr,
                       _lcdStamps, _lcdStampCount,
                       strip_text, verb_prefix_len,
-                      /*send_to_lcd*/ true,
+                      /*send_to_lcd*/ !in_fight,
                       /*panel_active*/ _verbPanelActive,
                       cursor_tooltip);
+    if (in_fight) {
+        paintIndy4FightHud();
+        platform::lcd_present_now();
+    }
     // Top up the audio ring once per frame. On device this synthesises
     // ~40-60ms of OPL2/iMUSE samples and pushes them into the PWM DMA
     // buffer; without this the sound timer never advances and SCUMM
@@ -747,6 +885,16 @@ void OSystem_Thumby::updateScreen() {
     // Mark frame complete so the device input poller knows it's safe to
     // re-sample buttons on its next pollEvent call.
     _frameDone = true;
+
+    // Indy4 fist-fight mode owns input — chord buttons fire fight verbs
+    // 120..128 directly, normal overlay triggers are suppressed.  See
+    // handleIndy4FightInput for the chord scheme.  Detection is the
+    // engine's own Bit[20] (set by script-82) gated to Indy4 so other
+    // games are untouched.
+    if (_engine && _engine->publicIndy4InFight()) {
+        handleIndy4FightInput();
+        return;
+    }
 
     // ---- Overlay UI triggers ----
     //   MENU tap            → cycle scale mode
@@ -854,6 +1002,228 @@ void OSystem_Thumby::updateScreen() {
             }
         }
     }
+}
+
+// Indy4 fist-fight HUD — paint a panel between the scene and sentence
+// strip styled after the original game's fight bars (see screenshot in
+// /tmp/Screenshot 2026-05-13).
+//
+// Layout (rows on the 128-px LCD):
+//   0..87    scene (~73% of screen height, matches the original proportions)
+//   88..101  Indy section: name on left, P: bar y=88..93, H: bar y=95..100
+//   102      thin divider
+//   103..116 Opponent section: same layout
+//   117..119 padding
+//   120..127 sentence strip (move-name flash on chord fire, then engine text)
+//
+// Power bar  — shorter (60 px) blue strip with dim blue empty portion.
+//              The original is rendered as a current-charge indicator
+//              that fills as the player holds an attack key.
+// Health bar — wider (84 px) red/yellow/green strip on solid black,
+//              colour by current value (engine's own thresholds in
+//              script-49 are: ≤60 red, ≤120 yellow, else green).
+//
+// Engine vars (descumm of script-49 / script-50):
+//   Var[322] Indy health     Var[341] Indy power
+//   Var[326] opp  health     Var[332] opp  power
+//   Var[345] opponent actor id  (we look up actor name via getActorName)
+void OSystem_Thumby::paintIndy4FightHud() {
+    if (!_engine) return;
+
+    // --- Geometry ---
+    // Name column widened, bars trimmed so labels have breathing room
+    // and don't run right up against the bar start.
+    constexpr int kPanelY      = 88;
+    constexpr int kIndyPowY    = 88;
+    constexpr int kIndyHpY     = 95;
+    constexpr int kDividerY    = 102;
+    constexpr int kThugPowY    = 103;
+    constexpr int kThugHpY     = 110;
+    constexpr int kNameX       = 2;
+    constexpr int kLabelX      = 40;     // "P:" / "H:" column (was 26)
+    constexpr int kBarX        = 54;     // bar start  (was 38)
+    constexpr int kPowerBarW   = 40;     // shorter (was 56)
+    constexpr int kHealthBarW  = 70;     // shorter (was 88) — health still longer than power
+    constexpr int kBarH        = 5;
+    constexpr int kBarMaxValue = 180;
+
+    // --- Colours (RGB565) ---
+    constexpr uint16_t kBlack      = 0x0000;
+    constexpr uint16_t kPowerFill  = 0x041F;   // bright blue
+    constexpr uint16_t kPowerEmpty = 0x0010;   // dim blue
+    constexpr uint16_t kHpGreen    = 0x0640;
+    constexpr uint16_t kHpYellow   = 0xFEA0;
+    constexpr uint16_t kHpRed      = 0xF800;
+    constexpr uint16_t kNameColor  = 0xCE2C;   // MI hilite (yellow)
+    constexpr uint16_t kLabelColor = 0x9912;   // MI inventory mauve
+    constexpr uint16_t kDivider    = 0x39E7;   // dim grey
+
+    auto health_color = [&](int value) -> uint16_t {
+        if (value <= 60)  return kHpRed;
+        if (value <= 120) return kHpYellow;
+        return kHpGreen;
+    };
+
+    auto fill_rect = [](int x, int y, int w, int h, uint16_t c) {
+        for (int dy = 0; dy < h; ++dy)
+            for (int dx = 0; dx < w; ++dx)
+                tsb::platform::lcd_pixel(x + dx, y + dy, c);
+    };
+
+    auto draw_bar = [&](int top_y, int value, int width_px,
+                        uint16_t fill, uint16_t empty) {
+        int w = (value * width_px) / kBarMaxValue;
+        if (w < 0) w = 0;
+        if (w > width_px) w = width_px;
+        if (w > 0)            fill_rect(kBarX,     top_y, w,             kBarH, fill);
+        if (w < width_px)     fill_rect(kBarX + w, top_y, width_px - w, kBarH, empty);
+    };
+
+    // --- Black backdrop for the whole panel.  Covers the bottom 32 rows
+    //     of scene that present() already painted, giving us a clean
+    //     surface for labels and bars (matches the original's brown panel
+    //     idea but black is more readable on RGB565).
+    fill_rect(0, kPanelY, 128, 32, kBlack);
+
+    // --- Indy section ---
+    tsb::mi_font::draw(kNameX,  kIndyPowY, "Indy", kNameColor);
+    tsb::mi_font::draw(kLabelX, kIndyPowY, "P:",   kLabelColor);
+    tsb::mi_font::draw(kLabelX, kIndyHpY,  "H:",   kLabelColor);
+
+    const int indy_pwr = _engine->publicReadVar(341);
+    const int indy_hp  = _engine->publicReadVar(322);
+    draw_bar(kIndyPowY + 1, indy_pwr, kPowerBarW,  kPowerFill, kPowerEmpty);
+    draw_bar(kIndyHpY  + 1, indy_hp,  kHealthBarW, health_color(indy_hp), kBlack);
+
+    // --- Divider ---
+    for (int x = 0; x < 128; ++x)
+        tsb::platform::lcd_pixel(x, kDividerY, kDivider);
+
+    // --- Opponent section ---
+    // The original draws getName(Var[345]).  Read the opponent actor's
+    // name resource directly via publicGetActorName.  Falls back to
+    // "Thug" if the resource isn't populated (engine's actor-name
+    // table is sometimes blank for unnamed combat actors).
+    char opponent_name[16] = "Thug";
+    const int opp_actor = _engine->publicReadVar(345);
+    const byte *raw_name = _engine->publicGetActorName(opp_actor);
+    if (raw_name && raw_name[0]) {
+        // Strip 0xFF markup and '@' padding the same way the inventory
+        // picker does — name strings carry SCUMM control bytes that
+        // mi_font can't render.
+        int dst = 0;
+        for (int j = 0; j < (int)sizeof(opponent_name) - 1 && raw_name[j]; ++j) {
+            const byte b = raw_name[j];
+            if (b == '@')  break;
+            if (b < 32 || b > 126) break;
+            opponent_name[dst++] = (char)b;
+        }
+        while (dst > 0 && opponent_name[dst - 1] == ' ') --dst;
+        opponent_name[dst] = 0;
+        if (dst == 0) memcpy(opponent_name, "Thug", 5);
+    }
+    tsb::mi_font::draw(kNameX,  kThugPowY, opponent_name, kNameColor);
+    tsb::mi_font::draw(kLabelX, kThugPowY, "P:",          kLabelColor);
+    tsb::mi_font::draw(kLabelX, kThugHpY,  "H:",          kLabelColor);
+
+    const int thug_pwr = _engine->publicReadVar(332);
+    const int thug_hp  = _engine->publicReadVar(326);
+    draw_bar(kThugPowY + 1, thug_pwr, kPowerBarW,  kPowerFill, kPowerEmpty);
+    draw_bar(kThugHpY  + 1, thug_hp,  kHealthBarW, health_color(thug_hp), kBlack);
+}
+
+// Indy4 fist-fight chord input.  See script-17.dmp / script-82.dmp:
+//   verbs 120..128 are the 9 fight moves; the engine fires the chosen
+//   move when runInputScript(kVerbClickArea, verbid, 1) is dispatched,
+//   identical to a keyboard 1..9 press in the original game.
+//
+// Layout (modeless A/B + d-pad, user-chosen 2026-05-13):
+//   A   + dpad-up    → punch high    (verb 120)
+//   A   alone        → punch mid     (verb 121)
+//   A   + dpad-down  → punch low     (verb 122)
+//   B   + dpad-up    → block high    (verb 123)
+//   B   alone        → block mid     (verb 124)
+//   B   + dpad-down  → block low     (verb 125)
+//   MENU             → retreat       (verb 126)
+//   RB               → charge        (verb 127)
+//   LB               → special       (verb 128)
+//
+// Engine gates each move via Var[167 + i]; if disabled we silently
+// drop the chord rather than firing an invalid move.
+void OSystem_Thumby::handleIndy4FightInput() {
+    if (!_engine) return;
+    const bool a_now      = platform::is_a_held();
+    const bool b_now      = platform::is_b_held();
+    const bool lb_now     = platform::is_lb_held();
+    const bool rb_now     = platform::is_rb_held();
+    const bool menu_now   = platform::is_menu_held();
+    const bool up_now     = platform::is_dpad_up_held();
+    const bool down_now   = platform::is_dpad_down_held();
+
+    auto edge = [](bool now, bool &prev) {
+        const bool e = now && !prev;
+        prev = now;
+        return e;
+    };
+    const bool a_edge    = edge(a_now,    _fightPrevA);
+    const bool b_edge    = edge(b_now,    _fightPrevB);
+    const bool lb_edge   = edge(lb_now,   _fightPrevLb);
+    const bool rb_edge   = edge(rb_now,   _fightPrevRb);
+    const bool menu_edge = edge(menu_now, _fightPrevMenu);
+
+    int verb = 0;
+    if (a_edge) {
+        verb = up_now   ? 120 :
+               down_now ? 122 :
+                          121;
+    } else if (b_edge) {
+        verb = up_now   ? 123 :
+               down_now ? 125 :
+                          124;
+    } else if (menu_edge) {
+        verb = 126;
+    } else if (rb_edge) {
+        verb = 127;
+    } else if (lb_edge) {
+        verb = 128;
+    }
+
+    if (verb > 0) {
+        const int move_idx = verb - 120;
+        if (_engine->publicIndy4FightMoveEnabled(move_idx)) {
+            _engine->publicRunInputScript(kVerbClickArea, verb, 1);
+            // Hardcoded move names — the engine's labels can vary per
+            // fight context (weapons, etc.) but our chord mapping is
+            // fixed, so what the player needs to see is the action our
+            // chord triggered, not the engine's contextual name.
+            static const char *kMoveNames[9] = {
+                "-> PUNCH HIGH",
+                "-> PUNCH MID",
+                "-> PUNCH LOW",
+                "-> BLOCK HIGH",
+                "-> BLOCK MID",
+                "-> BLOCK LOW",
+                "-> RETREAT",
+                "-> CHARGE",
+                "-> SPECIAL",
+            };
+            const char *name = kMoveNames[move_idx];
+            int i = 0;
+            for (; name[i] && i < (int)sizeof(_fightFlashText) - 1; ++i)
+                _fightFlashText[i] = name[i];
+            _fightFlashText[i] = 0;
+            _fightFlashAt = platform::millis();
+        }
+    }
+
+    // Clear overlay-trigger timestamps so when the fight ends and we
+    // resume normal input, a still-held LB/RB/MENU doesn't fire a
+    // delayed tap into the verb/inventory picker.
+    _ovLbDownAt = 0;
+    _ovRbDownAt = 0;
+    _ovMenuDownAt = 0;
+    _ovMenuConsumed = false;
+    _ovEscFired = false;
 }
 
 // MENU cycles Fit → Fill → Crop → Fit.  When entering a mode whose

@@ -16,7 +16,7 @@ namespace save_backend {
 namespace {
 
 constexpr uint32_t kHeaderMagic   = 0x53425354u;
-constexpr uint16_t kHeaderVersion = 2;
+constexpr uint16_t kHeaderVersion = 3;  // v2→v3: 64×40 thumb → 64×36
 
 struct __attribute__((packed)) Header {
     uint32_t magic;

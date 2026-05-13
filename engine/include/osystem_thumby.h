@@ -278,12 +278,43 @@ public:
     // before each save to grab a fresh snapshot.
     void captureSlotThumbnail(uint16_t *dst, int dstW, int dstH);
 
+    // Render an inventory item's icon thumbnail.  Decodes verb_slot's
+    // OBIM directly into the caller-provided CLUT8 scratch (8-bit,
+    // `scratch_pitch` bytes per row, at-least scratch_h tall — needs
+    // to be big enough to hold a worst-case Indy4 inventory icon,
+    // typically 80×32 = 2560 bytes), then palette-downsamples to dst
+    // as RGB565 with aspect-preserving centre fit.  Scratch buffer is
+    // caller-owned so the ~2.5 KB doesn't sit in BSS — the inventory
+    // picker heap-allocates it alongside its icon cache and frees on
+    // close.  Returns false if the verb has no image or dimensions
+    // exceed scratch.
+    bool captureVerbIcon(ScummEngine *engine, int verb_slot,
+                         uint16_t *dst, int dst_w, int dst_h,
+                         uint8_t  *scratch, int scratch_pitch,
+                         int scratch_max_w, int scratch_max_h);
+
     // Inject a synthetic left-click at source-space (x, y).  Used by
     // the verb/inventory picker overlays to "click" on the engine's
     // verb hotspot without going through the input layer.  Pushes
     // MOUSEMOVE → LBUTTONDOWN → LBUTTONUP into the EventManager queue;
     // engine picks them up on the next tick.
     void synthesizeLeftClick(int x, int y);
+
+    // Indy4 fist-fight chord-input state — tracked separately from the
+    // overlay button timestamps because the fight handler uses press
+    // edges (immediate dispatch) rather than tap-on-release semantics.
+    bool     _fightPrevA = false;
+    bool     _fightPrevB = false;
+    bool     _fightPrevLb = false;
+    bool     _fightPrevRb = false;
+    bool     _fightPrevMenu = false;
+    // Move-name flash for the sentence strip — populated on each chord
+    // dispatch, displayed for ~1.2 s, then cleared.
+    char     _fightFlashText[24] = {0};
+    uint32_t _fightFlashAt = 0;
+
+    void     handleIndy4FightInput();
+    void     paintIndy4FightHud();
 
     platform::ScaleMode _scaleMode = platform::ScaleMode::Fit;
     int  _cropX = 0;

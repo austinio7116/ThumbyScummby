@@ -29,10 +29,13 @@ constexpr int kBoxH = 60;
 // Up to 16 picker entries — covers MI1's 12-verb grid plus the
 // occasional Indy-style 16-verb interface.  Each entry knows its
 // engine-side _verbs[] index so synthesize_click can target the right
-// curRect.
+// curRect.  Text is stored as an EXPANDED copy of the rtVerb resource
+// (run through convertMessageToString) so SCUMM 0xFF markup like
+// variable-substitution and Indy4 dialog markers come out as plain
+// readable ASCII rather than getting drawn as 4 px gaps by mi_font.
 struct PickerEntry {
 	int  slot_index;
-	const char *text;
+	char text[48];
 };
 
 // Iterate _verbs[], skip slots that aren't user-clickable (saveid set
@@ -48,8 +51,35 @@ int gather_visible_verbs(ScummEngine *eng, PickerEntry *out, int max) {
 		if (vs.type != kTextVerbType) continue;
 		const byte *txt = eng->getResourceAddress(rtVerb, v);
 		if (!txt || txt[0] == 0) continue;
+		// Run the engine's SCUMM-markup expansion so 0xFF escape
+		// sequences (variable substitution, name-of-object,
+		// Indy4-specific 0x7F dialog marker, etc.) become plain
+		// ASCII.  Without this, e.g. Indy4 dialog options like
+		// "* It begins with..." render as just "*" because the rest
+		// of the option text is encoded as a 0xFF reference that
+		// mi_font skips.
+		byte expanded[64];
+		expanded[0] = 0;
+		eng->publicConvertMessageToString(txt, expanded, sizeof(expanded));
+		// Copy printable bytes into out[n].text, stopping at '@'
+		// (SCUMM end-of-string padding) or any non-printable.
+		// Skip a leading 0x7F if present — Indy4 dialog options
+		// start with that as a "this string has been picked" marker
+		// that we don't need to show as a glyph.
+		int dst = 0;
+		int src_pos = 0;
+		if (expanded[0] == 0x7F) src_pos = 1;
+		while (dst < (int)sizeof(out[n].text) - 1 && expanded[src_pos]) {
+			const byte b = expanded[src_pos++];
+			if (b == '@') break;
+			if (b < 32 || b > 126) continue;   // drop control bytes silently
+			out[n].text[dst++] = (char)b;
+		}
+		// Trim trailing spaces.
+		while (dst > 0 && out[n].text[dst - 1] == ' ') --dst;
+		out[n].text[dst] = '\0';
+		if (dst == 0) continue;
 		out[n].slot_index = v;
-		out[n].text       = reinterpret_cast<const char *>(txt);
 		++n;
 	}
 	return n;

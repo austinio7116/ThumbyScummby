@@ -9,9 +9,10 @@
 //
 // Slot layout (in-region):
 //   [0..15]       header { magic, version, payload_size, reserved }
-//   [16..5135]    thumbnail — kThumbW * kThumbH RGB565 pixels, raw
-//   [5136..5183]  hint — NUL-terminated, kHintBytes total
-//   [5184..]      SCUMM save payload (saveState output)
+//   [16..]        thumbnail — kThumbW * kThumbH RGB565 pixels, raw
+//                 (kThumbBytes bytes; currently 4608 for 64×36)
+//   [next]        hint — NUL-terminated, kHintBytes total
+//   [next..]      SCUMM save payload (saveState output)
 
 #pragma once
 
@@ -29,8 +30,8 @@ namespace save_backend {
 // and the engine wrapper agree on layout without duplicating constants.
 constexpr int kNumSlots  = 4;
 constexpr int kThumbW    = 64;
-constexpr int kThumbH    = 40;
-constexpr int kThumbBytes = kThumbW * kThumbH * 2;   // 5120 bytes RGB565
+constexpr int kThumbH    = 36;
+constexpr int kThumbBytes = kThumbW * kThumbH * 2;   // 4608 bytes RGB565
 constexpr int kHintBytes  = 48;                       // NUL-terminated ASCII
 
 // One-line metadata for a slot, suitable for paint code that doesn't

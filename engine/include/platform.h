@@ -271,6 +271,13 @@ void lcd_present_now();
 bool is_lb_held();
 bool is_rb_held();
 bool is_menu_held();
+// Non-destructive live state for the buttons we don't already poll
+// above.  Used by the Indy4 fight-mode chord handler so it can read
+// A/B/d-pad without competing with the engine's main input pipeline.
+bool is_a_held();
+bool is_b_held();
+bool is_dpad_up_held();
+bool is_dpad_down_held();
 
 // Darken every LCD pixel inside [x..x+w, y..y+h) by 50% (RGB565 channel
 // halve).  Used to render the scene-tinting backdrop of the overlay

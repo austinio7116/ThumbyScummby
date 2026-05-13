@@ -302,7 +302,7 @@ ScummEngine::ScummEngine(OSystem *syst, const DetectorResult &dr)
 
 	// Read settings from the detector & config manager
 	_debugMode = (gDebugLevel > 0);
-	_dumpScripts = ConfMan.getBool("dump_scripts");
+	_dumpScripts = ConfMan.getBool("dump_scripts") || getenv("TSB_DUMP_SCRIPTS") != nullptr;
 	_bootParam = ConfMan.getInt("boot_param");
 	// Boot params often need debugging switched on to work
 	if (_bootParam)
@@ -4589,6 +4589,173 @@ bool ScummEngine_v100he::mapGeneratorDialog(bool demo) {
 #pragma mark -
 #pragma mark --- Miscellaneous ---
 #pragma mark -
+
+int ScummEngine::publicFindInventoryVerbSlot(int obj) {
+	if (obj <= 0) return 0;
+	// Indy4-style inventory uses SO_VERB_ASSIGN_OBJECT to bind a
+	// SEPARATE icon-image object to each panel slot — the verb's
+	// rtVerb IMHD carries the icon-image's obj id (e.g. 1261), NOT
+	// the inventory item we own.  See descumm of script-10.dmp:
+	// VerbOps(101+s, [SetToObject(icon_obj, 98), On()]).
+	//
+	// The script also writes the player-owned inventory item id
+	// into Var[141 + s] alongside that bind, so the slot→item map
+	// is just a small per-game array of ScummVars.  We use that
+	// instead of the IMHD: walk the var range, find the slot that
+	// holds `obj`, then locate the verb with verbid 101+slot.
+	//
+	// Per-game (var_base, panel_size).  Discovered by reading the
+	// disassembled inventory scripts (descumm dumps/script-10.dmp).
+	int var_base = 0;
+	int panel_size = 0;
+	switch (_game.id) {
+	case GID_INDY4:
+		// Indy4: 10 slots, Var[141..150].  script-10.dmp:0110
+		var_base = 141;
+		panel_size = 10;
+		break;
+	case GID_MONKEY_VGA:
+	case GID_MONKEY:
+	case GID_MONKEY2:
+		// MI1/MI2: 6 slots, Var[134..139].  MI1 floppy is text-only
+		// inventory so panel verbs are kTextVerbType and we'd return
+		// before the type filter — leaves MI2 (icon panel) as the
+		// active case.
+		var_base = 134;
+		panel_size = 6;
+		break;
+	default:
+		return 0;
+	}
+	if (var_base + panel_size > _numVariables) return 0;
+
+	for (int s = 0; s < panel_size; ++s) {
+		if (_scummVars[var_base + s] != obj) continue;
+		const int verbid = 101 + s;
+		for (int v = 1; v < _numVerbs; ++v) {
+			const VerbSlot &vs = _verbs[v];
+			if (vs.type != kImageVerbType) continue;
+			if (vs.saveid != 0 || !vs.curmode) continue;
+			if (vs.verbid == verbid) return v;
+		}
+	}
+	return 0;
+}
+
+bool ScummEngine::publicCaptureObjectIconRaw(int verb_slot, byte *dst,
+                                             int dst_pitch,
+                                             int dst_max_w, int dst_max_h,
+                                             int *out_w, int *out_h) {
+	if (verb_slot <= 0 || verb_slot >= _numVerbs) return false;
+	if (_verbs[verb_slot].type != kImageVerbType) return false;
+	const byte *obim = getResourceAddress(rtVerb, verb_slot);
+	if (!obim) return false;
+
+	int imgw_strips = 0;
+	int imgh = 0;
+	const byte *imptr = nullptr;
+	if (_game.features & GF_SMALL_HEADER) {
+		const uint32 size = READ_LE_UINT32(obim);
+		imgw_strips = obim[size + 11];
+		imgh = obim[size + 17];
+		imptr = getObjectImage(obim, 1);
+	} else {
+		const ImageHeader *imhd = (const ImageHeader *)findResourceData(
+		    MKTAG('I','M','H','D'), const_cast<byte *>(obim));
+		if (!imhd) return false;
+		imgw_strips = READ_LE_UINT16(&imhd->old.width) / 8;
+		imgh = READ_LE_UINT16(&imhd->old.height);
+		imptr = getObjectImage(obim, 1);
+	}
+	if (!imptr || imgw_strips <= 0 || imgh <= 0) return false;
+	const int imgw = imgw_strips * 8;
+	if (imgw > dst_max_w || imgh > dst_max_h) return false;
+	if (imgw > dst_pitch) return false;
+
+	// Clear the scratch — the strip decoder respects transparency
+	// (codecs that skip writes for "transparent" indices), so an
+	// initialised-to-zero canvas is required for that to render as
+	// black background rather than leaking heap data.
+	for (int y = 0; y < imgh; ++y) memset(dst + y * dst_pitch, 0, (size_t)imgw);
+
+	// VirtScreen is ~370 bytes (tdirty[81]+bdirty[81] arrays + Surface).
+	// Pico's default main stack is 2 KB and shared with ISRs, so a
+	// stack-local would eat most of the available headroom and can
+	// blow when an audio/DMA ISR fires deep in drawBitmap.  Make it a
+	// function-local static — costs ~370 bytes BSS instead, single-
+	// threaded engine so no re-entrancy concern.
+	static VirtScreen fake;
+	fake.clear();
+	fake.w = imgw;
+	fake.h = imgh;
+	fake.pitch = dst_pitch;
+	fake.format = Graphics::PixelFormat::createFormatCLUT8();
+	fake.setPixels(dst);
+
+	// drawBitmap's strip-count limit uses MAX(_roomWidth, vs->w)/8;
+	// if _roomWidth (current room's actual width, e.g. 320+) is wider
+	// than imgw, the limit would let drawBitmap step past our scratch.
+	// Temporarily clamp to match imgw so the loop stops correctly.
+	const int saved_roomWidth = _roomWidth;
+	_roomWidth = imgw;
+
+	// CRITICAL: disable the z-buffer around our drawBitmap.  Without
+	// this, Gdi::decodeMask runs for every strip and writes into
+	// rtBuffer[9] — the engine's MAIN scene mask buffer — at offsets
+	// derived from the strip index.  Even when an inventory icon
+	// itself has no z-planes, decodeMask still falls into the
+	// mask_ptr[h*_numStrips]=0 clearing branch, zeroing strips of the
+	// main scene's mask.  After two captures the corrupted mask makes
+	// the next normal frame crash.  drawVerbBitmap (verbs.cpp:1268)
+	// brackets its own drawBitmap calls with the same disable/enable
+	// for exactly this reason.
+	_gdi->disableZBuffer();
+
+	for (int i = 0; i < imgw_strips; ++i) {
+		_gdi->drawBitmap(imptr, &fake, i, 0, imgw, imgh, i, 1,
+		                 Gdi::dbAllowMaskOr | Gdi::dbObjectMode);
+	}
+
+	_gdi->enableZBuffer();
+	_roomWidth = saved_roomWidth;
+
+	*out_w = imgw;
+	*out_h = imgh;
+	return true;
+}
+
+bool ScummEngine::publicGetVerbImageSize(int verb_slot, int *out_w, int *out_h) {
+	if (verb_slot <= 0 || verb_slot >= _numVerbs) return false;
+	// Reject text-type verbs — their rtVerb resource is a raw string,
+	// not an OBIM, and the size-byte+11/+17 reads below would walk off
+	// the end of the resource into arbitrary heap.  publicFindInventoryVerbSlot
+	// already filters on this, but defend in depth in case a future
+	// caller passes a verb slot it found another way.
+	if (_verbs[verb_slot].type != kImageVerbType) return false;
+	const byte *obim = getResourceAddress(rtVerb, verb_slot);
+	if (!obim) return false;
+	int w = 0, h = 0;
+	if (_game.features & GF_OLD_BUNDLE) {
+		w = obim[0];
+		h = obim[1];
+	} else if (_game.features & GF_SMALL_HEADER) {
+		const uint32 size = READ_LE_UINT32(obim);
+		// drawVerbBitmap reads strip count at +11 (in 8-px units)
+		// and pixel height at +17.
+		w = (*(obim + size + 11)) * 8;
+		h = (*(obim + size + 17));
+	} else {
+		const ImageHeader *imhd = (const ImageHeader *)findResourceData(
+		    MKTAG('I','M','H','D'), const_cast<byte *>(obim));
+		if (!imhd) return false;
+		w = READ_LE_UINT16(&imhd->old.width);
+		h = READ_LE_UINT16(&imhd->old.height);
+	}
+	if (w <= 0 || h <= 0 || w > 320 || h > 200) return false;
+	*out_w = w;
+	*out_h = h;
+	return true;
+}
 
 void ScummEngine::errorString(const char *buf1, char *buf2, int buf2Size) {
 	if (_currentScript != 0xFF) {

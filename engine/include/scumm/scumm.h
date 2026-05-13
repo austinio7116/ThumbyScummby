@@ -1156,12 +1156,143 @@ public:
 	//
 	// Returns false if the per-game var lookup isn't wired for
 	// `_game.id`; caller should fall back to its previous heuristic.
+	// THUMBY-PORT: inventory icon capture for the overlay picker.
+	//
+	// Locate the verb slot index whose currently-bound OBIM is the
+	// image of `obj`.  Body in scumm.cpp.
+	int publicFindInventoryVerbSlot(int obj);
+
+	// THUMBY-PORT: Indy4 fist-fight integration.
+	//
+	// Indy4's verb-script (script-82) signals fight mode by setting
+	// Bit[20] = 1 (along with VAR_VERB_SCRIPT = 17 for fight-key
+	// dispatch).  Bits use the standard v5 encoding — _bitVars[bit/8]
+	// & (1<<(bit%7)).  Returns 0 outside Indy4 so other games aren't
+	// affected.
+	int  publicReadBit(int bit_id) const {
+		if (!_bitVars || bit_id < 0 || bit_id >= _numBitVariables) return 0;
+		return (_bitVars[bit_id >> 3] & (1 << (bit_id & 7))) ? 1 : 0;
+	}
+	bool publicIndy4InFight() {
+		if (_game.id != GID_INDY4) return false;
+		// The Indy4 bouncer (room-10 object-208) re-uses the
+		// fight-verb infrastructure for its dialog responses:
+		// startScript(82) is called from the dialog script, which
+		// sets Bit[20]=1, VAR_VERB_SCRIPT=17 and populates verbs
+		// 120..123 with "But--"/"Now wait--"/"Hold on--"/"Um--".
+		// So Bit[20], VAR_VERB_SCRIPT==17 and "fight-range verbs
+		// visible" are all TRUE during that dialog — none of them
+		// distinguish dialog from combat.
+		//
+		// The single reliable signal is whether the bar-drawing
+		// scripts are running.  Script-49 (Indy bars) and script-50
+		// (opponent bars) are background scripts only kicked off
+		// when actual combat starts; they're not running during
+		// the bouncer dialog (script-82 alone doesn't start them).
+		// See dumps/script-49.dmp / dumps/script-50.dmp.
+		return isScriptRunning(49) || isScriptRunning(50);
+	}
+	// Per-move enabled flag — script-17 reads Var[167 + i] to know if
+	// move i (0..8, mapping to verbs 120..128) is currently allowed.
+	// Some fights hide moves the player doesn't have access to (e.g.
+	// no weapon).  Returns false on out-of-range queries.
+	bool publicIndy4FightMoveEnabled(int move_idx) {
+		if (move_idx < 0 || move_idx > 8) return false;
+		const int var_idx = 167 + move_idx;
+		if (var_idx >= _numVariables) return false;
+		return _scummVars[var_idx] != 0;
+	}
+
+	// Read verb-image pixel dimensions (w × h, in source 320×200
+	// coords) without touching the framebuffer.  Mirrors the format
+	// branches inside drawVerbBitmap.  Returns false if the slot has
+	// no resource or the dimensions look bogus.  Implementation in
+	// scumm.cpp because ImageHeader / findResourceData live in
+	// object.h which scumm.h doesn't pull in here.
+	bool publicGetVerbImageSize(int verb_slot, int *out_w, int *out_h);
+
+	// Render a verb's bitmap into the kVerbVirtScreen back-buffer.
+	// drawVerbBitmap writes via vs->getBasePtr(x*8, ydiff) which lands
+	// in the verb VirtScreen's own rtBuffer (NOT _staging — _staging
+	// only sees the result after drawStripToScreen pushes it through
+	// _system->copyRectToScreen during the engine's normal redraw).
+	// Callers that need the pixels right after this call should use
+	// publicGetVerbScreenPixels() rather than reading _staging.
+	void publicDrawVerbBitmap(int verb_slot, int x, int y) {
+		if (verb_slot <= 0 || verb_slot >= _numVerbs) return;
+		drawVerbBitmap(verb_slot, x, y);
+	}
+
+	// Direct read access to the kVerbVirtScreen back-buffer — used by
+	// the inventory icon capture path to read the freshly-decoded
+	// bitmap without waiting for the engine's drawStripToScreen.
+	const byte *publicGetVerbScreenPixels() {
+		return reinterpret_cast<const byte *>(_virtscr[kVerbVirtScreen].getPixels(0, 0));
+	}
+	int publicGetVerbScreenPitch() const {
+		return _virtscr[kVerbVirtScreen].pitch;
+	}
+	int publicGetVerbScreenWidth() const {
+		return _virtscr[kVerbVirtScreen].w;
+	}
+	int publicGetVerbScreenHeight() const {
+		return _virtscr[kVerbVirtScreen].h;
+	}
+	// Wipe a top-left rectangle of the verb VS buffer to palette index 0
+	// (typically black).  Used by captureVerbIcon to clear the area
+	// drawVerbBitmap will draw into — the strip decoder is opacity-aware,
+	// so without this any prior panel decorations in the buffer bleed
+	// through transparent pixels of the icon.
+	void publicClearVerbScreen(int width, int height) {
+		VirtScreen &vs = _virtscr[kVerbVirtScreen];
+		byte *p = (byte *)vs.getPixels(0, 0);
+		if (!p || vs.pitch <= 0) return;
+		if (width  > vs.w) width  = vs.w;
+		if (height > vs.h) height = vs.h;
+		for (int y = 0; y < height; ++y) {
+			memset(p + y * vs.pitch, 0, width);
+		}
+	}
+	// Decode a verb slot's OBIM directly into a caller-provided CLUT8
+	// scratch buffer.  Bypasses the engine's verb VirtScreen entirely —
+	// previous approaches that drove drawVerbBitmap into the verb VS
+	// gave inconsistent results because the verb VS height/pixels
+	// state depends on script-controlled layout (SO_ROOM_SCREEN), so
+	// during capture it could be collapsed/uninitialized.
+	//
+	// dst is `dst_pitch` × at-least-out_h bytes; the decoder writes
+	// strips of 8 pixels at a time, walking width/8 strips total.
+	// Returns false if the resource isn't a parseable OBIM or
+	// dimensions overflow the scratch.
+	bool publicCaptureObjectIconRaw(int verb_slot, byte *dst, int dst_pitch,
+	                                int dst_max_w, int dst_max_h,
+	                                int *out_w, int *out_h);
+
+	// Look up an actor's name by actor id.  Indy4's fight scripts hold
+	// the opponent's actor id in Var[345]; we read it back to label
+	// the HUD with the real name (Biff/Hans/etc.) rather than a stock
+	// "Thug" placeholder.  Returns nullptr if the actor has no name
+	// resource (the rtActorName slot is empty until setActorName runs).
+	const byte *publicGetActorName(int actor_id) {
+		if (actor_id <= 0) return nullptr;
+		return getResourceAddress(rtActorName, actor_id);
+	}
+
 	bool publicDispatchInventoryClick(int target_obj) {
 		if (target_obj <= 0) return false;
 
+		// Per-game inventory panel layout — see publicFindInventoryVerbSlot
+		// for the same table.  Discovered by descumming the inventory
+		// drawing script for each game (typically script 10 in v5).
 		int varBase = -1;
-		const int panelSize = 6;  // verbids 101..106 cover six slots
+		int panelSize = 0;
 		switch (_game.id) {
+		case GID_INDY4:
+			// Indy4 (Atlantis): 10 slots, Var[141..150].
+			// script-10.dmp:0110 Var[141 + Local[7]] = inv_obj.
+			varBase = 141;
+			panelSize = 10;
+			break;
 		case GID_MONKEY_VGA:
 		case GID_MONKEY:
 			// MI1 floppy / CD.  disasm/script_022.txt declares
@@ -1169,11 +1300,10 @@ public:
 			// and script 4 [02FD..0382] reads Var[134 + slot] for
 			// dispatch.
 			varBase = 134;
+			panelSize = 6;
 			break;
-		// TODO: verify and wire GID_INDY4 (Atlantis), GID_MONKEY2,
-		// GID_INDY3 (Last Crusade) — likely same Var[134..139]
-		// convention since they share the v5/v4 verb-panel script
-		// idiom, but each needs a check against its boot scripts.
+		// TODO: GID_MONKEY2 / GID_INDY3 — confirm by descumming
+		// their inventory scripts.
 		default:
 			return false;
 		}

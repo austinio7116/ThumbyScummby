@@ -931,6 +931,30 @@ bool is_menu_held() {
     return st.menu;
 }
 
+bool is_a_held() {
+    struct buttons_state st;
+    buttons_read(&st);
+    return st.a;
+}
+
+bool is_b_held() {
+    struct buttons_state st;
+    buttons_read(&st);
+    return st.b;
+}
+
+bool is_dpad_up_held() {
+    struct buttons_state st;
+    buttons_read(&st);
+    return st.up;
+}
+
+bool is_dpad_down_held() {
+    struct buttons_state st;
+    buttons_read(&st);
+    return st.down;
+}
+
 void lcd_dim_box(int x, int y, int w, int h) {
     using namespace tsb::platform_pico;
     if (x < 0) { w += x; x = 0; }

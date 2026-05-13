@@ -1019,6 +1019,30 @@ bool is_menu_held() {
     return keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_M];
 }
 
+bool is_a_held() {
+    SDL_PumpEvents();
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    return keys[SDL_SCANCODE_PERIOD] || keys[SDL_SCANCODE_J];
+}
+
+bool is_b_held() {
+    SDL_PumpEvents();
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    return keys[SDL_SCANCODE_COMMA] || keys[SDL_SCANCODE_K];
+}
+
+bool is_dpad_up_held() {
+    SDL_PumpEvents();
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    return keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP];
+}
+
+bool is_dpad_down_held() {
+    SDL_PumpEvents();
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+    return keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN];
+}
+
 void lcd_dim_box(int x, int y, int w, int h) {
     using namespace tsb::platform_sdl;
     if (x < 0) { w += x; x = 0; }

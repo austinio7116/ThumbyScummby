@@ -387,12 +387,14 @@ void paint_slot_picker(SlotMode mode, int sel,
 	draw_text(2, 0, title, kHilite);
 
 	constexpr int kCellW = 64;
-	constexpr int kCellH = 64;
 	constexpr int kThumbW = tsb::save_backend::kThumbW;
 	constexpr int kThumbH = tsb::save_backend::kThumbH;
+	// 36 thumb + 7 line1 + 1 gap + 7 line2 + 1 bottom-pad = 52 px tall.
+	// Two rows = 104 px starting at kHeaderH=9 → ends at y=113, leaves
+	// 6 px clear of the sentence strip at y=120.  Previous 64 px cells
+	// pushed row 2 past y=120 and overlapped the sentence strip.
+	constexpr int kCellH = kThumbH + 16;
 	constexpr int kHeaderH = 9;   // title takes top 8 px; cells start at 9
-	constexpr int kCellInset = 1;  // 1-px border around thumb area
-	(void)kCellInset;
 
 	for (int s = 0; s < tsb::save_backend::kNumSlots; ++s) {
 		const int cx = (s % 2) * kCellW;

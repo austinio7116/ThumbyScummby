@@ -1531,7 +1531,6 @@ void ScummEngine_v70he::allocateArrays() {
 
 void ScummEngine::dumpResource(const char *tag, int id, const byte *ptr, int length) {
 	char buf[256];
-	Common::DumpFile out;
 
 	uint32 size;
 	if (length >= 0)
@@ -1545,11 +1544,14 @@ void ScummEngine::dumpResource(const char *tag, int id, const byte *ptr, int len
 
 	Common::sprintf_s(buf, "dumps/%s%d.dmp", tag, id);
 
-	out.open(buf);
-	if (out.isOpen() == false)
-		return;
-	out.write(ptr, size);
-	out.close();
+	// Common::DumpFile is link-stubbed (scummvm_link_stubs.cpp:205) —
+	// open() always returns false, so the original implementation was
+	// a silent no-op.  Use stdio directly so dumps land in dumps/ when
+	// TSB_DUMP_SCRIPTS=1 is set.
+	FILE *out = fopen(buf, "wb");
+	if (!out) return;
+	fwrite(ptr, 1, size, out);
+	fclose(out);
 }
 
 ResourceIterator::ResourceIterator(const byte *searchin, bool smallHeader)

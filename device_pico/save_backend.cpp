@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // ThumbyScummby — RP2350 device save backend.  Four slots at the top
-// 192 KB of flash; each slot owns a 48 KB region (12 × 4 KB sectors).
-//
-// Region layout (per slot):
-//   [0..15]       Header { magic, version, payload_size, reserved }
-//   [16..5135]    Thumbnail (kThumbW × kThumbH × 2 bytes, RGB565)
-//   [5136..5183]  Hint string (NUL-terminated, kHintBytes)
-//   [5184..]      SCUMM save payload (whatever engine saveState writes)
+// 384 KB of flash; each slot owns a 96 KB region.  See the kFlashRegionBase
+// comment below for the in-region byte layout.
 //
 // Writes accumulate in a 256-byte page buffer; full pages program into
 // flash, sector boundaries erase first.  Flash ops disable interrupts
@@ -30,12 +25,19 @@ namespace {
 // kFlashRegionBase + N * kSlotRegionSize.  Well above the ~4.7 MB
 // firmware/data footprint.  96 KB per slot fits Indy4's ~80 KB save
 // payloads with headroom for v6 (DOTT) too.
+//
+// Per-slot region layout (96 KB):
+//   [0..15]      Header { magic, version, payload_size, reserved }
+//   [16..]       Thumbnail (kThumbW × kThumbH × 2 bytes, RGB565)
+//                  v3: 4608 bytes (64×36)
+//   [thumb_end]  Hint string (NUL-terminated, kHintBytes)
+//   [...]        SCUMM save payload
 constexpr uint32_t kFlashRegionBase  = 16u * 1024u * 1024u - 384u * 1024u;  // 0x00FA0000
 constexpr uint32_t kSlotRegionSize   = 96u * 1024u;                          // 0x18000
 constexpr uintptr_t kFlashXipBase    = 0x10000000u;
 
 constexpr uint32_t kHeaderMagic   = 0x53425354u;  // 'TSBS' little-endian
-constexpr uint16_t kHeaderVersion = 2;            // bumped: v1 was single-slot
+constexpr uint16_t kHeaderVersion = 3;            // v2→v3: 64×40 thumb → 64×36
 
 struct __attribute__((packed)) Header {
     uint32_t magic;
@@ -47,9 +49,9 @@ struct __attribute__((packed)) Header {
 static_assert(sizeof(Header) == 16, "save header must be 16 bytes");
 
 constexpr uint32_t kMetaOffset    = sizeof(Header);                  // 16
-constexpr uint32_t kHintOffset    = kMetaOffset + kThumbBytes;       // 5136
-constexpr uint32_t kPayloadStart  = kHintOffset + kHintBytes;        // 5184
-constexpr uint32_t kMaxPayload    = kSlotRegionSize - kPayloadStart; // ~43 KB
+constexpr uint32_t kHintOffset    = kMetaOffset + kThumbBytes;       // 4624 (v3)
+constexpr uint32_t kPayloadStart  = kHintOffset + kHintBytes;        // 4672 (v3)
+constexpr uint32_t kMaxPayload    = kSlotRegionSize - kPayloadStart; // ~93 KB
 
 uint32_t slot_flash_offs(int slot) {
     return kFlashRegionBase + slot * kSlotRegionSize;
