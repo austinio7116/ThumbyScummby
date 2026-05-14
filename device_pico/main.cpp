@@ -381,8 +381,9 @@ int main() {
 #elif defined(TSB_GAME_MI2)
     // Monkey Island 2 — LeChuck's Revenge (SCUMM v5 floppy DOS).
     // Same HD-installed layout family as Atlantis: monkey2.000 /
-    // monkey2.001.  MD5 / variant are placeholders — verify against
-    // your install before shipping.
+    // monkey2.001.  MD5 isn't actually validated, but must be a
+    // 32-char hex string or scumm.cpp's decode loop indexes past
+    // the end of an empty string.
     dr.game.id        = (int)tsb::GID_MONKEY2;
     dr.game.variant   = "Floppy";
     dr.game.version   = 5;
@@ -391,7 +392,7 @@ int main() {
     dr.game.heversion = 0;
     dr.language       = Common::EN_ANY;
     dr.extra          = "";
-    dr.md5            = "";  // TODO: fill in for your install
+    dr.md5            = "f60039079bcdbfde2dab86bcad9c9c64";
     dr.fp.pattern     = "monkey2.%03d";
     dr.fp.genMethod   = tsb::kGenDiskNum;
     eng = new tsb::ScummEngine_v5(&osys, dr);

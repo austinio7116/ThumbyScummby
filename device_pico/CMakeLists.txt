@@ -64,7 +64,7 @@ if (THUMBYSCUMMBY_GAME STREQUAL "mi1")
     set(GAME_DEFINE "TSB_GAME_MI1=1")
 elseif (THUMBYSCUMMBY_GAME STREQUAL "mi2")
     # MI2 floppy: monkey2.000 / monkey2.001 in an HD install layout.
-    set(DATA_DIR    ${CMAKE_CURRENT_LIST_DIR}/../data/mi2)
+    set(DATA_DIR    ${CMAKE_CURRENT_LIST_DIR}/../data/mi2/MONKEY2)
     set(GAME_DEFINE "TSB_GAME_MI2=1")
 elseif (THUMBYSCUMMBY_GAME STREQUAL "indy3")
     # Indy 3 (Last Crusade) EGA: standard LFL layout, SCUMM v3.

@@ -998,6 +998,13 @@ protected:
 	const uint16_t *_thumbyPendingThumbnail = nullptr;
 	const char     *_thumbyPendingHint = nullptr;
 
+	// SCUMM v5's SO_ROOM_SAVEGAME bracket-saves full state to slot 99
+	// so close-up rooms (magazine, photos) can dismiss back to the
+	// original room.  A full serialize is ~60 KB — way over our heap
+	// budget.  Instead we just remember the source room here, and the
+	// dismiss path startScene()s back to it.
+	uint16 _thumbyBracketRoom = 0;
+
 	bool saveState(Common::SeekableWriteStream *out, bool writeHeader = true);
 	bool saveState(int slot, bool compat, Common::String &fileName);
 	bool loadState(int slot, bool compat);

@@ -1004,7 +1004,20 @@ void ResourceManager::setHeapThreshold(int min, int max) {
 }
 
 bool ResourceManager::validateResource(const char *str, ResType type, ResId idx) const {
-	if (type < rtFirst || type > rtLast || (uint)idx >= (uint)_types[type].size()) {
+	if (type < rtFirst || type > rtLast) {
+		warning("%s Illegal Glob type %s (%d) num %d", str, nameOfResType(type), type, idx);
+		return false;
+	}
+	// THUMBY-PORT: the rtBuffer pre-reserve block in scumm.cpp runs
+	// before allocResTypeData(rtBuffer, ...), so the type table is
+	// zero-sized at that point and the createResource calls are
+	// expected no-ops.  Silently bail in that case so we don't spam
+	// "Illegal Glob type Buffer" warnings every boot.  An actual
+	// out-of-range idx (table allocated, idx too big) still warns.
+	if (_types[type].size() == 0) {
+		return false;
+	}
+	if ((uint)idx >= (uint)_types[type].size()) {
 		warning("%s Illegal Glob type %s (%d) num %d", str, nameOfResType(type), type, idx);
 		return false;
 	}
@@ -1894,7 +1907,43 @@ void ScummEngine::applyWorkaroundIfNeeded(ResType type, int idx) {
 			warning("Could not patch MI2 Mac boot script");
 
 		delete[] patchedScript;
-	} else
+	}
+
+	// THUMBY-PORT — MI2 DOS Mix-N-Mojo skip.  The DOS boot script
+	// (script 1) gates the voodoo-ingredient copy-protection screen
+	// behind `if (Local[0] == 0) { ... startScript(130) ... }` at
+	// script-bytecode offset 0x0922:
+	//   48 00 40 00 00 13 00   jumpIfNotEqual Local[0], 0, +0x13
+	// On a normal boot Local[0] is 0 so the comparison passes and
+	// the protection block runs.  ScummVM's only DOS-side bypass is
+	// the var490->518 redirect in script.cpp, which lets you pick
+	// any answer but doesn't skip the UI.  For this port we patch
+	// the comparison immediate from 0 -> 1 so the jump is always
+	// taken and script 130 never runs.  Other conditionals later in
+	// the script that key off Local[0] (cheat codes / inventory
+	// pickup near 0x09CB) keep working because they all use !=
+	// against non-zero codes.
+	//
+	// Device build pre-patches the byte in tools/pack_device.py
+	// because resources live in flash (read-only); the !isOffHeap
+	// gate below skips this branch in that case so the device
+	// (where script[condOff+3] is already 0x01) doesn't fire the
+	// signature-mismatch warning.
+	else if (_game.id == GID_MONKEY2 && _game.platform != Common::kPlatformMacintosh &&
+			 !_copyProtection && type == rtScript && idx == 1 && size == 6719 &&
+			 !_res->isOffHeap(type, idx)) {
+		byte *script = getResourceAddress(type, idx);
+		const uint32 condOff = 0x092A;  // 8-byte SCRP header + bytecode 0x0922
+		if (script[condOff + 0] == 0x48 &&
+			script[condOff + 1] == 0x00 &&
+			script[condOff + 2] == 0x40 &&
+			script[condOff + 3] == 0x00 &&
+			script[condOff + 4] == 0x00) {
+			script[condOff + 3] = 0x01;
+		} else {
+			warning("MI2 DOS boot script: Mix-N-Mojo skip-patch signature mismatch");
+		}
+	}
 
 	// WORKAROUND: For some reason, the CD version of Monkey Island 1
 	// removes some of the text when giving the wimpy idol to the cannibals.

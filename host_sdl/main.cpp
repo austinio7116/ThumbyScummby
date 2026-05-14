@@ -250,7 +250,11 @@ int main(int argc, char **argv) {
         dr.game.heversion = 0;
         dr.language       = Common::EN_ANY;
         dr.extra          = "";
-        dr.md5            = "";
+        // Real MI2 EN floppy DOS 4-disk MD5; only used for a Mac-port
+        // workaround check + save-game stamping, so an empty string
+        // crashes scumm.cpp's MD5 decode loop but the exact value
+        // doesn't have to match this install.
+        dr.md5            = "f60039079bcdbfde2dab86bcad9c9c64";
         dr.fp.pattern     = "monkey2.%03d";
         dr.fp.genMethod   = tsb::kGenDiskNum;
         eng = new tsb::ScummEngine_v5(&osys, dr);

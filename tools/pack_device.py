@@ -53,6 +53,46 @@ def load(path, xor_byte):
     return bytes(data)
 
 
+# MI2 DOS boot script (script 1) contains a Mix-N-Mojo (voodoo
+# ingredients) copy-protection screen at script-bytecode offset
+# 0x0922:
+#   48 00 40 00 00 13 00   if (Local[0] == 0) { startScript(130); ... }
+# Flip the immediate from 00 -> 01 so the comparison never matches
+# on a normal boot and the protection block is jumped over.  We
+# patch the decrypted MONKEY2.001 here (build time) because device
+# resources live in flash (read-only) — the runtime patch in
+# engine/src/resource.cpp only fires on host where the resource is
+# heap-resident.
+MI2_PROT_SIG = bytes([
+    0x48, 0x00, 0x40, 0x00, 0x00, 0x13, 0x00,    # if (Local[0] == 0) {
+    0x33, 0x03, 0x00, 0x00, 0xc8, 0x00,          #   SetScreen(0,200);
+    0x0a, 0x82, 0xff,                            #   startScript(130,[]);
+    0x80,                                        #   breakHere();
+    0x68, 0x00, 0x00, 0x82,                      #   VAR_RESULT = isScriptRunning(130);
+    0x28, 0x00, 0x00, 0xf6, 0xff,                #   unless (!VAR_RESULT) goto 0932;
+])
+
+
+def maybe_patch_mi2_dos(src_name, body):
+    if src_name.lower() != "monkey2.001":
+        return body
+    idx = body.find(MI2_PROT_SIG)
+    if idx < 0:
+        print(f"  warning: MI2 protection signature not found in {src_name}; "
+              f"Mix-N-Mojo will still appear", file=sys.stderr)
+        return body
+    if body.find(MI2_PROT_SIG, idx + 1) >= 0:
+        print(f"  warning: MI2 protection signature appears multiple times in "
+              f"{src_name}; not patching to avoid unrelated edits",
+              file=sys.stderr)
+        return body
+    patched = bytearray(body)
+    patched[idx + 3] = 0x01
+    print(f"  patched MI2 Mix-N-Mojo skip at file offset 0x{idx + 3:x}",
+          file=sys.stderr)
+    return bytes(patched)
+
+
 def find_file(data_dir, name):
     """Try several casings."""
     for variant in (name, name.upper(), name.lower()):
@@ -141,6 +181,7 @@ def main():
             offsets.append(0)
             continue
         body = load(p, xor_byte)
+        body = maybe_patch_mi2_dos(src_name, body)
         # Align each entry to 4 bytes
         if cur_off & 3:
             pad = 4 - (cur_off & 3)
