@@ -103,12 +103,20 @@ constexpr const char *kGameSubdir = "indy4";
 constexpr const char *kGameSubdir = "game";
 #endif
 
-// One slot per logical game file.  Each holds a heap buffer with
-// the file's contents (loaded once at init_all() time) plus its
-// size.  Buffers are owned for the lifetime of the firmware run.
+// One slot per logical game file.  Each holds an XIP pointer into
+// the .incbin'd FAT image (no heap alloc — game files in MI1 alone
+// total ~4.4 MB, would never fit our 352 KB heap).  We resolve the
+// pointer at boot by opening the file via FatFs, reading its first
+// cluster (f.obj.sclust), and converting cluster → LBA → flash
+// address.  Works only for contiguous files; mtools-built images
+// are always contiguous on a fresh empty volume.
+extern "C" {
+    extern const unsigned char  tsb_fat_image[];
+}
+
 struct FileSlot {
-    uint8_t *data = nullptr;
-    uint32_t size = 0;
+    const uint8_t *data = nullptr;
+    uint32_t       size = 0;
 };
 
 static FileSlot g_master;                  // 000.LFL or <base>.000
@@ -118,28 +126,26 @@ static FileSlot g_helper[4];               // 901-904.LFL
 static FATFS    g_fs;
 static bool     g_fs_ok = false;
 
-static bool load_file(const char *path, FileSlot *out) {
+// Open a file, look up its first cluster, compute the absolute flash
+// pointer.  No bytes are read or copied — the engine subsequently
+// dereferences the XIP pointer through the QSPI cache, same as the
+// TSDB / .incbin path.
+//
+// Assumes the file is physically contiguous on the FAT volume.  For
+// build-time-baked images (mtools on a fresh empty volume) this is
+// always true.  When MSC writes start in step 3+, the preload-time
+// defrag pass (step 7c) keeps this invariant.
+static bool resolve_xip(const char *path, FileSlot *out) {
     FIL f;
     FRESULT r = f_open(&f, path, FA_READ);
     if (r != FR_OK) return false;
     FSIZE_t sz = f_size(&f);
-    if (sz == 0 || sz > 16u * 1024u * 1024u) {  // sanity cap
-        f_close(&f);
-        return false;
-    }
-    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-    if (!buf) {
-        f_close(&f);
-        return false;
-    }
-    UINT got = 0;
-    r = f_read(&f, buf, (UINT)sz, &got);
+    DWORD   sc = f.obj.sclust;
     f_close(&f);
-    if (r != FR_OK || got != (UINT)sz) {
-        free(buf);
-        return false;
-    }
-    out->data = buf;
+    if (sz == 0 || sc < 2) return false;
+    // cluster_to_lba: data_base + (sclust - 2) * sectors_per_cluster
+    LBA_t lba = g_fs.database + (LBA_t)(sc - 2) * g_fs.csize;
+    out->data = tsb_fat_image + (size_t)lba * 512u;
     out->size = (uint32_t)sz;
     return true;
 }
@@ -153,16 +159,16 @@ static void parse_blob() {
     // v4 floppy layout first; fall back to v5 HD on miss.
     char path[64];
     snprintf(path, sizeof(path), "/scumm/%s/000.LFL", kGameSubdir);
-    if (load_file(path, &g_master)) {
+    if (resolve_xip(path, &g_master)) {
         for (int i = 1; i <= 4; ++i) {
             snprintf(path, sizeof(path), "/scumm/%s/DISK%02d.LEC",
                      kGameSubdir, i);
-            (void)load_file(path, &g_disk[i - 1]);
+            (void)resolve_xip(path, &g_disk[i - 1]);
         }
         for (int i = 901; i <= 904; ++i) {
             snprintf(path, sizeof(path), "/scumm/%s/%d.LFL",
                      kGameSubdir, i);
-            (void)load_file(path, &g_helper[i - 901]);
+            (void)resolve_xip(path, &g_helper[i - 901]);
         }
         g_fs_ok = true;
         return;
@@ -191,10 +197,10 @@ static void parse_blob() {
     if (base[0]) {
         snprintf(path, sizeof(path), "/scumm/%s/%s.000",
                  kGameSubdir, base);
-        if (load_file(path, &g_master)) {
+        if (resolve_xip(path, &g_master)) {
             snprintf(path, sizeof(path), "/scumm/%s/%s.001",
                      kGameSubdir, base);
-            (void)load_file(path, &g_disk[0]);
+            (void)resolve_xip(path, &g_disk[0]);
             g_fs_ok = true;
         }
     }
