@@ -137,13 +137,23 @@ def main():
                   f"(xor=0x{xor:02x})", file=sys.stderr)
 
         if args.size_mb > 0:
+            size_bytes = args.size_mb * 1024 * 1024
             size_mb = args.size_mb
         else:
-            # Round up to next MB, add 25% slack for FAT structures
-            # and cluster waste, minimum 2 MB.
-            size_mb = max(2, int((total * 1.25) // (1024 * 1024)) + 1)
-        size_bytes = size_mb * 1024 * 1024
-        print(f"  image: {size_mb} MB ({size_bytes} bytes)", file=sys.stderr)
+            # Tight fit — this image is .incbin'd into firmware and
+            # read-only, so free space is pure waste.  Add only what
+            # FAT structures + cluster-rounding need:
+            #   FAT12/16 overhead (boot + 2 FATs + root dir + small
+            #   per-file cluster-tail waste): well under 256 KB even
+            #   for big volumes.
+            # Total = payload + 256 KB, rounded up to a 4 KB boundary
+            # to match flash erase blocks (good for any later
+            # writable-mount migration).
+            overhead = 256 * 1024
+            size_bytes = ((total + overhead + 4095) // 4096) * 4096
+            size_mb = size_bytes / (1024 * 1024)
+        print(f"  image: {size_mb:.2f} MB ({size_bytes} bytes)",
+              file=sys.stderr)
 
         # Create the empty image
         with open(args.out_image, "wb") as f:
