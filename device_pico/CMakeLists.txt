@@ -81,24 +81,43 @@ endif()
 message(STATUS "ThumbyScummby game: ${THUMBYSCUMMBY_GAME}  (DATA_DIR=${DATA_DIR})")
 
 # ----------------------------------------------------------------------
-# Data source: TSDB blob (default) OR FatFs image.
+# Data source: three modes.
 #
-# TSB_DATA_FATFS=OFF (default): tools/pack_device.py emits a TSDB
-# binary with a 9-entry TOC; data_section.S .incbin's it; the
-# platform shim returns flash pointers indexed by TOC slot.  This is
-# today's behaviour — minimal runtime cost, no FAT plumbing.
+# 1. Standalone, TSB_DATA_FATFS=OFF (default):
+#    pack_device.py emits a TSDB blob; data_section.S .incbin's it;
+#    platform shim returns flash pointers indexed by TOC slot.
 #
-# TSB_DATA_FATFS=ON: tools/build_fat_image.py emits a FAT12/16 volume
-# with files at /scumm/<game>/...; fat_section.S .incbin's it; the
-# platform shim opens files by name through FatFs at boot.  Step 1
-# of the THUMBYONE_SLOT_PLAN — proves the FatFs seam works before we
-# add MSC / preload / picker.
+# 2. Standalone, TSB_DATA_FATFS=ON:
+#    build_fat_image.py emits a FAT12/16 volume; fat_section.S
+#    .incbin's it; our own diskio (fatfs/tsb_flash_disk.c) serves
+#    sectors from the baked-in image.  Step 1 of the
+#    THUMBYONE_SLOT_PLAN — proves the FatFs seam works.
+#
+# 3. THUMBYONE_SLOT_MODE=scumm:
+#    Built as a slot under ThumbyOne.  Shared FAT volume lives at
+#    THUMBYONE_FAT_OFFSET; ThumbyOne's shared diskio handles real
+#    flash erase/program.  No .incbin'd image — ThumbyScummby
+#    reads /scumm/<game>/... from the shared FAT.  Slot mode
+#    implicitly forces TSB_DATA_FATFS=ON.
 # ----------------------------------------------------------------------
 option(TSB_DATA_FATFS
     "Use FatFs-mounted FAT image instead of TSDB blob for game data"
     OFF)
 
-if (NOT TSB_DATA_FATFS)
+if (THUMBYONE_SLOT_MODE)
+    # Slot mode: always FatFs, using ThumbyOne's shared FAT.  No
+    # local image generation; the parent provides FatFs sources.
+    set(TSB_DATA_FATFS ON)
+    set(TSB_THUMBYONE_SLOT ON)
+    message(STATUS "ThumbyScummby: building as ThumbyOne slot "
+                   "(shared FAT at THUMBYONE_FAT_OFFSET)")
+endif()
+
+if (TSB_THUMBYONE_SLOT)
+    # Slot mode: no local data baked in.  Game data lives in
+    # ThumbyOne's shared FAT volume — the user (or preload
+    # pipeline) puts files there separately.
+elseif (NOT TSB_DATA_FATFS)
     set(DATA_BLOB ${CMAKE_CURRENT_BINARY_DIR}/data_blob.bin)
     set(PACK_TOOL ${CMAKE_CURRENT_LIST_DIR}/../tools/pack_device.py)
 
@@ -151,9 +170,17 @@ else()
 endif()
 
 # ----------------------------------------------------------------------
-# Executable
+# Executable — data source toggles which support files are compiled.
 # ----------------------------------------------------------------------
-if (NOT TSB_DATA_FATFS)
+if (TSB_THUMBYONE_SLOT)
+    # Slot mode: FatFs sources + diskio come from ThumbyOne (parent
+    # exports THUMBYONE_FATFS_SRC / THUMBYONE_COMMON_FS_SRC).  No
+    # local .S file — we read from the shared FAT in real flash.
+    set(DATA_SECTION_SRC
+        ${THUMBYONE_FATFS_SRC}
+        ${THUMBYONE_COMMON_FS_SRC}
+    )
+elseif (NOT TSB_DATA_FATFS)
     set(DATA_SECTION_SRC data_section.S)
 else()
     set(DATA_SECTION_SRC
@@ -176,7 +203,12 @@ add_executable(thumbyscummby
     ${DATA_SECTION_SRC}
 )
 
-if (NOT TSB_DATA_FATFS)
+if (TSB_THUMBYONE_SLOT)
+    target_include_directories(thumbyscummby PRIVATE
+        ${THUMBYONE_FATFS_INCLUDE}
+        ${THUMBYONE_COMMON_INCLUDE}
+    )
+elseif (NOT TSB_DATA_FATFS)
     # .incbin in data_section.S resolves "data_blob.bin" relative to its
     # include path. Point the assembler at the build dir where the pack
     # step writes it.
@@ -217,6 +249,16 @@ target_compile_definitions(thumbyscummby PRIVATE
 
 if (TSB_DATA_FATFS)
     target_compile_definitions(thumbyscummby PRIVATE TSB_DATA_FATFS=1)
+endif()
+
+if (TSB_THUMBYONE_SLOT)
+    target_compile_definitions(thumbyscummby PRIVATE
+        THUMBYONE_SLOT_MODE=1
+        TSB_THUMBYONE_SLOT=1)
+    # Compile ThumbyOne's handoff source into the slot directly —
+    # same pattern ThumbyDOOM uses.
+    target_sources(thumbyscummby PRIVATE ${THUMBYONE_COMMON_SRC})
+    target_link_libraries(thumbyscummby PRIVATE hardware_pio)
 endif()
 
 target_compile_options(thumbyscummby PRIVATE
@@ -260,12 +302,10 @@ pico_set_double_implementation(thumbyscummby pico)
 pico_enable_stdio_usb(thumbyscummby 0)
 pico_enable_stdio_uart(thumbyscummby 0)
 
-if (THUMBYONE_SLOT_MODE)
+if (TSB_THUMBYONE_SLOT)
     pico_set_uf2_family(thumbyscummby "absolute")
-    pico_add_extra_outputs(thumbyscummby)
-else()
-    pico_add_extra_outputs(thumbyscummby)
 endif()
+pico_add_extra_outputs(thumbyscummby)
 
 # Per-game UF2 name so MI1 / Indy 4 / etc. coexist in the build tree.
 set_target_properties(thumbyscummby PROPERTIES
