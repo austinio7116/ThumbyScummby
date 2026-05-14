@@ -32,6 +32,26 @@ constexpr uint16_t kWhite  = 0x0460;
 constexpr uint16_t kHilite = 0xCE2C;
 constexpr uint16_t kDim    = 0x39E7;
 
+#ifdef THUMBYONE_SLOT_MODE
+constexpr int kMenuItems = 8;
+constexpr const char *kLabels[kMenuItems] = {
+    "SAVE", "LOAD", "VOLUME", "TEXT SIZE", "SPCH FONT", "LOG", "LOBBY", "CANCEL"
+};
+enum {
+    CHOICE_SAVE      = 0,
+    CHOICE_LOAD      = 1,
+    CHOICE_VOLUME    = 2,
+    CHOICE_TEXT_SIZE = 3,
+    CHOICE_SPCH_FONT = 4,
+    CHOICE_LOG       = 5,
+    CHOICE_LOBBY     = 6,
+    CHOICE_CANCEL    = 7,
+};
+// 8 items in 70 px = 8.75 px per row.  Drop the gutter to fit;
+// font is 7 px tall so row pitch 8 stays readable.  (Standalone
+// build keeps the previous 8-px pitch with 7 items.)
+constexpr int kMenuRowPitch = 8;
+#else
 constexpr int kMenuItems = 7;
 constexpr const char *kLabels[kMenuItems] = {
     "SAVE", "LOAD", "VOLUME", "TEXT SIZE", "SPCH FONT", "LOG", "CANCEL"
@@ -45,10 +65,10 @@ enum {
     CHOICE_LOG       = 5,
     CHOICE_CANCEL    = 6,
 };
-
 // Row pitch shrunk from 9 to 8 to fit a 7th menu item inside the same
 // 70-px box.  Leaves a 1-px gutter between 7-px font lines.
 constexpr int kMenuRowPitch = 8;
+#endif
 
 // Two more rows pushed the box down to fit comfortably above the
 // sentence strip (kSentenceLcdY = 120).  Box now spans rows 50..119.
@@ -689,6 +709,15 @@ void run(ScummEngine *engine) {
 				run_log(osys);
 				continue;
 			}
+#ifdef THUMBYONE_SLOT_MODE
+			if (sel == CHOICE_LOBBY) {
+				// Return to ThumbyOne lobby.  Platform layer
+				// handles unmount + watchdog-scratch handoff;
+				// the call doesn't return.
+				tsb::platform::lobby_handoff();
+				continue;  // unreachable
+			}
+#endif
 		}
 
 		tsb::platform::sleep_ms(16);

@@ -1161,6 +1161,34 @@ void lcd_dim_box(int x, int y, int w, int h) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Slot mode — return to ThumbyOne lobby.
+// ---------------------------------------------------------------------------
+#ifdef TSB_THUMBYONE_SLOT
+extern "C" {
+#include "thumbyone_handoff.h"
+}
+
+[[noreturn]] void lobby_handoff() {
+    // Unmount the shared FAT cleanly so any in-flight writes
+    // (saves, settings) finalise before the reboot.  In slot mode
+    // f_unmount is a no-op on a never-written volume but cheap to
+    // call regardless.
+    f_unmount("");
+    thumbyone_handoff_request_lobby();
+    // thumbyone_handoff_request_lobby reboots and never returns;
+    // hang here defensively just in case.
+    for (;;) {}
+}
+#else
+[[noreturn]] void lobby_handoff() {
+    // Standalone build — no lobby to return to.  The save-menu
+    // LOBBY item is only compiled in for THUMBYONE_SLOT_MODE so
+    // this shouldn't be called.  Hang as a safety net.
+    for (;;) {}
+}
+#endif
+
 }  // namespace tsb::platform
 
 // ---------------------------------------------------------------------------

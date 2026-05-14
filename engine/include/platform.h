@@ -284,4 +284,16 @@ bool is_dpad_down_held();
 // menu box; text painted on top stays opaque.
 void lcd_dim_box(int x, int y, int w, int h);
 
+// ---------------------------------------------------------------------------
+// Slot mode (ThumbyOne integration)
+// ---------------------------------------------------------------------------
+
+// Unmount FatFs (if mounted) and request a return to the ThumbyOne
+// lobby via the watchdog-scratch handoff.  Does not return.
+//
+// Only meaningful in THUMBYONE_SLOT_MODE builds; in standalone
+// builds this is a no-op (or unimplemented — the standalone build
+// shouldn't expose a "Lobby" menu item).
+[[noreturn]] void lobby_handoff();
+
 }  // namespace tsb::platform

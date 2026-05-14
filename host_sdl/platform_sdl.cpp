@@ -1059,4 +1059,11 @@ void lcd_dim_box(int x, int y, int w, int h) {
     }
 }
 
+[[noreturn]] void lobby_handoff() {
+    // Host build never runs as a ThumbyOne slot — no lobby exists.
+    // Exit the process as a "best effort" if accidentally called.
+    fprintf(stderr, "lobby_handoff() called in host build — exiting\n");
+    std::exit(0);
+}
+
 }  // namespace tsb::platform
