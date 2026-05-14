@@ -104,15 +104,30 @@ constexpr const char *kGameSubdir = "game";
 #endif
 
 // One slot per logical game file.  Each holds an XIP pointer into
-// the .incbin'd FAT image (no heap alloc — game files in MI1 alone
-// total ~4.4 MB, would never fit our 352 KB heap).  We resolve the
+// the FAT image (no heap alloc — game files in MI1 alone total
+// ~4.4 MB, would never fit our 352 KB heap).  We resolve the
 // pointer at boot by opening the file via FatFs, reading its first
 // cluster (f.obj.sclust), and converting cluster → LBA → flash
 // address.  Works only for contiguous files; mtools-built images
-// are always contiguous on a fresh empty volume.
+// + freshly-uploaded slot-mode files are always contiguous.
+//
+// Standalone build: base pointer is the .incbin'd image in
+// fat_section.S.  Slot mode: base pointer is the start of
+// ThumbyOne's shared FAT volume at THUMBYONE_FAT_OFFSET.
+#ifdef TSB_THUMBYONE_SLOT
+#include "slot_layout.h"
+#include "thumbyone_fs.h"
+static inline const uint8_t *tsb_fat_base(void) {
+    return (const uint8_t *)THUMBYONE_XIP(THUMBYONE_FAT_OFFSET);
+}
+#else
 extern "C" {
     extern const unsigned char  tsb_fat_image[];
 }
+static inline const uint8_t *tsb_fat_base(void) {
+    return (const uint8_t *)tsb_fat_image;
+}
+#endif
 
 struct FileSlot {
     const uint8_t *data = nullptr;
@@ -145,7 +160,7 @@ static bool resolve_xip(const char *path, FileSlot *out) {
     if (sz == 0 || sc < 2) return false;
     // cluster_to_lba: data_base + (sclust - 2) * sectors_per_cluster
     LBA_t lba = g_fs.database + (LBA_t)(sc - 2) * g_fs.csize;
-    out->data = tsb_fat_image + (size_t)lba * 512u;
+    out->data = tsb_fat_base() + (size_t)lba * 512u;
     out->size = (uint32_t)sz;
     return true;
 }
@@ -153,7 +168,14 @@ static bool resolve_xip(const char *path, FileSlot *out) {
 static void parse_blob() {
     g_fs_ok = false;
 
+#ifdef TSB_THUMBYONE_SLOT
+    // Shared FAT — lobby owns format/init.  In slot mode we just
+    // mount; if the volume is missing, that's a user issue (drag
+    // files in via MSC from the lobby).
+    FRESULT r = thumbyone_fs_mount(&g_fs);
+#else
     FRESULT r = f_mount(&g_fs, "0:", 1);
+#endif
     if (r != FR_OK) return;
 
     // v4 floppy layout first; fall back to v5 HD on miss.
