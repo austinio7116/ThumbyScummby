@@ -81,39 +81,90 @@ endif()
 message(STATUS "ThumbyScummby game: ${THUMBYSCUMMBY_GAME}  (DATA_DIR=${DATA_DIR})")
 
 # ----------------------------------------------------------------------
-# Bake the game data blob.
+# Data source: TSDB blob (default) OR FatFs image.
 #
-# tools/pack_device.py reads the selected DATA_DIR and writes a single
-# binary with a 9-entry TOC.  The .S below .incbin's this file from
-# CMAKE_CURRENT_BINARY_DIR.
+# TSB_DATA_FATFS=OFF (default): tools/pack_device.py emits a TSDB
+# binary with a 9-entry TOC; data_section.S .incbin's it; the
+# platform shim returns flash pointers indexed by TOC slot.  This is
+# today's behaviour — minimal runtime cost, no FAT plumbing.
+#
+# TSB_DATA_FATFS=ON: tools/build_fat_image.py emits a FAT12/16 volume
+# with files at /scumm/<game>/...; fat_section.S .incbin's it; the
+# platform shim opens files by name through FatFs at boot.  Step 1
+# of the THUMBYONE_SLOT_PLAN — proves the FatFs seam works before we
+# add MSC / preload / picker.
 # ----------------------------------------------------------------------
-set(DATA_BLOB ${CMAKE_CURRENT_BINARY_DIR}/data_blob.bin)
-set(PACK_TOOL ${CMAKE_CURRENT_LIST_DIR}/../tools/pack_device.py)
+option(TSB_DATA_FATFS
+    "Use FatFs-mounted FAT image instead of TSDB blob for game data"
+    OFF)
 
-# Glob the source files so the blob rebuilds if any of them change.
-# pack_device.py auto-detects v4 floppy (000.LFL + DISK*.LEC + 9xx.LFL)
-# vs v5 HD-installed (<BASE>.000 + <BASE>.001).
-file(GLOB DATA_SOURCES
-    ${DATA_DIR}/000.LFL
-    ${DATA_DIR}/DISK01.LEC ${DATA_DIR}/DISK02.LEC
-    ${DATA_DIR}/DISK03.LEC ${DATA_DIR}/DISK04.LEC
-    ${DATA_DIR}/901.LFL ${DATA_DIR}/902.LFL
-    ${DATA_DIR}/903.LFL ${DATA_DIR}/904.LFL
-    ${DATA_DIR}/*.000 ${DATA_DIR}/*.001)
+if (NOT TSB_DATA_FATFS)
+    set(DATA_BLOB ${CMAKE_CURRENT_BINARY_DIR}/data_blob.bin)
+    set(PACK_TOOL ${CMAKE_CURRENT_LIST_DIR}/../tools/pack_device.py)
 
-add_custom_command(
-    OUTPUT ${DATA_BLOB}
-    COMMAND ${CMAKE_COMMAND} -E echo "Packing game data blob..."
-    COMMAND python3 ${PACK_TOOL} ${DATA_DIR} ${DATA_BLOB}
-    DEPENDS ${PACK_TOOL} ${DATA_SOURCES}
-    COMMENT "Packing data blob -> ${DATA_BLOB}"
-    VERBATIM
-)
-add_custom_target(tsb_data_blob DEPENDS ${DATA_BLOB})
+    # Glob the source files so the blob rebuilds if any of them change.
+    # pack_device.py auto-detects v4 floppy (000.LFL + DISK*.LEC + 9xx.LFL)
+    # vs v5 HD-installed (<BASE>.000 + <BASE>.001).
+    file(GLOB DATA_SOURCES
+        ${DATA_DIR}/000.LFL
+        ${DATA_DIR}/DISK01.LEC ${DATA_DIR}/DISK02.LEC
+        ${DATA_DIR}/DISK03.LEC ${DATA_DIR}/DISK04.LEC
+        ${DATA_DIR}/901.LFL ${DATA_DIR}/902.LFL
+        ${DATA_DIR}/903.LFL ${DATA_DIR}/904.LFL
+        ${DATA_DIR}/*.000 ${DATA_DIR}/*.001)
+
+    add_custom_command(
+        OUTPUT ${DATA_BLOB}
+        COMMAND ${CMAKE_COMMAND} -E echo "Packing game data blob..."
+        COMMAND python3 ${PACK_TOOL} ${DATA_DIR} ${DATA_BLOB}
+        DEPENDS ${PACK_TOOL} ${DATA_SOURCES}
+        COMMENT "Packing data blob -> ${DATA_BLOB}"
+        VERBATIM
+    )
+    add_custom_target(tsb_data_blob DEPENDS ${DATA_BLOB})
+else()
+    set(FAT_IMAGE ${CMAKE_CURRENT_BINARY_DIR}/fat_image.bin)
+    set(FAT_TOOL  ${CMAKE_CURRENT_LIST_DIR}/../tools/build_fat_image.py)
+
+    file(GLOB DATA_SOURCES
+        ${DATA_DIR}/000.LFL
+        ${DATA_DIR}/DISK01.LEC ${DATA_DIR}/DISK02.LEC
+        ${DATA_DIR}/DISK03.LEC ${DATA_DIR}/DISK04.LEC
+        ${DATA_DIR}/901.LFL ${DATA_DIR}/902.LFL
+        ${DATA_DIR}/903.LFL ${DATA_DIR}/904.LFL
+        ${DATA_DIR}/*.000 ${DATA_DIR}/*.001)
+
+    # The FAT image's /scumm/<dir> matches THUMBYSCUMMBY_GAME so the
+    # runtime path mirrors what the picker will ultimately expect.
+    add_custom_command(
+        OUTPUT ${FAT_IMAGE}
+        COMMAND ${CMAKE_COMMAND} -E echo "Building FAT image..."
+        COMMAND python3 ${FAT_TOOL}
+                ${DATA_DIR} ${THUMBYSCUMMBY_GAME} ${FAT_IMAGE}
+        DEPENDS ${FAT_TOOL} ${DATA_SOURCES}
+        COMMENT "Building FAT image -> ${FAT_IMAGE}"
+        VERBATIM
+    )
+    add_custom_target(tsb_fat_image DEPENDS ${FAT_IMAGE})
+
+    message(STATUS "ThumbyScummby data source: FatFs image (TSB_DATA_FATFS=ON)")
+endif()
 
 # ----------------------------------------------------------------------
 # Executable
 # ----------------------------------------------------------------------
+if (NOT TSB_DATA_FATFS)
+    set(DATA_SECTION_SRC data_section.S)
+else()
+    set(DATA_SECTION_SRC
+        fat_section.S
+        fatfs/ff.c
+        fatfs/ffsystem.c
+        fatfs/ffunicode.c
+        fatfs/tsb_flash_disk.c
+    )
+endif()
+
 add_executable(thumbyscummby
     main.cpp
     platform_pico.cpp
@@ -122,18 +173,31 @@ add_executable(thumbyscummby
     lcd_gc9107.c
     buttons.c
     audio_pwm.c
-    data_section.S
+    ${DATA_SECTION_SRC}
 )
 
-# .incbin in data_section.S resolves "data_blob.bin" relative to its
-# include path. Point the assembler at the build dir where the pack
-# step writes it.
-set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/data_section.S
-    PROPERTIES
-    COMPILE_FLAGS "-I${CMAKE_CURRENT_BINARY_DIR}"
-    OBJECT_DEPENDS ${DATA_BLOB}
-)
-add_dependencies(thumbyscummby tsb_data_blob)
+if (NOT TSB_DATA_FATFS)
+    # .incbin in data_section.S resolves "data_blob.bin" relative to its
+    # include path. Point the assembler at the build dir where the pack
+    # step writes it.
+    set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/data_section.S
+        PROPERTIES
+        COMPILE_FLAGS "-I${CMAKE_CURRENT_BINARY_DIR}"
+        OBJECT_DEPENDS ${DATA_BLOB}
+    )
+    add_dependencies(thumbyscummby tsb_data_blob)
+else()
+    set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/fat_section.S
+        PROPERTIES
+        COMPILE_FLAGS "-I${CMAKE_CURRENT_BINARY_DIR}"
+        OBJECT_DEPENDS ${FAT_IMAGE}
+    )
+    add_dependencies(thumbyscummby tsb_fat_image)
+
+    target_include_directories(thumbyscummby PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/fatfs
+    )
+endif()
 
 target_include_directories(thumbyscummby PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
@@ -150,6 +214,10 @@ target_compile_definitions(thumbyscummby PRIVATE
     # backwards".
     PICO_HEAP_SIZE=0x58000
 )
+
+if (TSB_DATA_FATFS)
+    target_compile_definitions(thumbyscummby PRIVATE TSB_DATA_FATFS=1)
+endif()
 
 target_compile_options(thumbyscummby PRIVATE
     -Wall -Wextra -Wno-unused-parameter

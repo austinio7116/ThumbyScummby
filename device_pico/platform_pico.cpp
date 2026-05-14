@@ -20,17 +20,38 @@ extern "C" {
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 // ---------------------------------------------------------------------------
-// .incbin'd data blob (see data_section.S, tools/pack_device.py).
+// Game data backing — two compile-time paths.
+//
+// TSB_DATA_FATFS off (default): .incbin'd TSDB blob with a 9-entry
+// TOC (see data_section.S + tools/pack_device.py).  Lookups return
+// XIP pointers indexed by TOC slot.  Today's baseline.
+//
+// TSB_DATA_FATFS on: .incbin'd FAT12/16 image mounted via FatFs (see
+// fat_section.S + tools/build_fat_image.py + fatfs/tsb_flash_disk.c).
+// Files live at /scumm/<THUMBYSCUMMBY_GAME>/...  At boot each game
+// file is opened, its bytes read into a heap buffer, and that
+// buffer is returned as a Span — same engine semantics as the TSDB
+// path, just with a one-time read cost at boot.  Step 1 of the
+// THUMBYONE_SLOT_PLAN.  Future step 7 will replace the heap read
+// with cluster-chain XIP resolution.
 // ---------------------------------------------------------------------------
 extern "C" {
+#ifdef TSB_DATA_FATFS
+    #include "ff.h"
+#else
     extern const uint8_t tsb_data_blob[];
     extern const uint8_t tsb_data_blob_end[];
+#endif
 }
 
 namespace tsb::platform_pico {
+
+#ifndef TSB_DATA_FATFS
 
 // Blob layout (see tools/pack_device.py):
 //   off 0:  'TSDB' magic
@@ -66,6 +87,120 @@ static void parse_blob() {
     }
     g_blob_ok = true;
 }
+
+#else  // TSB_DATA_FATFS
+
+// Game subdirectory matches THUMBYSCUMMBY_GAME from CMakeLists.txt.
+#if defined(TSB_GAME_MI1)
+constexpr const char *kGameSubdir = "mi1";
+#elif defined(TSB_GAME_MI2)
+constexpr const char *kGameSubdir = "mi2";
+#elif defined(TSB_GAME_INDY3)
+constexpr const char *kGameSubdir = "indy3";
+#elif defined(TSB_GAME_INDY4)
+constexpr const char *kGameSubdir = "indy4";
+#else
+constexpr const char *kGameSubdir = "game";
+#endif
+
+// One slot per logical game file.  Each holds a heap buffer with
+// the file's contents (loaded once at init_all() time) plus its
+// size.  Buffers are owned for the lifetime of the firmware run.
+struct FileSlot {
+    uint8_t *data = nullptr;
+    uint32_t size = 0;
+};
+
+static FileSlot g_master;                  // 000.LFL or <base>.000
+static FileSlot g_disk[4];                 // DISK01-04.LEC or <base>.001..004
+static FileSlot g_helper[4];               // 901-904.LFL
+
+static FATFS    g_fs;
+static bool     g_fs_ok = false;
+
+static bool load_file(const char *path, FileSlot *out) {
+    FIL f;
+    FRESULT r = f_open(&f, path, FA_READ);
+    if (r != FR_OK) return false;
+    FSIZE_t sz = f_size(&f);
+    if (sz == 0 || sz > 16u * 1024u * 1024u) {  // sanity cap
+        f_close(&f);
+        return false;
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
+    if (!buf) {
+        f_close(&f);
+        return false;
+    }
+    UINT got = 0;
+    r = f_read(&f, buf, (UINT)sz, &got);
+    f_close(&f);
+    if (r != FR_OK || got != (UINT)sz) {
+        free(buf);
+        return false;
+    }
+    out->data = buf;
+    out->size = (uint32_t)sz;
+    return true;
+}
+
+static void parse_blob() {
+    g_fs_ok = false;
+
+    FRESULT r = f_mount(&g_fs, "0:", 1);
+    if (r != FR_OK) return;
+
+    // v4 floppy layout first; fall back to v5 HD on miss.
+    char path[64];
+    snprintf(path, sizeof(path), "/scumm/%s/000.LFL", kGameSubdir);
+    if (load_file(path, &g_master)) {
+        for (int i = 1; i <= 4; ++i) {
+            snprintf(path, sizeof(path), "/scumm/%s/DISK%02d.LEC",
+                     kGameSubdir, i);
+            (void)load_file(path, &g_disk[i - 1]);
+        }
+        for (int i = 901; i <= 904; ++i) {
+            snprintf(path, sizeof(path), "/scumm/%s/%d.LFL",
+                     kGameSubdir, i);
+            (void)load_file(path, &g_helper[i - 901]);
+        }
+        g_fs_ok = true;
+        return;
+    }
+
+    // v5 HD-installed: pick the first *.000 in the game subdir.
+    char dirpath[64];
+    snprintf(dirpath, sizeof(dirpath), "/scumm/%s", kGameSubdir);
+    DIR d;
+    if (f_opendir(&d, dirpath) != FR_OK) return;
+    FILINFO fi;
+    char base[16] = {0};
+    for (;;) {
+        if (f_readdir(&d, &fi) != FR_OK || fi.fname[0] == 0) break;
+        const char *dot = strrchr(fi.fname, '.');
+        if (dot && (strcasecmp(dot, ".000") == 0)) {
+            size_t n = (size_t)(dot - fi.fname);
+            if (n >= sizeof(base)) n = sizeof(base) - 1;
+            memcpy(base, fi.fname, n);
+            base[n] = 0;
+            break;
+        }
+    }
+    f_closedir(&d);
+
+    if (base[0]) {
+        snprintf(path, sizeof(path), "/scumm/%s/%s.000",
+                 kGameSubdir, base);
+        if (load_file(path, &g_master)) {
+            snprintf(path, sizeof(path), "/scumm/%s/%s.001",
+                     kGameSubdir, base);
+            (void)load_file(path, &g_disk[0]);
+            g_fs_ok = true;
+        }
+    }
+}
+
+#endif  // TSB_DATA_FATFS
 
 // ---------------------------------------------------------------------------
 // Framebuffer + present helpers
@@ -145,6 +280,8 @@ static inline void debounce_step(DebouncedButton &b, bool raw, uint32_t now_ms) 
 // ---------------------------------------------------------------------------
 namespace tsb::platform {
 
+#ifndef TSB_DATA_FATFS
+
 Span data_master_index() {
     using namespace tsb::platform_pico;
     if (!g_blob_ok) return Span{nullptr, 0};
@@ -164,6 +301,32 @@ Span data_helper(int id) {
     int idx = 5 + (id - 901);  // entries 5..8 are helpers 901..904
     return Span{tsb_data_blob + g_entries[idx].offset, g_entries[idx].size};
 }
+
+#else  // TSB_DATA_FATFS
+
+Span data_master_index() {
+    using namespace tsb::platform_pico;
+    if (!g_fs_ok || !g_master.data) return Span{nullptr, 0};
+    return Span{g_master.data, g_master.size};
+}
+
+Span data_disk(int disk_id) {
+    using namespace tsb::platform_pico;
+    if (!g_fs_ok || disk_id < 1 || disk_id > 4) return Span{nullptr, 0};
+    const FileSlot &s = g_disk[disk_id - 1];
+    if (!s.data) return Span{nullptr, 0};
+    return Span{s.data, s.size};
+}
+
+Span data_helper(int id) {
+    using namespace tsb::platform_pico;
+    if (!g_fs_ok || id < 901 || id > 904) return Span{nullptr, 0};
+    const FileSlot &s = g_helper[id - 901];
+    if (!s.data) return Span{nullptr, 0};
+    return Span{s.data, s.size};
+}
+
+#endif  // TSB_DATA_FATFS
 
 // 2x2 packed-RGB565 box blend (md_core.c:601 — same trick as ThumbyNES).
 // Returns avg of 4 src pixels with one 32-bit add+shift+AND per channel.
@@ -984,6 +1147,12 @@ void init_all() {
     audio_pwm_init();
 }
 
-bool blob_ok() { return g_blob_ok; }
+bool blob_ok() {
+#ifdef TSB_DATA_FATFS
+    return g_fs_ok;
+#else
+    return g_blob_ok;
+#endif
+}
 
 }  // namespace tsb::platform_pico
