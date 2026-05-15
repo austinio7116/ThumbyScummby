@@ -23,6 +23,18 @@ if (NOT THUMBYONE_SLOT_MODE)
     pico_sdk_init()
 endif()
 
+# Slot-mode flags need to be set BEFORE add_subdirectory(engine)
+# so target_compile_definitions on the engine target picks them up.
+# The TSB_DATA_FATFS / TSB_THUMBYONE_SLOT logic lower in the file
+# is symmetric with this — but the engine library uses these from
+# here on.
+if (THUMBYONE_SLOT_MODE)
+    set(TSB_DATA_FATFS    ON)
+    set(TSB_THUMBYONE_SLOT ON)
+    message(STATUS "ThumbyScummby: building as ThumbyOne slot "
+                   "(shared FAT at THUMBYONE_FAT_OFFSET)")
+endif()
+
 # ----------------------------------------------------------------------
 # Engine library (cross-compiled for ARM here).
 # THUMBY_DEVICE define gates host-only code paths in the engine
@@ -33,6 +45,12 @@ add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../engine
                  ${CMAKE_BINARY_DIR}/engine_arm)
 
 target_compile_definitions(thumbyscummby_engine PUBLIC THUMBY_DEVICE=1)
+if (TSB_THUMBYONE_SLOT)
+    # Propagate slot-mode flag into the engine library so engine
+    # source files can conditionally compile slot-only paths.
+    target_compile_definitions(thumbyscummby_engine PUBLIC
+        THUMBYONE_SLOT_MODE=1)
+endif()
 # Override the host warning level a touch — the engine has known-host
 # unused-but-set warnings that aren't worth chasing for the device port.
 target_compile_options(thumbyscummby_engine PRIVATE
@@ -103,15 +121,6 @@ message(STATUS "ThumbyScummby game: ${THUMBYSCUMMBY_GAME}  (DATA_DIR=${DATA_DIR}
 option(TSB_DATA_FATFS
     "Use FatFs-mounted FAT image instead of TSDB blob for game data"
     OFF)
-
-if (THUMBYONE_SLOT_MODE)
-    # Slot mode: always FatFs, using ThumbyOne's shared FAT.  No
-    # local image generation; the parent provides FatFs sources.
-    set(TSB_DATA_FATFS ON)
-    set(TSB_THUMBYONE_SLOT ON)
-    message(STATUS "ThumbyScummby: building as ThumbyOne slot "
-                   "(shared FAT at THUMBYONE_FAT_OFFSET)")
-endif()
 
 if (TSB_THUMBYONE_SLOT)
     # Slot mode: no local data baked in.  Game data lives in
