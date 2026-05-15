@@ -1060,6 +1060,70 @@ void checkpoint(const char *label, uint16_t /*color*/) {
     }
 }
 
+// Paint a single line of 5x7-font text centred horizontally at row
+// `y` of the framebuffer.  Used by no_data_splash; lives here so
+// kFont5x7 (defined just above) is in scope.
+static void paint_centered_line(const char *text, int y, uint16_t fg) {
+    using namespace tsb::platform_pico;
+    int len = 0;
+    while (text[len]) len++;
+    int w = len * 6;
+    int x = (DISPLAY_W - w) / 2;
+    if (x < 0) x = 0;
+    for (int i = 0; i < len; ++i) {
+        char c = text[i];
+        if (c < 0x20 || c > 0x7E) c = '?';
+        const uint8_t *glyph = kFont5x7[c - 0x20];
+        for (int gx = 0; gx < 5; ++gx) {
+            uint8_t bits = glyph[gx];
+            for (int gy = 0; gy < 7; ++gy) {
+                if (bits & (1 << gy)) {
+                    int px = x + i * 6 + gx;
+                    int py = y + gy;
+                    if (px >= 0 && px < DISPLAY_W &&
+                        py >= 0 && py < DISPLAY_H) {
+                        g_fb[py * DISPLAY_W + px] = fg;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 128×128 instructional splash for the "no game data" case.  Paints
+// a dim-red background with centred text explaining what files to
+// copy and where (and, in slot mode, that MENU long-hold returns to
+// the lobby).  Caller polls input afterwards; this only renders.
+void no_data_splash(const char *game_subdir, bool can_return_to_lobby) {
+    using namespace tsb::platform_pico;
+    constexpr uint16_t kBg     = 0x2000;
+    constexpr uint16_t kAccent = 0xF800;
+    constexpr uint16_t kBody   = 0xFFFF;
+    constexpr uint16_t kDim    = 0x8410;
+
+    for (int i = 0; i < DISPLAY_W * DISPLAY_H; ++i) g_fb[i] = kBg;
+
+    int y = 14;
+    paint_centered_line("NO GAME DATA", y, kAccent); y += 14;
+    paint_centered_line("Copy decrypted",   y, kBody); y += 9;
+    paint_centered_line("files via USB to", y, kBody); y += 11;
+
+    char path[32];
+    snprintf(path, sizeof(path), "/scumm/%s/", game_subdir);
+    paint_centered_line(path, y, kAccent); y += 13;
+
+    paint_centered_line("000.LFL",       y, kBody); y += 9;
+    paint_centered_line("DISK01-04.LEC", y, kBody); y += 9;
+    paint_centered_line("901-904.LFL",   y, kBody); y += 13;
+
+    if (can_return_to_lobby) {
+        paint_centered_line("Hold MENU=lobby", y, kDim);
+    }
+
+    lcd_present(g_fb);
+    lcd_wait_idle();
+}
+
 // Accessors used by the LOG viewer in save_menu.cpp.  Lines are
 // indexed from the oldest still in the ring (0) to the most recent
 // (log_history_count() - 1).
@@ -1218,6 +1282,14 @@ bool blob_ok() {
     return g_fs_ok;
 #else
     return g_blob_ok;
+#endif
+}
+
+const char *game_subdir() {
+#ifdef TSB_DATA_FATFS
+    return kGameSubdir;
+#else
+    return "";
 #endif
 }
 

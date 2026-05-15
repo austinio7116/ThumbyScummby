@@ -947,6 +947,15 @@ void debug_splash(uint16_t rgb565) {
     fprintf(stderr, "[debug_splash] color=0x%04X\n", rgb565);
 }
 
+// Host build always has data baked in (no FAT mount, no /scumm/<game>/
+// path), so no_data_splash is unreachable in practice.  Stub logs and
+// returns so a misconfigured host build at least produces a hint.
+void no_data_splash(const char *game_subdir, bool can_return_to_lobby) {
+    fprintf(stderr, "[no_data_splash] game=%s lobby=%d\n",
+            game_subdir ? game_subdir : "(null)",
+            can_return_to_lobby ? 1 : 0);
+}
+
 // Heap-tracked boot checkpoint.  On host we ignore the colour and just
 // log `label` plus the current heap-in-use figure from mallinfo2() so we
 // can see exactly which engine init step blows the RP2350's heap.

@@ -241,6 +241,15 @@ void log_history_get(int idx, char *out, int outsz);
 // implementation is a no-op.
 void debug_splash(uint16_t rgb565);
 
+// Friendly splash shown when the configured game subdir
+// (/scumm/<game_subdir>/) has no data files.  Renders a centred
+// instructional message via the 5x7 log font.  In slot mode the
+// caller passes can_return_to_lobby=true and polls MENU long-hold to
+// hand back to the lobby; in standalone builds the caller passes
+// false and halts.  Host build is a no-op (the host path always has
+// a baked-in TSDB blob, so we never hit no-data).
+void no_data_splash(const char *game_subdir, bool can_return_to_lobby);
+
 // Combined boot checkpoint.  On device: paints `color`.  On host: logs
 // `label` plus the current heap-in-use figure (from mallinfo2 on Linux).
 // Lets us run the whole init flow once on host and see exactly which

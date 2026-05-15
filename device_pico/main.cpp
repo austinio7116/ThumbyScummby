@@ -33,6 +33,7 @@ extern "C" {
 namespace tsb::platform_pico {
     void init_all();
     bool blob_ok();
+    const char *game_subdir();
 #ifdef TSB_DATA_FATFS
     uint32_t fragmented_count();
     uint32_t resolved_count();
@@ -319,9 +320,28 @@ int main() {
     tsb::platform_pico::init_all();
 
     if (!tsb::platform_pico::blob_ok()) {
-        // No game data on flash — splash dark red and halt.
-        tsb::platform::debug_splash(0x8000);
+        // No game data on flash — render the friendly splash so the
+        // user knows where to drop files.  In slot mode (ThumbyOne),
+        // a >1 s MENU hold returns to the lobby; standalone build
+        // hangs (the splash is its own diagnostic).
+#ifdef TSB_THUMBYONE_SLOT
+        tsb::platform::no_data_splash(tsb::platform_pico::game_subdir(),
+                                      /*can_return_to_lobby=*/true);
+        uint32_t held_ms = 0;
+        for (;;) {
+            tsb::platform::sleep_ms(20);
+            if (tsb::platform::is_menu_held()) {
+                held_ms += 20;
+                if (held_ms >= 1000) tsb::platform::lobby_handoff();
+            } else {
+                held_ms = 0;
+            }
+        }
+#else
+        tsb::platform::no_data_splash(tsb::platform_pico::game_subdir(),
+                                      /*can_return_to_lobby=*/false);
         while (1) tsb::platform::sleep_ms(500);
+#endif
     }
 
     // Audio bring-up.
