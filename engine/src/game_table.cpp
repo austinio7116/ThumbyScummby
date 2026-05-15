@@ -23,7 +23,12 @@ namespace tsb {
 // GID_MONKEY_VGA triggers the script-152 copy-protection bypass in
 // script_v5.cpp.
 static ScummEngine *create_mi1(::OSystem *osys) {
-    DetectorResult dr;
+    // Value-initialise so unset GameSettings POD pointers
+    // (gameid, variant, preferredTag, guioptions) end up null
+    // rather than indeterminate.  Several engine paths deref these
+    // unconditionally; a stack-resident garbage pointer here is a
+    // hardfault waiting to happen on the device.
+    DetectorResult dr = {};
     dr.game.id        = (int)GID_MONKEY_VGA;
     dr.game.version   = 4;
     dr.game.platform  = Common::kPlatformDOS;
@@ -41,7 +46,12 @@ static ScummEngine *create_mi1(::OSystem *osys) {
 // MD5 isn't actually validated, but must be a 32-char hex string or
 // scumm.cpp's decode loop indexes past the end of an empty string.
 static ScummEngine *create_mi2(::OSystem *osys) {
-    DetectorResult dr;
+    // Value-initialise so unset GameSettings POD pointers
+    // (gameid, variant, preferredTag, guioptions) end up null
+    // rather than indeterminate.  Several engine paths deref these
+    // unconditionally; a stack-resident garbage pointer here is a
+    // hardfault waiting to happen on the device.
+    DetectorResult dr = {};
     dr.game.id        = (int)GID_MONKEY2;
     dr.game.variant   = "Floppy";
     dr.game.version   = 5;
@@ -63,7 +73,12 @@ static ScummEngine *create_mi2(::OSystem *osys) {
 // NN.LFL entries.  Listed here so the picker shows the slot; selecting
 // it won't run a game until C3/picker work adds v3 file support.
 static ScummEngine *create_indy3(::OSystem *osys) {
-    DetectorResult dr;
+    // Value-initialise so unset GameSettings POD pointers
+    // (gameid, variant, preferredTag, guioptions) end up null
+    // rather than indeterminate.  Several engine paths deref these
+    // unconditionally; a stack-resident garbage pointer here is a
+    // hardfault waiting to happen on the device.
+    DetectorResult dr = {};
     dr.game.id        = (int)GID_INDY3;
     dr.game.version   = 3;
     dr.game.platform  = Common::kPlatformDOS;
@@ -81,7 +96,12 @@ static ScummEngine *create_indy3(::OSystem *osys) {
 // like "atlantis.000" / "atlantis.001"; the link-stubs file resolver
 // maps the .000/.001 suffixes onto data_master_index / data_disk(1).
 static ScummEngine *create_indy4(::OSystem *osys) {
-    DetectorResult dr;
+    // Value-initialise so unset GameSettings POD pointers
+    // (gameid, variant, preferredTag, guioptions) end up null
+    // rather than indeterminate.  Several engine paths deref these
+    // unconditionally; a stack-resident garbage pointer here is a
+    // hardfault waiting to happen on the device.
+    DetectorResult dr = {};
     dr.game.id        = (int)GID_INDY4;
     dr.game.variant   = "Floppy";   // input.cpp:1098 strcmps this for GID_INDY4
     dr.game.version   = 5;
