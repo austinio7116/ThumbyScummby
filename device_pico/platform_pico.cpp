@@ -1124,6 +1124,55 @@ void no_data_splash(const char *game_subdir, bool can_return_to_lobby) {
     lcd_wait_idle();
 }
 
+void preload_progress(const char *display_name,
+                      const char *current_file,
+                      int percent) {
+    using namespace tsb::platform_pico;
+    constexpr uint16_t kBg     = 0x0010;   // very dark blue
+    constexpr uint16_t kAccent = 0xFE60;   // amber
+    constexpr uint16_t kBody   = 0xFFFF;
+    constexpr uint16_t kBar    = 0x07E0;   // green
+    constexpr uint16_t kFrame  = 0x8410;   // mid grey
+
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+
+    for (int i = 0; i < DISPLAY_W * DISPLAY_H; ++i) g_fb[i] = kBg;
+
+    int y = 28;
+    paint_centered_line("Installing",  y, kBody);   y += 12;
+    if (display_name && *display_name)
+        paint_centered_line(display_name, y, kAccent);
+    y += 18;
+    if (current_file && *current_file)
+        paint_centered_line(current_file, y, kBody);
+    y += 16;
+
+    // Progress bar at the bottom of the body: 100×8 px, framed in grey.
+    constexpr int kBarX = 14;
+    constexpr int kBarW = 100;
+    constexpr int kBarH = 8;
+    const int barY = y;
+    // border
+    for (int x = kBarX - 1; x <= kBarX + kBarW; ++x) {
+        g_fb[(barY - 1) * DISPLAY_W + x]      = kFrame;
+        g_fb[(barY + kBarH) * DISPLAY_W + x]  = kFrame;
+    }
+    for (int yy = barY - 1; yy <= barY + kBarH; ++yy) {
+        g_fb[yy * DISPLAY_W + kBarX - 1]        = kFrame;
+        g_fb[yy * DISPLAY_W + kBarX + kBarW]    = kFrame;
+    }
+    // fill
+    int fillw = percent * kBarW / 100;
+    for (int yy = barY; yy < barY + kBarH; ++yy) {
+        for (int x = kBarX; x < kBarX + fillw; ++x)
+            g_fb[yy * DISPLAY_W + x] = kBar;
+    }
+
+    lcd_present(g_fb);
+    lcd_wait_idle();
+}
+
 // Accessors used by the LOG viewer in save_menu.cpp.  Lines are
 // indexed from the oldest still in the ring (0) to the most recent
 // (log_history_count() - 1).
@@ -1282,6 +1331,16 @@ bool blob_ok() {
     return g_fs_ok;
 #else
     return g_blob_ok;
+#endif
+}
+
+// Re-run the boot scan after a side-effecting pass (preload pipeline
+// dropping new files into /scumm/<subdir>/).  Safe to call multiple
+// times; parse_blob resets g_fs_ok up front and walks the descriptor
+// table from scratch.  No-op in non-FATFS builds.
+void rescan_games() {
+#ifdef TSB_DATA_FATFS
+    parse_blob();
 #endif
 }
 

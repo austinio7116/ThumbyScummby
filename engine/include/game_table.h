@@ -25,11 +25,26 @@ enum class ContainerVariant {
     V3_LFL,      // NN.LFL per room                        (Indy3 EGA — not yet)
 };
 
+// One expected file inside a game subdir.  The preload pipeline uses
+// the XOR byte to decrypt raw LucasArts disks in-place; the resolver
+// uses the filename to map engine requests onto platform Spans.
+struct GameFile {
+    const char *name;       // e.g. "DISK01.LEC" or "atlantis.001"
+    uint8_t     xor_byte;   // 0 = already plain; 0x69 = LucasArts XOR
+    bool        required;   // false = optional helper (e.g. 902.LFL)
+};
+
 struct GameDescriptor {
     const char       *subdir;          // /scumm/<subdir>/
     const char       *display_name;    // shown in picker
     ContainerVariant  variant;
     const char       *hd_basename;     // V5_HD only — null otherwise
+
+    // Files expected inside the subdir.  Null-terminated array (last
+    // entry has name=nullptr).  Preload uses xor_byte to decrypt raw
+    // dumps in place; presence/required is used by the boot scan to
+    // tell "ready" from "still missing files".
+    const GameFile   *files;
 
     // Construct a ready-to-init engine instance (caller owns).
     // Implementation in game_table.cpp where DetectorResult /

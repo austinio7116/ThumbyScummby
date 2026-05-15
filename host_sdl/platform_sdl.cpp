@@ -956,6 +956,15 @@ void no_data_splash(const char *game_subdir, bool can_return_to_lobby) {
             can_return_to_lobby ? 1 : 0);
 }
 
+void preload_progress(const char *display_name,
+                      const char *current_file,
+                      int percent) {
+    fprintf(stderr, "[preload] %s | %s | %d%%\n",
+            display_name ? display_name : "(null)",
+            current_file ? current_file : "(null)",
+            percent);
+}
+
 // Heap-tracked boot checkpoint.  On host we ignore the colour and just
 // log `label` plus the current heap-in-use figure from mallinfo2() so we
 // can see exactly which engine init step blows the RP2350's heap.

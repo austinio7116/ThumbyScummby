@@ -14,6 +14,7 @@
 #include "osystem_thumby.h"
 #include "platform.h"
 #include "game_table.h"
+#include "preload.h"
 #include "imuse.h"
 #include "audio_mix.h"
 #include "opl2.h"
@@ -34,6 +35,7 @@ extern "C" {
 namespace tsb::platform_pico {
     void init_all();
     bool blob_ok();
+    void rescan_games();
     const char *game_subdir();
 #ifdef TSB_DATA_FATFS
     uint32_t fragmented_count();
@@ -319,6 +321,18 @@ int main() {
     stdio_init_all();
 
     tsb::platform_pico::init_all();
+
+    // Preload pipeline — if raw encrypted files (DISK*.LEC, .000/.001)
+    // got dropped into /scumm/<game>/ without a .thumbyscummby
+    // marker, decrypt them in place + apply per-game patches now.
+    // Idempotent: marker presence skips already-prepped subdirs.
+    // Slot mode only — standalone bakes data in via pack_device.py
+    // (already decrypted) or .incbin'd FAT (read-only, can't rewrite).
+#ifdef TSB_THUMBYONE_SLOT
+    if (tsb::preload::maybe_run()) {
+        tsb::platform_pico::rescan_games();
+    }
+#endif
 
     if (!tsb::platform_pico::blob_ok()) {
         // No game data on flash — render the friendly splash so the

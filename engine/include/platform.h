@@ -250,6 +250,15 @@ void debug_splash(uint16_t rgb565);
 // a baked-in TSDB blob, so we never hit no-data).
 void no_data_splash(const char *game_subdir, bool can_return_to_lobby);
 
+// Preload-pipeline progress splash.  Renders the game's display name,
+// the file currently being processed, and a 0..100 % bar.  Called
+// repeatedly during preload (every ~50 ms while a file decrypts);
+// implementations should be cheap enough to call from a tight loop.
+// Host build is a no-op.
+void preload_progress(const char *display_name,
+                      const char *current_file,
+                      int percent);
+
 // Combined boot checkpoint.  On device: paints `color`.  On host: logs
 // `label` plus the current heap-in-use figure (from mallinfo2 on Linux).
 // Lets us run the whole init flow once on host and see exactly which

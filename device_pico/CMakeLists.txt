@@ -209,14 +209,20 @@ endif()
 # flash free.
 if (TSB_THUMBYONE_SLOT)
     set(SAVE_BACKEND_SRC save_backend_fatfs.cpp)
+    # Preload pipeline (XOR-decrypt + patches) only ships in slot
+    # mode — standalone bakes already-decrypted data at build time
+    # (pack_device.py / build_fat_image.py).
+    set(PRELOAD_SRC preload.cpp)
 else()
     set(SAVE_BACKEND_SRC save_backend.cpp)
+    set(PRELOAD_SRC)
 endif()
 
 add_executable(thumbyscummby
     main.cpp
     platform_pico.cpp
     ${SAVE_BACKEND_SRC}
+    ${PRELOAD_SRC}
     config_backend.cpp
     lcd_gc9107.c
     buttons.c

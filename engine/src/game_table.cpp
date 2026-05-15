@@ -96,11 +96,48 @@ static ScummEngine *create_indy4(::OSystem *osys) {
     return new ScummEngine_v5(osys, dr);
 }
 
+// Per-game file lists.  Null-name sentinel terminates each array.
+// xor_byte=0x69 is the LucasArts disk encryption; 0 means plain.  All
+// .LFL helpers + the master index are plain on LucasArts floppies;
+// only the .LEC archives / .000 / .001 are XOR'd.
+
+static const GameFile kFilesMI1[] = {
+    { "000.LFL",    0,    true  },
+    { "DISK01.LEC", 0x69, true  },
+    { "DISK02.LEC", 0x69, true  },
+    { "DISK03.LEC", 0x69, true  },
+    { "DISK04.LEC", 0x69, true  },
+    { "901.LFL",    0,    false },
+    { "902.LFL",    0,    false },
+    { "903.LFL",    0,    false },
+    { "904.LFL",    0,    false },
+    { nullptr,      0,    false },
+};
+
+static const GameFile kFilesMI2[] = {
+    { "monkey2.000", 0x69, true  },
+    { "monkey2.001", 0x69, true  },
+    { nullptr,       0,    false },
+};
+
+static const GameFile kFilesIndy3[] = {
+    // V3_LFL is not yet wired through the engine's file resolver, so
+    // listing the per-room NN.LFL files here is premature; the entry
+    // is here so future preload + picker work has a clear schema.
+    { nullptr, 0, false },
+};
+
+static const GameFile kFilesIndy4[] = {
+    { "atlantis.000", 0x69, true  },
+    { "atlantis.001", 0x69, true  },
+    { nullptr,        0,    false },
+};
+
 const GameDescriptor kGameTable[] = {
-    { "mi1",   "Monkey Island 1",  ContainerVariant::V4_FLOPPY, nullptr,    create_mi1   },
-    { "mi2",   "Monkey Island 2",  ContainerVariant::V5_HD,     "monkey2",  create_mi2   },
-    { "indy3", "Indiana Jones 3",  ContainerVariant::V3_LFL,    nullptr,    create_indy3 },
-    { "indy4", "Indiana Jones 4",  ContainerVariant::V5_HD,     "atlantis", create_indy4 },
+    { "mi1",   "Monkey Island 1",  ContainerVariant::V4_FLOPPY, nullptr,    kFilesMI1,   create_mi1   },
+    { "mi2",   "Monkey Island 2",  ContainerVariant::V5_HD,     "monkey2",  kFilesMI2,   create_mi2   },
+    { "indy3", "Indiana Jones 3",  ContainerVariant::V3_LFL,    nullptr,    kFilesIndy3, create_indy3 },
+    { "indy4", "Indiana Jones 4",  ContainerVariant::V5_HD,     "atlantis", kFilesIndy4, create_indy4 },
 };
 const int kGameTableCount = sizeof(kGameTable) / sizeof(kGameTable[0]);
 
