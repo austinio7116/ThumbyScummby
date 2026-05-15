@@ -247,7 +247,6 @@ target_include_directories(thumbyscummby PRIVATE
 
 target_compile_definitions(thumbyscummby PRIVATE
     THUMBY_DEVICE=1
-    ${GAME_DEFINE}
     # Pico-SDK defaults to PICO_HEAP_SIZE=0x800 (2KB) — way too small
     # for scummvm.  RP2350 has 520 KB SRAM; static + .bss is ~140 KB;
     # stack is ~4 KB.  0x58000 (352 KB) is the largest size that fits
@@ -255,6 +254,17 @@ target_compile_definitions(thumbyscummby PRIVATE
     # backwards".
     PICO_HEAP_SIZE=0x58000
 )
+
+# GAME_DEFINE picks the initial g_current_game in standalone builds
+# (where the .incbin'd data ties this firmware to exactly one game).
+# Slot mode leaves it unset — the platform scans /scumm/* at boot
+# and picks a descriptor at runtime, so one slot binary serves every
+# supported game.  Applied to the engine library so game_table.cpp
+# sees it (g_current_game pre-init lives there).
+if (NOT TSB_THUMBYONE_SLOT)
+    target_compile_definitions(thumbyscummby        PRIVATE ${GAME_DEFINE})
+    target_compile_definitions(thumbyscummby_engine PRIVATE ${GAME_DEFINE})
+endif()
 
 if (TSB_DATA_FATFS)
     target_compile_definitions(thumbyscummby PRIVATE TSB_DATA_FATFS=1)
@@ -329,7 +339,15 @@ if (TSB_THUMBYONE_SLOT)
 endif()
 pico_add_extra_outputs(thumbyscummby)
 
-# Per-game UF2 name so MI1 / Indy 4 / etc. coexist in the build tree.
-set_target_properties(thumbyscummby PROPERTIES
-    OUTPUT_NAME "firmware_thumbyscummby_${THUMBYSCUMMBY_GAME}"
-)
+# Standalone: per-game UF2 name so MI1 / Indy 4 / etc. coexist in the
+# build tree.  Slot mode: one universal binary regardless of which
+# game gets played, so drop the suffix.
+if (TSB_THUMBYONE_SLOT)
+    set_target_properties(thumbyscummby PROPERTIES
+        OUTPUT_NAME "firmware_thumbyscummby"
+    )
+else()
+    set_target_properties(thumbyscummby PROPERTIES
+        OUTPUT_NAME "firmware_thumbyscummby_${THUMBYSCUMMBY_GAME}"
+    )
+endif()

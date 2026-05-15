@@ -99,6 +99,9 @@ add_library(thumbyscummby_engine STATIC
     src/verb_picker.cpp    # LB-tap verb / dialog picker overlay
     src/inventory_picker.cpp  # RB-tap inventory picker overlay
 
+    # ---- Game descriptor table (one entry per supported SCUMM game) ----
+    src/game_table.cpp
+
     # ---- Bridge implementations (will shrink as pivot completes) ----
     src/osystem_thumby.cpp
     src/scummvm_stubs.cpp

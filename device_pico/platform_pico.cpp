@@ -7,6 +7,7 @@
 #include "platform.h"
 #include "mi_font_render.h"
 #include "types.h"
+#include "game_table.h"
 
 #include "lcd_gc9107.h"
 #include "buttons.h"
@@ -101,18 +102,10 @@ static void parse_blob() {
 
 #else  // TSB_DATA_FATFS
 
-// Game subdirectory matches THUMBYSCUMMBY_GAME from CMakeLists.txt.
-#if defined(TSB_GAME_MI1)
-constexpr const char *kGameSubdir = "mi1";
-#elif defined(TSB_GAME_MI2)
-constexpr const char *kGameSubdir = "mi2";
-#elif defined(TSB_GAME_INDY3)
-constexpr const char *kGameSubdir = "indy3";
-#elif defined(TSB_GAME_INDY4)
-constexpr const char *kGameSubdir = "indy4";
-#else
-constexpr const char *kGameSubdir = "game";
-#endif
+// Game selection at runtime — see engine/include/game_table.h.  In
+// slot mode this is null until parse_blob() scans /scumm/* and picks
+// a match; standalone builds pre-set it from TSB_GAME_X in
+// engine/src/game_table.cpp.
 
 // One slot per logical game file.  Each holds an XIP pointer into
 // the FAT image (no heap alloc — game files in MI1 alone total
@@ -177,6 +170,44 @@ static bool resolve_xip(const char *path, FileSlot *out) {
     return true;
 }
 
+// Try one descriptor: resolve its master file, populate g_master /
+// g_disk / g_helper from the variant's expected layout.  Returns true
+// if the master resolved (in which case the caller is committed to
+// this descriptor — secondary file misses are non-fatal).
+static bool try_descriptor(const tsb::GameDescriptor &gd) {
+    const char *subdir = gd.subdir;
+    char path[64];
+
+    if (gd.variant == tsb::ContainerVariant::V4_FLOPPY) {
+        snprintf(path, sizeof(path), "/scumm/%s/000.LFL", subdir);
+        if (!resolve_xip(path, &g_master)) return false;
+        for (int i = 1; i <= 4; ++i) {
+            snprintf(path, sizeof(path), "/scumm/%s/DISK%02d.LEC",
+                     subdir, i);
+            (void)resolve_xip(path, &g_disk[i - 1]);
+        }
+        for (int i = 901; i <= 904; ++i) {
+            snprintf(path, sizeof(path), "/scumm/%s/%d.LFL",
+                     subdir, i);
+            (void)resolve_xip(path, &g_helper[i - 901]);
+        }
+        return true;
+    }
+
+    if (gd.variant == tsb::ContainerVariant::V5_HD && gd.hd_basename) {
+        snprintf(path, sizeof(path), "/scumm/%s/%s.000",
+                 subdir, gd.hd_basename);
+        if (!resolve_xip(path, &g_master)) return false;
+        snprintf(path, sizeof(path), "/scumm/%s/%s.001",
+                 subdir, gd.hd_basename);
+        (void)resolve_xip(path, &g_disk[0]);
+        return true;
+    }
+
+    // V3_LFL not yet wired through link-stubs file resolver — skip.
+    return false;
+}
+
 static void parse_blob() {
     g_fs_ok = false;
 
@@ -190,52 +221,21 @@ static void parse_blob() {
 #endif
     if (r != FR_OK) return;
 
-    // v4 floppy layout first; fall back to v5 HD on miss.
-    char path[64];
-    snprintf(path, sizeof(path), "/scumm/%s/000.LFL", kGameSubdir);
-    if (resolve_xip(path, &g_master)) {
-        for (int i = 1; i <= 4; ++i) {
-            snprintf(path, sizeof(path), "/scumm/%s/DISK%02d.LEC",
-                     kGameSubdir, i);
-            (void)resolve_xip(path, &g_disk[i - 1]);
+    // Standalone builds pre-set g_current_game from TSB_GAME_X — try
+    // that descriptor first and fail closed if it doesn't match.
+    // Slot builds leave it null and we walk the table to auto-detect.
+    if (tsb::g_current_game) {
+        if (try_descriptor(*tsb::g_current_game)) {
+            g_fs_ok = true;
         }
-        for (int i = 901; i <= 904; ++i) {
-            snprintf(path, sizeof(path), "/scumm/%s/%d.LFL",
-                     kGameSubdir, i);
-            (void)resolve_xip(path, &g_helper[i - 901]);
-        }
-        g_fs_ok = true;
         return;
     }
 
-    // v5 HD-installed: pick the first *.000 in the game subdir.
-    char dirpath[64];
-    snprintf(dirpath, sizeof(dirpath), "/scumm/%s", kGameSubdir);
-    DIR d;
-    if (f_opendir(&d, dirpath) != FR_OK) return;
-    FILINFO fi;
-    char base[16] = {0};
-    for (;;) {
-        if (f_readdir(&d, &fi) != FR_OK || fi.fname[0] == 0) break;
-        const char *dot = strrchr(fi.fname, '.');
-        if (dot && (strcasecmp(dot, ".000") == 0)) {
-            size_t n = (size_t)(dot - fi.fname);
-            if (n >= sizeof(base)) n = sizeof(base) - 1;
-            memcpy(base, fi.fname, n);
-            base[n] = 0;
-            break;
-        }
-    }
-    f_closedir(&d);
-
-    if (base[0]) {
-        snprintf(path, sizeof(path), "/scumm/%s/%s.000",
-                 kGameSubdir, base);
-        if (resolve_xip(path, &g_master)) {
-            snprintf(path, sizeof(path), "/scumm/%s/%s.001",
-                     kGameSubdir, base);
-            (void)resolve_xip(path, &g_disk[0]);
+    for (int i = 0; i < tsb::kGameTableCount; ++i) {
+        if (try_descriptor(tsb::kGameTable[i])) {
+            tsb::g_current_game = &tsb::kGameTable[i];
             g_fs_ok = true;
+            return;
         }
     }
 }
@@ -1286,11 +1286,7 @@ bool blob_ok() {
 }
 
 const char *game_subdir() {
-#ifdef TSB_DATA_FATFS
-    return kGameSubdir;
-#else
-    return "";
-#endif
+    return tsb::g_current_game ? tsb::g_current_game->subdir : "";
 }
 
 }  // namespace tsb::platform_pico
