@@ -19,6 +19,10 @@
 #include "config_backend.h"
 #include "mi_font_render.h"
 #include "adlib.h"
+
+extern "C" {
+#include "lcd_gc9107.h"
+}
 #include <cstdio>
 
 extern "C" {
@@ -313,8 +317,14 @@ int main() {
     // got.  BLUE → init_all() entry; CYAN → after mount; GREEN →
     // after audio; MAGENTA → before engine init.  Remove once
     // shared-FAT slot boot is stable.
+    //
+    // debug_splash needs the LCD to be live; call lcd_init directly
+    // (init_all() would do it too but we want the splash BEFORE
+    // anything else, to catch crashes inside parse_blob).
 #ifdef TSB_THUMBYONE_SLOT
+    lcd_init();   // debug_splash needs the LCD live before init_all
     tsb::platform::debug_splash(0x001F);  // BLUE: very start of main
+    tsb::platform::sleep_ms(300);
 #endif
 
     tsb::platform_pico::init_all();
