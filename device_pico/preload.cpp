@@ -54,16 +54,21 @@ bool marker_present(const char *subdir) {
 
 // True if every required file (per the descriptor) exists in the
 // subdir.  Used to gate preload — we only run if the raw files are
-// fully present (no half-uploaded sets).
+// fully present (no half-uploaded sets).  Returns false if the
+// descriptor has no required files at all (e.g. the Indy3 placeholder
+// entry pending V3_LFL resolver work), so the pipeline doesn't try
+// to run on a descriptor with nothing to install.
 bool required_files_present(const GameDescriptor &gd) {
     if (!gd.files) return false;
+    bool saw_required = false;
     char path[64];
     for (const GameFile *gf = gd.files; gf->name; ++gf) {
         if (!gf->required) continue;
+        saw_required = true;
         if (!join_path(path, sizeof(path), gd.subdir, gf->name)) return false;
         if (!file_exists(path)) return false;
     }
-    return true;
+    return saw_required;
 }
 
 bool write_marker(const char *subdir, const GameDescriptor &gd) {
