@@ -23,20 +23,23 @@ namespace tsb {
 // GID_MONKEY_VGA triggers the script-152 copy-protection bypass in
 // script_v5.cpp.
 static ScummEngine *create_mi1(::OSystem *osys) {
-    // Value-initialise so unset GameSettings POD pointers
-    // (gameid, variant, preferredTag, guioptions) end up null
-    // rather than indeterminate.  Several engine paths deref these
-    // unconditionally; a stack-resident garbage pointer here is a
-    // hardfault waiting to happen on the device.
+    // Value-initialise + fill every pointer.  ScummEngine::setupScumm
+    // strcmps _game.gameid unconditionally (scumm.cpp:268) and
+    // Common::String(_game.guioptions).contains() expects a valid
+    // C string; nullptr here hardfaults during engine init.
     DetectorResult dr = {};
-    dr.game.id        = (int)GID_MONKEY_VGA;
-    dr.game.version   = 4;
-    dr.game.platform  = Common::kPlatformDOS;
-    dr.game.features  = GF_SMALL_HEADER | GF_USE_KEY;
-    dr.game.heversion = 0;
-    dr.language       = Common::EN_ANY;
-    dr.extra          = "";
-    dr.md5            = "8e4ee4db46954bfcb6d2654dde0aae25";
+    dr.game.gameid       = "monkey";
+    dr.game.variant      = "";
+    dr.game.preferredTag = "";
+    dr.game.guioptions   = "";
+    dr.game.id           = (int)GID_MONKEY_VGA;
+    dr.game.version      = 4;
+    dr.game.platform     = Common::kPlatformDOS;
+    dr.game.features     = GF_SMALL_HEADER | GF_USE_KEY;
+    dr.game.heversion    = 0;
+    dr.language          = Common::EN_ANY;
+    dr.extra             = "";
+    dr.md5               = "8e4ee4db46954bfcb6d2654dde0aae25";
     return new ScummEngine_v4(osys, dr);
 }
 
@@ -46,23 +49,21 @@ static ScummEngine *create_mi1(::OSystem *osys) {
 // MD5 isn't actually validated, but must be a 32-char hex string or
 // scumm.cpp's decode loop indexes past the end of an empty string.
 static ScummEngine *create_mi2(::OSystem *osys) {
-    // Value-initialise so unset GameSettings POD pointers
-    // (gameid, variant, preferredTag, guioptions) end up null
-    // rather than indeterminate.  Several engine paths deref these
-    // unconditionally; a stack-resident garbage pointer here is a
-    // hardfault waiting to happen on the device.
     DetectorResult dr = {};
-    dr.game.id        = (int)GID_MONKEY2;
-    dr.game.variant   = "Floppy";
-    dr.game.version   = 5;
-    dr.game.platform  = Common::kPlatformDOS;
-    dr.game.features  = GF_USE_KEY;
-    dr.game.heversion = 0;
-    dr.language       = Common::EN_ANY;
-    dr.extra          = "";
-    dr.md5            = "f60039079bcdbfde2dab86bcad9c9c64";
-    dr.fp.pattern     = "monkey2.%03d";
-    dr.fp.genMethod   = kGenDiskNum;
+    dr.game.gameid       = "monkey2";
+    dr.game.variant      = "Floppy";
+    dr.game.preferredTag = "";
+    dr.game.guioptions   = "";
+    dr.game.id           = (int)GID_MONKEY2;
+    dr.game.version      = 5;
+    dr.game.platform     = Common::kPlatformDOS;
+    dr.game.features     = GF_USE_KEY;
+    dr.game.heversion    = 0;
+    dr.language          = Common::EN_ANY;
+    dr.extra             = "";
+    dr.md5               = "f60039079bcdbfde2dab86bcad9c9c64";
+    dr.fp.pattern        = "monkey2.%03d";
+    dr.fp.genMethod      = kGenDiskNum;
     return new ScummEngine_v5(osys, dr);
 }
 
@@ -73,20 +74,19 @@ static ScummEngine *create_mi2(::OSystem *osys) {
 // NN.LFL entries.  Listed here so the picker shows the slot; selecting
 // it won't run a game until C3/picker work adds v3 file support.
 static ScummEngine *create_indy3(::OSystem *osys) {
-    // Value-initialise so unset GameSettings POD pointers
-    // (gameid, variant, preferredTag, guioptions) end up null
-    // rather than indeterminate.  Several engine paths deref these
-    // unconditionally; a stack-resident garbage pointer here is a
-    // hardfault waiting to happen on the device.
     DetectorResult dr = {};
-    dr.game.id        = (int)GID_INDY3;
-    dr.game.version   = 3;
-    dr.game.platform  = Common::kPlatformDOS;
-    dr.game.features  = GF_SMALL_HEADER | GF_USE_KEY;
-    dr.game.heversion = 0;
-    dr.language       = Common::EN_ANY;
-    dr.extra          = "";
-    dr.md5            = "";  // unvalidated
+    dr.game.gameid       = "indy3";
+    dr.game.variant      = "";
+    dr.game.preferredTag = "";
+    dr.game.guioptions   = "";
+    dr.game.id           = (int)GID_INDY3;
+    dr.game.version      = 3;
+    dr.game.platform     = Common::kPlatformDOS;
+    dr.game.features     = GF_SMALL_HEADER | GF_USE_KEY;
+    dr.game.heversion    = 0;
+    dr.language          = Common::EN_ANY;
+    dr.extra             = "";
+    dr.md5               = "";  // unvalidated
     return new ScummEngine_v4(osys, dr);  // v3 inherits from v4 chain
 }
 
@@ -96,21 +96,19 @@ static ScummEngine *create_indy3(::OSystem *osys) {
 // like "atlantis.000" / "atlantis.001"; the link-stubs file resolver
 // maps the .000/.001 suffixes onto data_master_index / data_disk(1).
 static ScummEngine *create_indy4(::OSystem *osys) {
-    // Value-initialise so unset GameSettings POD pointers
-    // (gameid, variant, preferredTag, guioptions) end up null
-    // rather than indeterminate.  Several engine paths deref these
-    // unconditionally; a stack-resident garbage pointer here is a
-    // hardfault waiting to happen on the device.
     DetectorResult dr = {};
-    dr.game.id        = (int)GID_INDY4;
-    dr.game.variant   = "Floppy";   // input.cpp:1098 strcmps this for GID_INDY4
-    dr.game.version   = 5;
-    dr.game.platform  = Common::kPlatformDOS;
-    dr.game.features  = GF_USE_KEY;
-    dr.game.heversion = 0;
-    dr.language       = Common::EN_ANY;
-    dr.extra          = "";
-    dr.md5            = "1875b90fade138c9253a8e967007031a";
+    dr.game.gameid       = "atlantis";
+    dr.game.variant      = "Floppy";  // input.cpp:1098 strcmps this for GID_INDY4
+    dr.game.preferredTag = "";
+    dr.game.guioptions   = "";
+    dr.game.id           = (int)GID_INDY4;
+    dr.game.version      = 5;
+    dr.game.platform     = Common::kPlatformDOS;
+    dr.game.features     = GF_USE_KEY;
+    dr.game.heversion    = 0;
+    dr.language          = Common::EN_ANY;
+    dr.extra             = "";
+    dr.md5               = "1875b90fade138c9253a8e967007031a";
     dr.fp.pattern     = "atlantis.%03d";
     dr.fp.genMethod   = kGenDiskNum;
     return new ScummEngine_v5(osys, dr);
