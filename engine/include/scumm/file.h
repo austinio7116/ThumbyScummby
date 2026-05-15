@@ -41,10 +41,14 @@ protected:
 
 public:
 	BaseScummFile() : _encbyte(0) {}
-	// THUMBY-PORT: device build's pack_device.py pre-decrypts LFL/LEC
-	// files into flash so we can serve them as direct pointers without
-	// re-XORing on read. Force enc=0 unconditionally.
-#ifdef THUMBY_DEVICE
+	// THUMBY-PORT: when the firmware bundles game data via
+	// pack_device.py or build_fat_image.py, the LFL/LEC files have
+	// been pre-decrypted at build time so the engine can serve them
+	// as direct flash pointers without re-XORing on read.  In slot
+	// mode the user drops the original (still-XOR'd) files via USB
+	// MSC, so the engine must honour the runtime encByte value and
+	// decrypt on read like upstream ScummVM.
+#if defined(THUMBY_DEVICE) && !defined(THUMBYONE_SLOT_MODE)
 	void setEnc(byte /*value*/) { _encbyte = 0; }
 #else
 	void setEnc(byte value) { _encbyte = value; }

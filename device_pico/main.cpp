@@ -33,6 +33,10 @@ extern "C" {
 namespace tsb::platform_pico {
     void init_all();
     bool blob_ok();
+#ifdef TSB_DATA_FATFS
+    uint32_t fragmented_count();
+    uint32_t resolved_count();
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -312,27 +316,7 @@ int main() {
     set_sys_clock_khz(250000, true);
     stdio_init_all();
 
-    // SLOT-MODE DIAGNOSTIC: paint a sequence of distinct splashes
-    // so the colour the device freezes on tells us how far init
-    // got.  BLUE → init_all() entry; CYAN → after mount; GREEN →
-    // after audio; MAGENTA → before engine init.  Remove once
-    // shared-FAT slot boot is stable.
-    //
-    // debug_splash needs the LCD to be live; call lcd_init directly
-    // (init_all() would do it too but we want the splash BEFORE
-    // anything else, to catch crashes inside parse_blob).
-#ifdef TSB_THUMBYONE_SLOT
-    lcd_init();   // debug_splash needs the LCD live before init_all
-    tsb::platform::debug_splash(0x001F);  // BLUE: very start of main
-    tsb::platform::sleep_ms(300);
-#endif
-
     tsb::platform_pico::init_all();
-
-#ifdef TSB_THUMBYONE_SLOT
-    tsb::platform::debug_splash(0x07FF);  // CYAN: after init_all (mount done)
-    tsb::platform::sleep_ms(300);
-#endif
 
     if (!tsb::platform_pico::blob_ok()) {
         // No game data on flash — splash dark red and halt.
@@ -340,27 +324,14 @@ int main() {
         while (1) tsb::platform::sleep_ms(500);
     }
 
-#ifdef TSB_THUMBYONE_SLOT
-    tsb::platform::debug_splash(0x07E0);  // GREEN: blob_ok passed
-    tsb::platform::sleep_ms(300);
-#endif
-
     // Audio bring-up.
     constexpr int kRequestedRate = 22050;
     tsb::opl2_init(kRequestedRate);
     tsb::adlib_init();
     tsb::imuse_init();
-#ifdef TSB_THUMBYONE_SLOT
-    tsb::platform::debug_splash(0xFFE0);  // YELLOW: imuse_init done
-    tsb::platform::sleep_ms(300);
-#endif
     int actual_rate = tsb::platform::audio_init(kRequestedRate,
                                                 tsb::audio_mix_callback,
                                                 nullptr);
-#ifdef TSB_THUMBYONE_SLOT
-    tsb::platform::debug_splash(0xF81F);  // MAGENTA: audio_init done
-    tsb::platform::sleep_ms(300);
-#endif
     if (actual_rate <= 0) {
         actual_rate = kRequestedRate;
     } else {
