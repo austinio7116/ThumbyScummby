@@ -296,5 +296,12 @@ void enumerate_slots(SlotInfo *out) {
     }
 }
 
+// Flash backend hands back XIP pointers — nothing to free.  Stub
+// satisfies the save_backend.h contract so the caller can be backend-
+// agnostic.
+void release_slots(SlotInfo *out) {
+    (void)out;
+}
+
 }  // namespace save_backend
 }  // namespace tsb

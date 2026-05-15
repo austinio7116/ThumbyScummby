@@ -456,10 +456,20 @@ void paint_slot_picker(SlotMode mode, int sel,
 	tsb::platform::lcd_present_now();
 }
 
+// RAII guard so every return path from run_slot_picker frees any
+// transient thumbnail buffers the backend handed back through
+// SlotInfo.thumb.  Flash / host backends have nothing to free;
+// the FatFs backend frees its 4×4608 B heap allocations.
+struct SlotInfoGuard {
+	tsb::save_backend::SlotInfo *info;
+	~SlotInfoGuard() { tsb::save_backend::release_slots(info); }
+};
+
 // Returns 0..kNumSlots-1 on confirm, -1 on cancel.
 int run_slot_picker(SlotMode mode) {
 	tsb::save_backend::SlotInfo slots[tsb::save_backend::kNumSlots];
 	tsb::save_backend::enumerate_slots(slots);
+	SlotInfoGuard guard{slots};
 	int sel = 0;
 	bool prev_up = false, prev_down = false, prev_left = false, prev_right = false;
 	bool prev_a = false;

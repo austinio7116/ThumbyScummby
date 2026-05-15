@@ -247,10 +247,10 @@ private:
     bool     _err;
 };
 
-// Read just the header + hint of a slot file.  Returns true if the
-// file exists, magic+version match, and the header is internally
-// consistent.  Fills `hint_out` (kHintBytes) on success.
-bool read_slot_meta(int slot, char *hint_out, uint32_t *payload_out) {
+// Read header + hint + thumbnail.  Caller passes a 4608-byte thumb
+// buffer (or nullptr to skip thumb).  Returns true on a valid slot.
+bool read_slot_meta(int slot, char *hint_out, uint32_t *payload_out,
+                    uint16_t *thumb_out) {
     char path[48];
     if (!build_save_path(slot, path, sizeof(path))) return false;
 
@@ -266,13 +266,24 @@ bool read_slot_meta(int slot, char *hint_out, uint32_t *payload_out) {
            && hdr.payload_size >= kThumbBytes + kHintBytes;
 
     if (ok) {
-        // Skip thumbnail; read hint.
-        if (f_lseek(&fp, kHintOffset) != FR_OK ||
-            f_read(&fp, hint_out, kHintBytes, &br) != FR_OK ||
-            br != kHintBytes) {
-            ok = false;
+        if (thumb_out) {
+            // File cursor is already past the header — read thumb in
+            // place, then continue to the hint.
+            if (f_read(&fp, thumb_out, kThumbBytes, &br) != FR_OK ||
+                br != kThumbBytes) {
+                ok = false;
+            }
         }
-        hint_out[kHintBytes - 1] = '\0';   // safety NUL
+        if (ok) {
+            // Seek explicitly to hint offset (covers both the thumb-
+            // skipped and thumb-read cases).
+            if (f_lseek(&fp, kHintOffset) != FR_OK ||
+                f_read(&fp, hint_out, kHintBytes, &br) != FR_OK ||
+                br != kHintBytes) {
+                ok = false;
+            }
+            hint_out[kHintBytes - 1] = '\0';   // safety NUL
+        }
         if (payload_out) {
             *payload_out = hdr.payload_size - kThumbBytes - kHintBytes;
         }
@@ -319,18 +330,44 @@ Common::SeekableReadStream *open_for_reading(int slot) {
 bool has_save(int slot) {
     if (slot < 0 || slot >= kNumSlots) return false;
     char hint[kHintBytes];
-    return read_slot_meta(slot, hint, nullptr);
+    return read_slot_meta(slot, hint, nullptr, nullptr);
 }
 
 void enumerate_slots(SlotInfo *out) {
     if (!out) return;
     for (int s = 0; s < kNumSlots; ++s) {
         char hint[kHintBytes] = {0};
-        const bool ok = read_slot_meta(s, hint, nullptr);
+        // Heap-allocate the thumb buffer for this slot so SlotInfo
+        // can hand back a stable pointer to save_menu.cpp's paint
+        // loop.  4 × 4608 B = ~18 KB transient during the save menu;
+        // freed by release_slots() on menu exit.  Heap rather than
+        // BSS because BSS budget is tight; this only lives during
+        // the save UI.
+        uint16_t *thumb_buf = (uint16_t *)std::malloc(kThumbBytes);
+        const bool ok = read_slot_meta(s, hint, nullptr, thumb_buf);
         out[s].occupied = ok;
-        out[s].thumb    = nullptr;   // FatFs backend skips thumbs (see file header)
-        if (ok) std::memcpy(out[s].hint, hint, kHintBytes);
-        else    out[s].hint[0] = '\0';
+        if (ok) {
+            out[s].thumb = thumb_buf;
+            std::memcpy(out[s].hint, hint, kHintBytes);
+        } else {
+            // Slot empty (or read failed) — release the unused buf
+            // immediately so we don't leak it.
+            std::free(thumb_buf);
+            out[s].thumb = nullptr;
+            out[s].hint[0] = '\0';
+        }
+    }
+}
+
+void release_slots(SlotInfo *out) {
+    if (!out) return;
+    for (int s = 0; s < kNumSlots; ++s) {
+        if (out[s].thumb) {
+            // const_cast — backend owns the heap buffer it handed back
+            // through the const-pointer view in SlotInfo.
+            std::free(const_cast<uint16_t *>(out[s].thumb));
+            out[s].thumb = nullptr;
+        }
     }
 }
 

@@ -44,8 +44,18 @@ struct SlotInfo {
     const uint16_t *thumb;   // kThumbW * kThumbH RGB565, or nullptr if empty
 };
 
-// Fill `out[0..kNumSlots-1]` with current slot state.
+// Fill `out[0..kNumSlots-1]` with current slot state.  Backends that
+// can return XIP-resident thumb pointers (flash backend) write them
+// directly; backends without XIP-resident data (FatFs) allocate
+// transient buffers on the heap — caller must pair enumerate_slots
+// with release_slots before discarding the array.
 void enumerate_slots(SlotInfo *out);
+
+// Free any per-slot resources owned by `out` (e.g. heap-allocated
+// thumbnail buffers in the FatFs backend).  Safe to call on a
+// zero-initialised array.  No-op on backends with no transient
+// allocations.
+void release_slots(SlotInfo *out);
 
 // Open a slot for writing.  Pre-writes header + thumbnail + hint; the
 // stream returned is positioned past the metadata, so the engine's

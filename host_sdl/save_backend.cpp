@@ -277,5 +277,11 @@ void enumerate_slots(SlotInfo *out) {
     }
 }
 
+// Host backend's thumbs alias g_cache (long-lived static storage) —
+// nothing to free.
+void release_slots(SlotInfo *out) {
+    (void)out;
+}
+
 }  // namespace save_backend
 }  // namespace tsb
