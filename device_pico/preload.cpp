@@ -81,6 +81,28 @@ bool write_marker(const char *subdir, const GameDescriptor &gd) {
     return ok;
 }
 
+// Cheap "this file is already decrypted" sniff so we can safely
+// migrate users who hand-decrypted with the old python tool and
+// dropped files into /scumm/<sub>/ before the .thumbyscummby marker
+// existed.  Every LucasArts SCUMM chunk header starts with an
+// uppercase ASCII tag ('LE', 'FO', 'LF', 'OB', etc.) — plain bytes
+// land in 'A'..'Z'.  XOR'd-by-0x69 bytes for those tags land in the
+// 0x00..0x40 punctuation range and never look like uppercase letters.
+// A two-byte test is robust enough; if both first bytes are A..Z we
+// treat the file as plain and skip the XOR pass.
+bool looks_already_plain(const char *path) {
+    FIL fp;
+    if (f_open(&fp, path, FA_READ) != FR_OK) return false;
+    uint8_t buf[2] = {0, 0};
+    UINT br = 0;
+    bool ok = (f_read(&fp, buf, sizeof(buf), &br) == FR_OK)
+           && br == sizeof(buf);
+    f_close(&fp);
+    if (!ok) return false;
+    auto upper = [](uint8_t c) { return c >= 'A' && c <= 'Z'; };
+    return upper(buf[0]) && upper(buf[1]);
+}
+
 // XOR-decrypt a file in place.  Open for r/w, read a chunk, XOR each
 // byte, seek back, write.  Returns false on I/O error; the caller
 // then refuses to mark the install as done so the next boot retries.
@@ -95,6 +117,16 @@ bool decrypt_in_place(const char *path,
                       int file_index,
                       int file_count) {
     if (xor_byte == 0) return true;
+    if (looks_already_plain(path)) {
+        tsb::platform::log("[preload] skip %s\n", short_name);
+        // Still paint progress so the user sees the bar advance even
+        // when the file is a fast-path skip.
+        const int overall_pct =
+            ((file_index + 1) * 100) / (file_count > 0 ? file_count : 1);
+        tsb::platform::preload_progress(display_name, short_name,
+                                        overall_pct);
+        return true;
+    }
 
     FIL fp;
     if (f_open(&fp, path, FA_READ | FA_WRITE) != FR_OK) return false;
