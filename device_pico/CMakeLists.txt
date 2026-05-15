@@ -254,10 +254,23 @@ endif()
 if (TSB_THUMBYONE_SLOT)
     target_compile_definitions(thumbyscummby PRIVATE
         THUMBYONE_SLOT_MODE=1
-        TSB_THUMBYONE_SLOT=1)
-    # Compile ThumbyOne's handoff source into the slot directly —
-    # same pattern ThumbyDOOM uses.
-    target_sources(thumbyscummby PRIVATE ${THUMBYONE_COMMON_SRC})
+        TSB_THUMBYONE_SLOT=1
+        # P8's CMakeLists sets pico_platform INTERFACE
+        # PICO_STACK_SIZE=0x4000 which propagates to every target in
+        # the unified build.  That blows our SCRATCH_X core1-stack
+        # reservation.  Pin both back to the modest values DOOM
+        # uses — we only run audio on core0 (no multicore in our
+        # build), so core1 stack is reserved-but-unused.
+        PICO_STACK_SIZE=0x2000
+        PICO_CORE1_STACK_SIZE=0x800)
+    # Compile ThumbyOne's handoff + LED sources into the slot
+    # directly — same pattern ThumbyDOOM uses.  thumbyone_handoff.c
+    # turns off the LED before rebooting via thumbyone_led_off().
+    target_sources(thumbyscummby PRIVATE
+        ${THUMBYONE_COMMON_SRC}
+        ${THUMBYONE_COMMON_LED_SRC})
+    target_include_directories(thumbyscummby PRIVATE
+        ${THUMBYONE_COMMON_LED_INCLUDE})
     target_link_libraries(thumbyscummby PRIVATE hardware_pio)
 endif()
 

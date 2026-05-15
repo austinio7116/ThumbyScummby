@@ -24,6 +24,17 @@ extern "C" {
 #include <string.h>
 #include <strings.h>
 
+#ifdef TSB_THUMBYONE_SLOT
+// ThumbyOne slot-mode headers live at FILE scope (not inside any
+// namespace) so the C typedefs / function prototypes stay in the
+// global namespace where the C linker expects them.
+extern "C" {
+#include "slot_layout.h"
+#include "thumbyone_fs.h"
+#include "thumbyone_handoff.h"
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Game data backing — two compile-time paths.
 //
@@ -115,8 +126,9 @@ constexpr const char *kGameSubdir = "game";
 // fat_section.S.  Slot mode: base pointer is the start of
 // ThumbyOne's shared FAT volume at THUMBYONE_FAT_OFFSET.
 #ifdef TSB_THUMBYONE_SLOT
-#include "slot_layout.h"
-#include "thumbyone_fs.h"
+// slot_layout.h / thumbyone_fs.h / thumbyone_handoff.h are included
+// at file scope above so their C typedefs stay outside any
+// namespace.
 static inline const uint8_t *tsb_fat_base(void) {
     return (const uint8_t *)THUMBYONE_XIP(THUMBYONE_FAT_OFFSET);
 }
@@ -1162,13 +1174,11 @@ void lcd_dim_box(int x, int y, int w, int h) {
 }
 
 // ---------------------------------------------------------------------------
-// Slot mode — return to ThumbyOne lobby.
+// Slot mode — return to ThumbyOne lobby.  (thumbyone_handoff.h is
+// included near the top of this file so the typedef is visible to
+// both header and implementation without namespace pollution.)
 // ---------------------------------------------------------------------------
 #ifdef TSB_THUMBYONE_SLOT
-extern "C" {
-#include "thumbyone_handoff.h"
-}
-
 [[noreturn]] void lobby_handoff() {
     // Unmount the shared FAT cleanly so any in-flight writes
     // (saves, settings) finalise before the reboot.  In slot mode
