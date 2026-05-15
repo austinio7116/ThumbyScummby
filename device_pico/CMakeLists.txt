@@ -201,10 +201,22 @@ else()
     )
 endif()
 
+# Save backend selection.  Slot mode writes through the shared FAT
+# (saves at /scumm/<game>/saves/slot<N>.sav) — the flash backend's
+# reserved 384 KB region at 0x00FA0000 sits *inside* the shared FAT
+# volume and would clobber it.  Standalone keeps the flash backend:
+# its baked-in TSDB blob or read-only FAT image leaves the top of
+# flash free.
+if (TSB_THUMBYONE_SLOT)
+    set(SAVE_BACKEND_SRC save_backend_fatfs.cpp)
+else()
+    set(SAVE_BACKEND_SRC save_backend.cpp)
+endif()
+
 add_executable(thumbyscummby
     main.cpp
     platform_pico.cpp
-    save_backend.cpp
+    ${SAVE_BACKEND_SRC}
     config_backend.cpp
     lcd_gc9107.c
     buttons.c
