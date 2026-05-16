@@ -70,12 +70,14 @@ enum {
 constexpr int kMenuRowPitch = 8;
 #endif
 
-// Two more rows pushed the box down to fit comfortably above the
-// sentence strip (kSentenceLcdY = 120).  Box now spans rows 50..119.
+// Slot mode adds LOG + LOBBY rows on top of the 7 standalone rows;
+// growing the box up by 6 px keeps the 8th row inside (top still
+// clear of game art, bottom unchanged at 119 — one row above the
+// sentence strip at kSentenceLcdY = 120).
 constexpr int kBoxX     = 0;
-constexpr int kBoxY     = 50;
+constexpr int kBoxY     = 44;
 constexpr int kBoxW     = 128;
-constexpr int kBoxH     = 70;
+constexpr int kBoxH     = 76;
 
 // Range + step for the speech text scale slider.  6 cells (75, 80, 85,
 // 90, 95, 100) — matches the volume bar's discrete-cell visual.
