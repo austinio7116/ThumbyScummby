@@ -213,9 +213,15 @@ if (TSB_THUMBYONE_SLOT)
     # ships in slot mode — standalone bakes already-decrypted data at
     # build time (pack_device.py / build_fat_image.py).
     set(PRELOAD_SRC preload.cpp pcv_install.cpp)
+    # SCUMM picker — runs before engine_init() to let the user choose
+    # which installed game to launch.  Reuses common/picker's LCD +
+    # bitmap font (nes_lcd_* / nes_font_*) so the chrome matches the
+    # MPY picker.
+    set(PICKER_SRC scumm_picker.cpp)
 else()
     set(SAVE_BACKEND_SRC save_backend.cpp)
     set(PRELOAD_SRC)
+    set(PICKER_SRC)
 endif()
 
 add_executable(thumbyscummby
@@ -223,6 +229,7 @@ add_executable(thumbyscummby
     platform_pico.cpp
     ${SAVE_BACKEND_SRC}
     ${PRELOAD_SRC}
+    ${PICKER_SRC}
     config_backend.cpp
     lcd_gc9107.c
     buttons.c
@@ -305,10 +312,28 @@ if (TSB_THUMBYONE_SLOT)
     # turns off the LED before rebooting via thumbyone_led_off().
     target_sources(thumbyscummby PRIVATE
         ${THUMBYONE_COMMON_SRC}
-        ${THUMBYONE_COMMON_LED_SRC})
+        ${THUMBYONE_COMMON_LED_SRC}
+        # Picker UI dependencies: shared LCD driver (nes_lcd_*) +
+        # bitmap font (nes_font_*) + battery / fs stats / backlight /
+        # settings helpers used by the menu overlay.
+        ${THUMBYONE_PICKER_UI_SRC}
+        ${THUMBYONE_COMMON_BATTERY_SRC}
+        ${THUMBYONE_COMMON_FS_STATS_SRC}
+        ${THUMBYONE_COMMON_BACKLIGHT_SRC}
+        ${THUMBYONE_COMMON_SETTINGS_SRC})
     target_include_directories(thumbyscummby PRIVATE
-        ${THUMBYONE_COMMON_LED_INCLUDE})
-    target_link_libraries(thumbyscummby PRIVATE hardware_pio)
+        ${THUMBYONE_COMMON_LED_INCLUDE}
+        ${THUMBYONE_PICKER_INCLUDE}
+        ${THUMBYONE_COMMON_BATTERY_INCLUDE}
+        ${THUMBYONE_COMMON_FS_STATS_INCLUDE}
+        ${THUMBYONE_COMMON_BACKLIGHT_INCLUDE}
+        ${THUMBYONE_COMMON_SETTINGS_INCLUDE})
+    target_link_libraries(thumbyscummby PRIVATE
+        hardware_pio
+        # Battery / fs-stats helpers use the ADC and SDK math libs.
+        hardware_adc
+        # thumbyone_handoff.c calls stdio_uart_deinit() before reboot.
+        pico_stdio_uart)
 endif()
 
 target_compile_options(thumbyscummby PRIVATE

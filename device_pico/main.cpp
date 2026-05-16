@@ -25,6 +25,11 @@
 extern "C" {
 #include "lcd_gc9107.h"
 }
+#ifdef TSB_THUMBYONE_SLOT
+#include "scumm_picker.h"
+#include "game_table.h"
+namespace tsb { extern const GameDescriptor *g_current_game; }
+#endif
 #include <cstdio>
 
 extern "C" {
@@ -332,6 +337,25 @@ int main() {
     if (tsb::preload::maybe_run()) {
         tsb::platform_pico::rescan_games();
     }
+
+    // SCUMM picker — separate-boot launch pattern (P8-cart-style):
+    //
+    //   Boot 1: picker runs, user picks, writes /scumm/.active_game,
+    //           reboots into SCUMM slot.  Does NOT continue past
+    //           scumm_picker_run() — the call below is unreachable
+    //           on launch.
+    //   Boot 2: scumm_picker_consume_active_game() finds the file,
+    //           sets tsb::g_current_game from its contents, deletes
+    //           the file, returns true → picker UI is skipped and we
+    //           fall through to engine init with a fresh heap.
+    //
+    // The reboot keeps engine heap fragmentation away from the
+    // picker's transient ~40 KB allocations (matches the safety
+    // guarantee of the P8 cart-launch path).
+    if (!scumm_picker_consume_active_game()) {
+        scumm_picker_run();   // returns only on unrecoverable error
+    }
+    tsb::platform_pico::rescan_games();
 #endif
 
     if (!tsb::platform_pico::blob_ok()) {
