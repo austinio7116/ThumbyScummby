@@ -419,26 +419,34 @@ int PcvStream::next_byte_in_cluster() {
 
 bool PcvStream::ensure_byte_available() {
     if (_eof) return false;
-    while (_bytes_left_in_cluster == 0) {
+    while (true) {
+        // First gate: if the logical PCV has been fully consumed, we
+        // must advance — regardless of whether the current cluster has
+        // unread bytes left (those are filesystem residue past the
+        // file's logical end and must NOT be returned).
         if (_bytes_left_in_pcv == 0) {
             if (!advance_to_next_source()) return false;
             continue;
         }
-        // Advance to next inner cluster
+        // We have PCV bytes to give.  If the current cluster still
+        // has byte budget, we're good.
+        if (_bytes_left_in_cluster > 0) return true;
+        // Cluster exhausted but PCV isn't — step the inner FAT12 chain.
         const PcvSource &s = _ch.sources[_idx];
         uint16_t next_cl = fat12_next(&_fp, s.geom, _fat_cache, _cur_cluster);
         if (next_cl < 2 || next_cl >= 0xFF8) {
-            // Inner chain ended unexpectedly — try moving on
+            // Inner chain ended early — surrender this PCV and move on.
             if (!advance_to_next_source()) return false;
             continue;
         }
         _cur_cluster = next_cl;
+        // Take the full cluster's worth of byte budget here; the
+        // _bytes_left_in_pcv gate above guarantees we stop reading at
+        // the right place even when the file's logical end falls
+        // partway through this cluster.
         _bytes_left_in_cluster = (uint32_t)s.geom.sectors_per_cluster * 512u;
-        if (_bytes_left_in_cluster > _bytes_left_in_pcv)
-            _bytes_left_in_cluster = _bytes_left_in_pcv;
         _sec_buf_valid = false;
     }
-    return true;
 }
 
 uint32_t PcvStream::read(uint8_t *out, uint32_t n) {
