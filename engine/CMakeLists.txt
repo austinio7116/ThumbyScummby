@@ -102,6 +102,9 @@ add_library(thumbyscummby_engine STATIC
     # ---- Game descriptor table (one entry per supported SCUMM game) ----
     src/game_table.cpp
 
+    # ---- PKWARE DCL ("explode") decoder for PCV/LFG! .img installers
+    src/dcl.cpp
+
     # ---- Bridge implementations (will shrink as pivot completes) ----
     src/osystem_thumby.cpp
     src/scummvm_stubs.cpp
