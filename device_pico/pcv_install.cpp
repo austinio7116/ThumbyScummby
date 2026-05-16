@@ -143,20 +143,43 @@ static bool walk_img_root(FIL *fp, const ImgGeometry &g, CB cb) {
     return true;
 }
 
-// Confirm the PCV's inner FAT12 chain is sequential — cluster N → N+1.
-// Stage B assumes this for the streaming reader.
-static bool verify_sequential_inner_chain(FIL *fp, const ImgGeometry &g,
-                                          uint16_t start, uint32_t size) {
+// Walk the PCV's inner FAT12 chain and report (a) how many transitions
+// were sequential (cluster N → N+1) and (b) the first offending pair
+// if any.  Stage B's reader needs strict sequential to work, but we
+// log details (rather than silently rejecting) so the LOG viewer
+// shows what kind of layout we actually hit.
+struct InnerChainStats {
+    uint32_t expected_transitions;
+    uint32_t observed_sequential;
+    bool     ok;
+    uint16_t bad_from;
+    uint16_t bad_to;
+};
+static InnerChainStats walk_inner_chain(FIL *fp, const ImgGeometry &g,
+                                        uint16_t start, uint32_t size) {
+    InnerChainStats s = {};
     const uint32_t cb = (uint32_t)g.sectors_per_cluster * 512u;
-    const uint32_t n  = (size + cb - 1) / cb;
+    s.expected_transitions = (size > cb) ? ((size + cb - 1) / cb) - 1 : 0;
     ImgFatCache fc{}; fc.sector = -1;
     uint16_t cur = start;
-    for (uint32_t i = 1; i < n; ++i) {
+    s.ok = true;
+    for (uint32_t i = 0; i < s.expected_transitions; ++i) {
         uint16_t next = fat12_next(fp, g, fc, cur);
-        if (next != (uint16_t)(cur + 1)) return false;
+        if (next != (uint16_t)(cur + 1)) {
+            if (s.ok) {
+                s.ok = false;
+                s.bad_from = cur;
+                s.bad_to   = next;
+            }
+            // Stop walking — we can't trust the chain beyond this
+            // point if it's hitting EOC or garbage.
+            if (next < 2 || next >= 0xFF8) break;
+        } else {
+            s.observed_sequential++;
+        }
         cur = next;
     }
-    return true;
+    return s;
 }
 
 // ===========================================================================
@@ -276,14 +299,14 @@ static bool probe_img(const char *path, PcvSource *out,
     });
 
     if (found) {
-        // Verify the PCV is a contiguous run of inner clusters so the
-        // sequential Stage B reader is safe.
-        if (!verify_sequential_inner_chain(&fp, g, out->inner_start_cluster,
-                                           out->inner_size)) {
-            tsb::platform::log("[pcv] %s: PCV not sequential\n", path);
+        InnerChainStats st = walk_inner_chain(&fp, g, out->inner_start_cluster,
+                                              out->inner_size);
+        if (!st.ok) {
+            tsb::platform::log("[pcv] non-seq %s at %u->%u\n",
+                               out->inner_name,
+                               (unsigned)st.bad_from, (unsigned)st.bad_to);
             found = false;
         } else {
-            // Capture outer-FAT info from the open FIL.
             out->outer_first_cluster = fp.obj.sclust;
             out->outer_size_bytes    = (uint32_t)fp.obj.objsize;
             char basename[24];

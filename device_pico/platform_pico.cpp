@@ -144,7 +144,8 @@ static FileSlot g_disk[4];                 // DISK01-04.LEC or <base>.001..004
 static FileSlot g_helper[4];               // 901-904.LFL
 
 static FATFS    g_fs;
-static bool     g_fs_ok = false;
+static bool     g_fs_ok = false;       // FAT mounted AND a game detected
+static bool     g_fs_mounted = false;  // FAT mounted (no game-presence claim)
 
 // Open a file, look up its first cluster, compute the absolute flash
 // pointer.  No bytes are read or copied — the engine subsequently
@@ -219,7 +220,8 @@ static void parse_blob() {
 #else
     FRESULT r = f_mount(&g_fs, "0:", 1);
 #endif
-    if (r != FR_OK) return;
+    if (r != FR_OK) { g_fs_mounted = false; return; }
+    g_fs_mounted = true;
 
     // Standalone builds pre-set g_current_game from TSB_GAME_X — try
     // that descriptor first and fail closed if it doesn't match.
@@ -1351,8 +1353,10 @@ const char *game_subdir() {
 #ifdef TSB_DATA_FATFS
 // Expose the mounted shared-FAT volume so pcv_install can do raw
 // FAT16 / directory-entry manipulation when it needs to free
-// outer-cluster space mid-install.  Returns null before init_all().
-FATFS *get_fatfs() { return g_fs_ok ? &g_fs : nullptr; }
+// outer-cluster space mid-install.  Returns null before the volume
+// is mounted.  Independent of g_fs_ok (which adds a game-detection
+// gate that's false on first boot when only .imgs are present).
+FATFS *get_fatfs() { return g_fs_mounted ? &g_fs : nullptr; }
 #endif
 
 }  // namespace tsb::platform_pico
