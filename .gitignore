@@ -42,6 +42,9 @@ compile_commands.json
 *.log
 *.ppm
 *.png
+# Picker thumbnails are part of the firmware build (baked in via
+# pack_scumm_thumbs.py), keep them tracked.
+!device_pico/thumbs/*.png
 
 # OS
 .DS_Store

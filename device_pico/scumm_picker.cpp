@@ -52,6 +52,7 @@ int nes_font_width_2x(const char *text);
 #include "thumbyone_backlight.h"
 #include "thumbyone_settings.h"
 #include "slot_layout.h"  // THUMBYONE_SLOT_SCUMM
+#include "scumm_thumbs.h" // baked-in 64x64 4-bit indexed game art
 }
 
 namespace tsb { extern const GameDescriptor *g_current_game; }
@@ -98,16 +99,17 @@ namespace tsb { extern const GameDescriptor *g_current_game; }
 #define COL_ERR      0xF800  // red — FS error screen
 
 // =============================================================================
-// Buffers — heap-allocated to avoid burning ~40 KB of BSS that would
-// have to come out of the engine's heap allotment.  malloc'd on
-// picker entry, free'd before we return so the SCUMM engine has the
-// full PICO_HEAP_SIZE available for game data load.
+// Framebuffer — heap-allocated for the picker's lifetime, free'd
+// before we reboot into the engine slot so the engine has the full
+// PICO_HEAP_SIZE available for game data load.  Thumbnails live as
+// const data in flash (see scumm_thumbs.h) so we don't need a heap
+// buffer for them.
 // =============================================================================
-static uint16_t *g_fb       = nullptr;       // 128*128*2 = 32 KB
-#define THUMB_SIZE 64
-static uint16_t *g_thumb_px = nullptr;       // 64*64*2  =  8 KB
-static int       g_thumb_w  = 0;
-static int       g_thumb_h  = 0;
+static uint16_t *g_fb = nullptr;            // 128*128*2 = 32 KB
+#define THUMB_SIZE SCUMM_THUMB_W            // 64 px (defined in scumm_thumbs.h)
+// Pointer to the currently-selected game's baked thumbnail, or null
+// when the selection has no matching PNG (falls back to placeholder).
+static const scumm_thumb_t *g_thumb = nullptr;
 
 // =============================================================================
 // Game list — one entry per kGameTable descriptor, with installed-state
@@ -226,23 +228,38 @@ static void scan_games(void) {
 }
 
 // =============================================================================
-// Thumbnail load — 64x64 RGB565 raw sidecar at /scumm/<subdir>/<subdir>.scr64.
-// Captured in-engine via MENU+A (see screenshot sidecar task).  Missing
-// sidecar → render_hero falls back to a placeholder.
+// Thumbnail lookup — match descriptor subdir against the baked-in
+// scumm_thumbs[] table.  Result is a pointer into flash (palette +
+// packed pixels); null if the descriptor has no matching PNG (will
+// trigger placeholder render).
 // =============================================================================
-static void load_thumb(const tsb::GameDescriptor &gd) {
-    g_thumb_w = g_thumb_h = 0;
-    char path[48];
-    std::snprintf(path, sizeof(path), "/scumm/%s/%s.scr64", gd.subdir, gd.subdir);
-    FIL f;
-    if (f_open(&f, path, FA_READ) != FR_OK) return;
-    UINT br = 0;
-    const UINT want = (UINT)(THUMB_SIZE * THUMB_SIZE * 2);
-    if (f_read(&f, g_thumb_px, want, &br) == FR_OK && br == want) {
-        g_thumb_w = THUMB_SIZE;
-        g_thumb_h = THUMB_SIZE;
+static const scumm_thumb_t *find_thumb(const tsb::GameDescriptor &gd) {
+    for (int i = 0; i < scumm_thumbs_count; ++i) {
+        if (std::strcmp(scumm_thumbs[i].subdir, gd.subdir) == 0) {
+            return &scumm_thumbs[i];
+        }
     }
-    f_close(&f);
+    return nullptr;
+}
+
+// Blit a 4-bit indexed thumbnail (palette + packed pixels, two
+// pixels per byte) onto g_fb at (dx, dy).
+static void blit_thumb(const scumm_thumb_t *t, int dx, int dy) {
+    if (!t) return;
+    for (int y = 0; y < SCUMM_THUMB_H; ++y) {
+        int fy = dy + y;
+        if (fy < 0 || fy >= 128) continue;
+        const uint8_t *row = t->pixels + (size_t)y * (SCUMM_THUMB_W / 2);
+        uint16_t *dst_row  = g_fb + fy * 128;
+        for (int x = 0; x < SCUMM_THUMB_W; x += 2) {
+            int fx = dx + x;
+            uint8_t pair = row[x / 2];
+            uint8_t hi = (uint8_t)((pair >> 4) & 0x0F);
+            uint8_t lo = (uint8_t)(pair        & 0x0F);
+            if ((unsigned)fx     < 128) dst_row[fx]     = t->palette[hi];
+            if ((unsigned)(fx+1) < 128) dst_row[fx + 1] = t->palette[lo];
+        }
+    }
 }
 
 // Human-readable variant string for the hero subtitle.
@@ -297,8 +314,8 @@ static void render_hero_fb(int sel) {
     const int slot_s = 64;
     const int slot_x = (128 - slot_s) / 2;
     const int slot_y = 14;
-    if (g_thumb_w == THUMB_SIZE) {
-        fb_blit(g_thumb_px, THUMB_SIZE, THUMB_SIZE, slot_x, slot_y);
+    if (g_thumb) {
+        blit_thumb(g_thumb, slot_x, slot_y);
     } else {
         render_thumb_placeholder(slot_x, slot_y, slot_s, e.gd->display_name[0]);
     }
@@ -353,14 +370,17 @@ static void render_no_games(void) {
     nes_font_draw(g_fb, "no games",
                   128 - nes_font_width("no games") - 2, 2, COL_DIM);
 
-    nes_font_draw(g_fb, "Drop into /scumm/:",   2, 18,  COL_TEXT);
-    nes_font_draw(g_fb, "- *.img install disks", 2, 32,  COL_TEXT);
-    nes_font_draw(g_fb, "  (MI1/MI2/Indy4)",     2, 41,  COL_DIM);
-    nes_font_draw(g_fb, "- pre-extracted data:", 2, 55,  COL_TEXT);
-    nes_font_draw(g_fb, "  MI1: DISK*.LEC +",    2, 64,  COL_DIM);
-    nes_font_draw(g_fb, "       000/901-904.LFL",2, 73,  COL_DIM);
-    nes_font_draw(g_fb, "  MI2: monkey2.000/001",2, 82,  COL_DIM);
-    nes_font_draw(g_fb, "  IJ4: atlantis.000/001",2, 91, COL_DIM);
+    nes_font_draw(g_fb, "Drop files into",       2, 18, COL_TEXT);
+    nes_font_draw(g_fb, "/scumm/ via the lobby",  2, 27, COL_TEXT);
+    nes_font_draw(g_fb, "USB drive.",             2, 36, COL_TEXT);
+
+    nes_font_draw(g_fb, "Supported formats:",     2, 50, COL_HEAD);
+    nes_font_draw(g_fb, "- LucasArts .img",       2, 60, COL_TEXT);
+    nes_font_draw(g_fb, "  install floppies",     2, 69, COL_DIM);
+    nes_font_draw(g_fb, "- pre-extracted data:",  2, 79, COL_TEXT);
+    nes_font_draw(g_fb, "  MI1: DISK*.LEC",       2, 88, COL_DIM);
+    nes_font_draw(g_fb, "  MI2: monkey2.0*",      2, 97, COL_DIM);
+    nes_font_draw(g_fb, "  IJ4: atlantis.0*",     2, 106, COL_DIM);
 
     fb_rect(0, 119, 128, 9, 0x0008);
     fb_hline(0, 118, 128, COL_HEAD);
@@ -621,13 +641,12 @@ static void persist_settings_if_dirty(void) {
     }
 }
 
-// Free the heap-allocated framebuffers.  Called before any reboot
+// Free the heap-allocated framebuffer.  Called before any reboot
 // path so we don't reboot with leaked allocations sitting in malloc
 // metadata (purely cosmetic — RAM is wiped on the chip reset
 // regardless, but tidies up if a future build moves to soft-restart).
 static void release_buffers(void) {
-    std::free(g_fb);       g_fb = nullptr;
-    std::free(g_thumb_px); g_thumb_px = nullptr;
+    std::free(g_fb); g_fb = nullptr;
 }
 
 // Commit the picker's choice to the handoff file + reboot into the
@@ -688,12 +707,8 @@ extern "C" bool scumm_picker_consume_active_game(void) {
 // Public entry point
 // =============================================================================
 extern "C" int scumm_picker_run(void) {
-    g_fb       = (uint16_t *)std::malloc(128 * 128 * sizeof(uint16_t));
-    g_thumb_px = (uint16_t *)std::malloc(THUMB_SIZE * THUMB_SIZE * sizeof(uint16_t));
-    if (!g_fb || !g_thumb_px) {
-        release_buffers();
-        return -1;
-    }
+    g_fb = (uint16_t *)std::malloc(128 * 128 * sizeof(uint16_t));
+    if (!g_fb) return -1;
 
     nes_lcd_init();
     nes_lcd_backlight(1);
@@ -729,7 +744,7 @@ extern "C" int scumm_picker_run(void) {
     for (int i = 0; i < g_game_count; ++i) {
         if (g_games[i].installed) { sel = i; break; }
     }
-    load_thumb(*g_games[sel].gd);
+    g_thumb = find_thumb(*g_games[sel].gd);
     render_hero(sel);
 
     bool prev_left = false, prev_right = false;
@@ -804,14 +819,14 @@ extern "C" int scumm_picker_run(void) {
             if (just_pressed(PIN_LEFT, &prev_left)) {
                 if (sel > 0) {
                     --sel;
-                    load_thumb(*g_games[sel].gd);
+                    g_thumb = find_thumb(*g_games[sel].gd);
                     render_hero(sel);
                 }
             }
             if (just_pressed(PIN_RIGHT, &prev_right)) {
                 if (sel < g_game_count - 1) {
                     ++sel;
-                    load_thumb(*g_games[sel].gd);
+                    g_thumb = find_thumb(*g_games[sel].gd);
                     render_hero(sel);
                 }
             }

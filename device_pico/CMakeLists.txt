@@ -218,6 +218,26 @@ if (TSB_THUMBYONE_SLOT)
     # bitmap font (nes_lcd_* / nes_font_*) so the chrome matches the
     # MPY picker.
     set(PICKER_SRC scumm_picker.cpp)
+
+    # Bake 64x64 4-bit indexed thumbnails for each game into the slot
+    # binary.  PNG source lives at device_pico/thumbs/<subdir>.png;
+    # pack_scumm_thumbs.py converts to a quantised palette + packed
+    # pixel array per game.  ~2 KB per thumbnail, ~8 KB total — far
+    # cheaper than runtime sidecars and survives FAT format/wipe.
+    set(SCUMM_THUMBS_C "${CMAKE_CURRENT_BINARY_DIR}/scumm_thumbs_data.c")
+    file(GLOB SCUMM_THUMB_PNGS "${CMAKE_CURRENT_LIST_DIR}/thumbs/*.png")
+    add_custom_command(
+        OUTPUT  "${SCUMM_THUMBS_C}"
+        COMMAND ${CMAKE_COMMAND} -E env python3
+                "${CMAKE_CURRENT_LIST_DIR}/pack_scumm_thumbs.py"
+                "${CMAKE_CURRENT_LIST_DIR}/thumbs"
+                "${SCUMM_THUMBS_C}"
+        DEPENDS "${CMAKE_CURRENT_LIST_DIR}/pack_scumm_thumbs.py"
+                ${SCUMM_THUMB_PNGS}
+        COMMENT "Packing SCUMM picker thumbnails"
+        VERBATIM
+    )
+    set(PICKER_SRC ${PICKER_SRC} "${SCUMM_THUMBS_C}")
 else()
     set(SAVE_BACKEND_SRC save_backend.cpp)
     set(PRELOAD_SRC)
