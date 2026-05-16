@@ -1,6 +1,7 @@
 // Preload pipeline — see preload.h for overview.
 
 #include "preload.h"
+#include "pcv_install.h"
 
 #include "platform.h"
 #include "game_table.h"
@@ -619,6 +620,13 @@ bool run_one(const GameDescriptor &gd) {
 
 bool maybe_run() {
     bool did_work = false;
+    // Phase 3.B (new): if any .img install-disks are sitting in
+    // /scumm/, parse them as LucasArts PCV/LFG! archives, decompress
+    // via DCL, write the game data into /scumm/<game>/, and f_unlink
+    // each .img once consumed.
+    if (install_pcv_imgs()) {
+        did_work = true;
+    }
     for (int i = 0; i < tsb::kGameTableCount; ++i) {
         if (run_one(tsb::kGameTable[i])) did_work = true;
     }
