@@ -125,6 +125,12 @@ struct picker_entry_t {
 static picker_entry_t g_games[MAX_GAMES];
 static int            g_game_count = 0;
 
+// When true the picker also lists descriptors whose required files
+// haven't been dropped onto the FAT yet — useful as a "what could I
+// install?" preview.  Default OFF so the picker only surfaces games
+// the user can actually launch; toggle via the MENU overlay.
+static bool g_show_uninstalled = false;
+
 // =============================================================================
 // Button helpers
 // =============================================================================
@@ -221,9 +227,11 @@ static bool descriptor_installed(const tsb::GameDescriptor &gd) {
 static void scan_games(void) {
     g_game_count = 0;
     for (int i = 0; i < tsb::kGameTableCount && g_game_count < MAX_GAMES; ++i) {
+        bool installed = descriptor_installed(tsb::kGameTable[i]);
+        if (!installed && !g_show_uninstalled) continue;
         picker_entry_t &e = g_games[g_game_count++];
         e.gd        = &tsb::kGameTable[i];
-        e.installed = descriptor_installed(tsb::kGameTable[i]);
+        e.installed = installed;
     }
 }
 
@@ -401,6 +409,7 @@ typedef enum {
     MI_FW,
     MI_VOL,
     MI_BRIGHT,
+    MI_SHOW_HIDDEN,
     MI_CLOSE,
     MI_LOBBY,
     MI_COUNT,
@@ -408,22 +417,24 @@ typedef enum {
 
 static bool menu_item_selectable(menu_item_t it) {
     switch (it) {
-    case MI_VOL: case MI_BRIGHT: case MI_CLOSE: case MI_LOBBY: return true;
+    case MI_VOL: case MI_BRIGHT: case MI_SHOW_HIDDEN:
+    case MI_CLOSE: case MI_LOBBY: return true;
     default: return false;
     }
 }
 
 static const char *menu_label(menu_item_t it) {
     switch (it) {
-    case MI_BATT:    return "batt";
-    case MI_DISK:    return "disk";
-    case MI_VARIANT: return "type";
-    case MI_FW:      return "fw";
-    case MI_VOL:     return "VOLUME";
-    case MI_BRIGHT:  return "BRIGHTNESS";
-    case MI_CLOSE:   return "close";
-    case MI_LOBBY:   return "back to lobby";
-    case MI_COUNT:   return "";
+    case MI_BATT:        return "batt";
+    case MI_DISK:        return "disk";
+    case MI_VARIANT:     return "type";
+    case MI_FW:          return "fw";
+    case MI_VOL:         return "VOLUME";
+    case MI_BRIGHT:      return "BRIGHTNESS";
+    case MI_SHOW_HIDDEN: return "show all";
+    case MI_CLOSE:       return "close";
+    case MI_LOBBY:       return "back to lobby";
+    case MI_COUNT:       return "";
     }
     return "";
 }
@@ -592,6 +603,13 @@ static void render_menu(int sel) {
             draw_thick_slider(56, y - 1, 70, 9,
                               g_menu_bri, 100,
                               is_cursor ? COL_HIGHLT : COL_TEXT, COL_BAR_BG);
+        } else if (i == MI_SHOW_HIDDEN) {
+            // Render an [ON]/[OFF] indicator right-aligned on the
+            // row.  Press A on this row to flip + rescan.
+            const char *state = g_show_uninstalled ? "[ON]" : "[OFF]";
+            int sw = nes_font_width(state);
+            nes_font_draw(g_fb, state, 128 - sw - 2, y,
+                          is_cursor ? COL_HIGHLT : COL_TEXT);
         } else {
             row_render_t r = {};
             if      (i == MI_BATT)    build_batt_row(&r);
@@ -807,6 +825,22 @@ extern "C" int scumm_picker_run(void) {
                     persist_settings_if_dirty();
                     g_menu_open = false;
                     render_hero(sel);
+                } else if (g_menu_cursor == MI_SHOW_HIDDEN) {
+                    // Flip the show-uninstalled flag + re-scan so
+                    // the next picker render reflects the new
+                    // filter.  Reset selection to 0 to avoid an
+                    // index that no longer maps to a game (e.g.
+                    // flipping off when sel was on an uninstalled
+                    // descriptor).
+                    g_show_uninstalled = !g_show_uninstalled;
+                    scan_games();
+                    sel = 0;
+                    if (g_game_count > 0) {
+                        g_thumb = find_thumb(*g_games[sel].gd);
+                    } else {
+                        g_thumb = nullptr;
+                    }
+                    render_menu(sel);
                 }
             }
             if (just_pressed(PIN_B, &prev_b)) {

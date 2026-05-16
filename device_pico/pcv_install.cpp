@@ -839,10 +839,48 @@ static bool read_file_chunk_header(PcvStream &ps, FileChunkHeader *out) {
 
 static uint8_t descriptor_xor_for(const GameDescriptor &gd, const char *name) {
     if (!gd.files) return 0;
+    size_t name_len = std::strlen(name);
     for (const GameFile *gf = gd.files; gf->name; ++gf) {
         if (strcasecmp(gf->name, name) == 0) return gf->xor_byte;
     }
+    // PCV chunk-name field is fixed 11 bytes; filenames > 11 chars
+    // are truncated.  Indy 4 ships `atlantis.000` / `atlantis.001`
+    // (12 chars each, both truncate to `ATLANTIS.00`) so the exact
+    // match above misses every chunk and the install drains
+    // through every PCV without writing anything.  If the PCV name
+    // is exactly 11 chars, accept it as a prefix match against any
+    // descriptor entry whose full name starts with it.  Both
+    // candidate entries share xor_byte for any game we ship today,
+    // so it doesn't matter which descriptor wins the match — the
+    // *output* filename is resolved separately in resolve_fs_name
+    // below using unpacked_size.
+    if (name_len == 11) {
+        for (const GameFile *gf = gd.files; gf->name; ++gf) {
+            if (std::strlen(gf->name) > name_len &&
+                strncasecmp(gf->name, name, name_len) == 0) {
+                return gf->xor_byte;
+            }
+        }
+    }
     return 0xFF;
+}
+
+// Map a (possibly truncated) PCV chunk name to the full filename
+// expected on the FAT.  Called from extract_one before opening the
+// output FIL.  Game-specific table — for now only Indy 4's
+// atlantis.000 / .001 pair needs disambiguation (truncated PCV
+// name "ATLANTIS.00" collides; we tell them apart by unpacked
+// size, which differs by ~3 orders of magnitude).
+static const char *resolve_fs_name(const char *pcv_name,
+                                   uint32_t unpacked_size,
+                                   char *scratch, size_t scratch_size) {
+    if (strcasecmp(pcv_name, "ATLANTIS.00") == 0) {
+        // .001 = ~9.23 MB resource bundle, .000 = ~12 KB index.
+        std::snprintf(scratch, scratch_size, "ATLANTIS.00%c",
+                      unpacked_size > 1000000u ? '1' : '0');
+        return scratch;
+    }
+    return pcv_name;
 }
 
 struct DclSrc {
@@ -915,8 +953,18 @@ static bool extract_one(PcvStream &ps, const FileChunkHeader &fh,
         return true;
     }
 
+    // Resolve the PCV's possibly-truncated 11-char chunk name to
+    // the full FS filename our descriptor (and the SCUMM engine)
+    // expects.  For most files the PCV name matches verbatim, but
+    // Indy 4 ships its 12-char `atlantis.000` / `atlantis.001`
+    // names truncated to `ATLANTIS.00` (indistinguishable by name
+    // alone) — resolve_fs_name disambiguates by unpacked_size.
+    char fs_name_buf[16];
+    const char *fs_name = resolve_fs_name(fh.name, fh.unpacked_size,
+                                          fs_name_buf, sizeof(fs_name_buf));
+
     char dst[64];
-    if (std::snprintf(dst, sizeof(dst), "/scumm/%s/%s", gd.subdir, fh.name)
+    if (std::snprintf(dst, sizeof(dst), "/scumm/%s/%s", gd.subdir, fs_name)
             >= (int)sizeof(dst)) return false;
     char sub[40];
     std::snprintf(sub, sizeof(sub), "/scumm/%s", gd.subdir);
@@ -927,12 +975,12 @@ static bool extract_one(PcvStream &ps, const FileChunkHeader &fh,
     fc->before_fatfs_op();
     if (f_open(&outfp, dst, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return false;
 
-    tsb::platform::preload_progress(gd.display_name, fh.name, 0);
+    tsb::platform::preload_progress(gd.display_name, fs_name, 0);
 
     DclSrc  src  = { &ps, dcl_left };
     DclSink sink = { &outfp, xor_byte, {}, 0, false,
                      fh.unpacked_size, 0, -1,
-                     gd.display_name, fh.name, fc };
+                     gd.display_name, fs_name, fc };
 
     bool ok = tsb::DclDecoder::decode(dcl_src_get, &src,
                                       dcl_sink_put, &sink,
