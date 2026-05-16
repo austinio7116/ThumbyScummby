@@ -253,7 +253,7 @@ static bool discover_chains(PcvChain *chains, int max_chains, int *n_chains) {
     DIR d;
     if (f_opendir(&d, "/scumm") == FR_OK) {
         FILINFO fi;
-        char sub[64];
+        char sub[280];   // /scumm/ + FF_LFN_BUF_LEN(255) + NUL
         for (;;) {
             if (f_readdir(&d, &fi) != FR_OK || fi.fname[0] == 0) break;
             if (!(fi.fattrib & AM_DIR)) continue;
@@ -535,11 +535,18 @@ static int dcl_src_get(void *u) {
 }
 
 struct DclSink {
-    FIL    *out_fp;
-    uint8_t xor_byte;
-    uint8_t buf[512];
-    uint32_t pos;
-    bool   err;
+    FIL        *out_fp;
+    uint8_t     xor_byte;
+    uint8_t     buf[512];
+    uint32_t    pos;
+    bool        err;
+    // Progress reporting state — DCL is slow enough on flash that
+    // we need per-percent UI updates or the install looks frozen.
+    uint32_t    total_size;
+    uint32_t    written;
+    int         last_pct;
+    const char *display_name;
+    const char *current_file;
 };
 static bool flush_dcl_sink(DclSink *s) {
     if (s->pos == 0) return true;
@@ -555,6 +562,18 @@ static bool dcl_sink_put(uint8_t b, void *u) {
     DclSink *s = (DclSink *)u;
     if (s->err) return false;
     s->buf[s->pos++] = (uint8_t)(b ^ s->xor_byte);
+    s->written++;
+    // Throttle UI paints to one per percent — each paint is a
+    // full-frame LCD blit + DMA wait (~80 ms), so painting per byte
+    // would dominate install time.
+    if (s->total_size > 0) {
+        int pct = (int)((s->written * 100u) / s->total_size);
+        if (pct != s->last_pct) {
+            s->last_pct = pct;
+            tsb::platform::preload_progress(s->display_name,
+                                            s->current_file, pct);
+        }
+    }
     if (s->pos == sizeof(s->buf)) {
         return flush_dcl_sink(s);
     }
@@ -594,7 +613,9 @@ static bool extract_one(PcvStream &ps, const FileChunkHeader &fh,
     tsb::platform::preload_progress(gd.display_name, fh.name, 0);
 
     DclSrc  src  = { &ps, dcl_left };
-    DclSink sink = { &outfp, xor_byte, {}, 0, false };
+    DclSink sink = { &outfp, xor_byte, {}, 0, false,
+                     fh.unpacked_size, 0, -1,
+                     gd.display_name, fh.name };
 
     bool ok = tsb::DclDecoder::decode(dcl_src_get, &src,
                                       dcl_sink_put, &sink,
