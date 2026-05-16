@@ -1,7 +1,26 @@
-// PCV install pipeline — Stage A.  See pcv_install.h for the
-// design / scope decisions.  Algorithm correctness was verified
-// against host-side Python + standalone C++ reference build that
-// MD5-matches every file in MI1's PCV chain (see commit 69c644b).
+// PCV install pipeline — Stage B.  Stage A is preserved at commit
+// 8acaf53 if you need to bisect.  Differences from Stage A:
+//
+//   * Once a PCV has been located inside a .img (via FatFs at probe
+//     time), the .img is NOT read through FatFs anymore — we walk
+//     the .img's outer FAT16 chain ourselves with disk_read of one
+//     cluster at a time.  As each outer cluster is consumed, we
+//     immediately free it on the shared FAT16 via OuterFatCache so
+//     the .img shrinks while it's being read.
+//
+//   * At the end of each .img we clear its directory entry manually
+//     (the file's chain is already broken — FatFs's f_unlink would
+//     not survive that), so the .img is fully gone from /scumm/.
+//
+// This keeps peak shared-FAT usage during install down to roughly
+// (largest extracted file so far) + (last KB of the .img we're
+// currently reading) instead of the full pile of .imgs.
+//
+// Stage B assumes the PCV's inner FAT12 chain and the .img's outer
+// FAT16 chain are both sequential (cluster N → cluster N+1).  This
+// holds for fresh LucasArts install disks copied onto a fresh shared
+// FAT, which is the only environment we support.  We verify at probe
+// time and bail with a log message if not.
 
 #include "pcv_install.h"
 
@@ -11,11 +30,18 @@
 
 extern "C" {
 #include "ff.h"
+#include "diskio.h"
 }
 
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+
+// Defined in platform_pico.cpp — exposes the mounted shared-FAT
+// volume so we can do raw FAT16 / dir-entry manipulation.
+namespace tsb { namespace platform_pico {
+FATFS *get_fatfs();
+}}
 
 namespace tsb {
 namespace preload {
@@ -24,11 +50,9 @@ namespace {
 
 // ===========================================================================
 // FAT12 helpers — operating on a single outer .img file via FatFs f_read.
+// Used at probe time only.  After probing, we close the FIL and switch to
+// raw outer-cluster reads (see RawImgReader below).
 // ===========================================================================
-//
-// We use FatFs to read raw sectors of each .img (treating it as just a
-// byte blob).  Inside, the .img is FAT12-formatted 1.44 MB or 720 KB
-// DOS floppy — we walk its BPB / FAT / root manually.
 
 struct ImgGeometry {
     uint16_t bytes_per_sector;
@@ -74,8 +98,6 @@ static bool parse_geometry(FIL *fp, ImgGeometry *g) {
     return true;
 }
 
-// FAT12 cluster chain step.  Returns next cluster, or 0xFFF on
-// EOC/error (caller treats >= 0xFF8 as EOC).
 static uint16_t fat12_next(FIL *fp, const ImgGeometry &g, ImgFatCache &c,
                            uint16_t cluster) {
     uint32_t off  = (uint32_t)cluster + ((uint32_t)cluster >> 1);
@@ -96,15 +118,15 @@ static uint16_t fat12_next(FIL *fp, const ImgGeometry &g, ImgFatCache &c,
     return (cluster & 1) ? (raw >> 4) : (raw & 0x0FFFu);
 }
 
-// Walk the .img's root dir.  For each non-deleted file entry, invoke
-// cb(name11, start_cluster, size); cb returns false to stop early.
+// Walk the .img's root dir.  cb(name11, start_cluster, size) returns
+// false to stop early.
 template <typename CB>
 static bool walk_img_root(FIL *fp, const ImgGeometry &g, CB cb) {
     const uint32_t root_secs = (g.root_entries * 32u + 511u) / 512u;
     uint8_t buf[512];
     for (uint32_t rs = 0; rs < root_secs; ++rs) {
         if (!read_img_sector(fp, g.root_first_sec + rs, buf)) return false;
-        for (uint32_t e = 0; e < 16; ++e) {       // 16 entries per 512 B sec
+        for (uint32_t e = 0; e < 16; ++e) {
             const uint8_t *p = buf + e * 32;
             if (p[0] == 0) return true;
             if (p[0] == 0xE5) continue;
@@ -121,30 +143,35 @@ static bool walk_img_root(FIL *fp, const ImgGeometry &g, CB cb) {
     return true;
 }
 
+// Confirm the PCV's inner FAT12 chain is sequential — cluster N → N+1.
+// Stage B assumes this for the streaming reader.
+static bool verify_sequential_inner_chain(FIL *fp, const ImgGeometry &g,
+                                          uint16_t start, uint32_t size) {
+    const uint32_t cb = (uint32_t)g.sectors_per_cluster * 512u;
+    const uint32_t n  = (size + cb - 1) / cb;
+    ImgFatCache fc{}; fc.sector = -1;
+    uint16_t cur = start;
+    for (uint32_t i = 1; i < n; ++i) {
+        uint16_t next = fat12_next(fp, g, fc, cur);
+        if (next != (uint16_t)(cur + 1)) return false;
+        cur = next;
+    }
+    return true;
+}
+
 // ===========================================================================
 // PCV chain discovery
 // ===========================================================================
-//
-// Each PCV inside a .img has a fixed-pattern 11-byte name:
-//   MI1 :   "PCV10__?MI1" (? = chain letter A..C)
-//   MI2 :   "PCV10__?MI2" (? = A..E)
-//   Indy4:  "PCVIQA_?ND4" (? = A..F)
-//
-// We match by prefix to figure out which game's chain a particular
-// PCV belongs to, then the chain letter at byte 8 to order them.
 
 struct PcvPattern {
-    const char *prefix;      // 8 chars to match in inner_name[0..7]
-    const char *suffix;      // 3 chars to match in inner_name[8..10]
-    int         letter_off;  // = 7 (chain letter is byte 7 inside the 11)
+    const char *prefix;
+    const char *suffix;
+    int         letter_off;
 };
-
 static const PcvPattern kPatternMI1   = { "PCV10__", "MI1", 7 };
 static const PcvPattern kPatternMI2   = { "PCV10__", "MI2", 7 };
 static const PcvPattern kPatternIndy4 = { "PCVIQA_", "ND4", 7 };
 
-// Returns descriptor index for the game whose pattern matches this
-// 11-byte inner filename, or -1.
 static const GameDescriptor *match_pcv_pattern(const char *name11,
                                                char *out_letter) {
     auto try_match = [&](const PcvPattern &pat) -> bool {
@@ -162,7 +189,6 @@ static const GameDescriptor *match_pcv_pattern(const char *name11,
     return nullptr;
 }
 
-// One PCV source identified inside one .img.
 struct PcvSource {
     char     img_path[64];
     char     inner_name[12];
@@ -170,6 +196,13 @@ struct PcvSource {
     uint16_t inner_start_cluster;
     uint32_t inner_size;
     ImgGeometry geom;
+
+    // Stage B: outer-FAT info captured from FatFs at probe time so we
+    // can later walk the .img's outer cluster chain ourselves.
+    DWORD    outer_first_cluster;
+    uint32_t outer_size_bytes;
+    char     parent_dir[48];   // e.g. "/scumm" or "/scumm/mi2"
+    char     basename_83[12];  // 8.3 form for outer dir-entry match
 };
 
 struct PcvChain {
@@ -178,8 +211,46 @@ struct PcvChain {
     int       count;
 };
 
-// Inspect one .img: try to identify a single PCV file inside.
-// Returns true on success and fills `out` with the source info.
+// Convert "DISK01.IMG" or "disk01.img" into the FAT 8.3 dir-entry
+// representation: 8 name chars + 3 ext chars, uppercase, space-padded.
+static void to_83(const char *fname, char *out11) {
+    std::memset(out11, ' ', 11);
+    int oi = 0;
+    const char *p = fname;
+    while (*p && *p != '.' && oi < 8) {
+        char c = *p++;
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        out11[oi++] = c;
+    }
+    while (*p && *p != '.') ++p;
+    if (*p == '.') ++p;
+    oi = 8;
+    while (*p && oi < 11) {
+        char c = *p++;
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        out11[oi++] = c;
+    }
+}
+
+static void split_path(const char *path, char *parent_out, size_t parent_size,
+                       char *basename_out, size_t basename_size) {
+    const char *slash = std::strrchr(path, '/');
+    if (!slash) {
+        std::snprintf(parent_out, parent_size, ".");
+        std::snprintf(basename_out, basename_size, "%s", path);
+        return;
+    }
+    size_t dl = (size_t)(slash - path);
+    if (dl == 0) {
+        std::snprintf(parent_out, parent_size, "/");
+    } else {
+        if (dl >= parent_size) dl = parent_size - 1;
+        std::memcpy(parent_out, path, dl);
+        parent_out[dl] = 0;
+    }
+    std::snprintf(basename_out, basename_size, "%s", slash + 1);
+}
+
 static bool probe_img(const char *path, PcvSource *out,
                       const GameDescriptor **out_gd) {
     FIL fp;
@@ -192,7 +263,7 @@ static bool probe_img(const char *path, PcvSource *out,
                               uint32_t sz) -> bool {
         char letter = 0;
         const GameDescriptor *gd = match_pcv_pattern(name11, &letter);
-        if (!gd) return true;   // not a PCV — keep scanning
+        if (!gd) return true;
         std::memcpy(out->inner_name, name11, 12);
         out->chain_letter        = letter;
         out->inner_start_cluster = sc;
@@ -203,12 +274,30 @@ static bool probe_img(const char *path, PcvSource *out,
         found = true;
         return false;
     });
+
+    if (found) {
+        // Verify the PCV is a contiguous run of inner clusters so the
+        // sequential Stage B reader is safe.
+        if (!verify_sequential_inner_chain(&fp, g, out->inner_start_cluster,
+                                           out->inner_size)) {
+            tsb::platform::log("[pcv] %s: PCV not sequential\n", path);
+            found = false;
+        } else {
+            // Capture outer-FAT info from the open FIL.
+            out->outer_first_cluster = fp.obj.sclust;
+            out->outer_size_bytes    = (uint32_t)fp.obj.objsize;
+            char basename[24];
+            split_path(path, out->parent_dir, sizeof(out->parent_dir),
+                       basename, sizeof(basename));
+            to_83(basename, out->basename_83);
+            out->basename_83[11] = 0;
+        }
+    }
+
     f_close(&fp);
     return found;
 }
 
-// Scan /scumm/ root + one level of subdirs for .img files; group by
-// game.  Returns true if any chain was found.
 static bool discover_chains(PcvChain *chains, int max_chains, int *n_chains) {
     *n_chains = 0;
 
@@ -249,11 +338,10 @@ static bool discover_chains(PcvChain *chains, int max_chains, int *n_chains) {
     };
 
     scan_dir("/scumm");
-    // Also peek one level of subdir
     DIR d;
     if (f_opendir(&d, "/scumm") == FR_OK) {
         FILINFO fi;
-        char sub[280];   // /scumm/ + FF_LFN_BUF_LEN(255) + NUL
+        char sub[280];
         for (;;) {
             if (f_readdir(&d, &fi) != FR_OK || fi.fname[0] == 0) break;
             if (!(fi.fattrib & AM_DIR)) continue;
@@ -264,7 +352,6 @@ static bool discover_chains(PcvChain *chains, int max_chains, int *n_chains) {
         f_closedir(&d);
     }
 
-    // Sort each chain by letter (insertion sort — at most 8 entries)
     for (int c = 0; c < *n_chains; ++c) {
         PcvChain &ch = chains[c];
         for (int i = 1; i < ch.count; ++i) {
@@ -281,193 +368,409 @@ static bool discover_chains(PcvChain *chains, int max_chains, int *n_chains) {
 }
 
 // ===========================================================================
-// PCV byte stream — pulls bytes from the embedded PCV file in each
-// .img in sequence, transparently crossing PCV boundaries.  The
-// caller asks for individual bytes (or skips ahead by N), and we
-// walk the inner FAT12 chain of each PCV.
-//
-// At PCV boundary crossings, the LFG! header (8 bytes) on the
-// continuation PCVs is automatically skipped.
-//
-// For Stage A: when a PCV (and therefore its .img) is fully drained,
-// we close the .img's FIL, f_unlink it, and open the next .img.
-// Stage B will add incremental cluster freeing inside this loop.
+// Stage B raw .img reading + outer-FAT manipulation
 // ===========================================================================
+//
+// All three of these helpers (OuterFatCache, RawImgReader, the dir-
+// entry clear) talk directly to the block device via disk_read/
+// disk_write, bypassing FatFs.  They coordinate with FatFs's single
+// cached window (fs->win / fs->winsect / fs->wflag) so reads/writes
+// stay coherent when interleaved with f_write on the output file.
+
+static constexpr DWORD kInvalidSec = (DWORD)-1;
+
+// If FatFs has cached the given sector and it's dirty, push it to disk
+// so a subsequent disk_read of that sector sees the latest bytes.
+static void fatfs_sync_if_dirty(FATFS *fs, DWORD sec) {
+    if (fs->winsect == sec && fs->wflag) {
+        disk_write(fs->pdrv, fs->win, sec, 1);
+        fs->wflag = 0;
+    }
+}
+
+// If FatFs has cached the given sector, invalidate it so the next
+// move_window re-reads from disk.  Call after we disk_write to that
+// sector ourselves.
+static void fatfs_invalidate_window(FATFS *fs, DWORD sec) {
+    if (fs->winsect == sec) {
+        fs->wflag = 0;
+        fs->winsect = (LBA_t)kInvalidSec;
+    }
+}
+
+// Batched cache for one FAT16 sector.  Reads through disk_read,
+// writes through disk_write (to every FAT copy on the volume),
+// coordinated with FatFs's win cache.
+class OuterFatCache {
+public:
+    OuterFatCache(FATFS *fs)
+        : _fs(fs), _sector(kInvalidSec), _dirty(false) {}
+
+    ~OuterFatCache() { flush(); }
+
+    DWORD get(DWORD cluster) {
+        DWORD off = cluster * 2;
+        DWORD sec = _fs->fatbase + off / 512;
+        DWORD bof = off % 512;
+        if (!load(sec)) return 0xFFFF;
+        return (DWORD)(_buf[bof] | (_buf[bof + 1] << 8));
+    }
+
+    void set(DWORD cluster, DWORD value) {
+        DWORD off = cluster * 2;
+        DWORD sec = _fs->fatbase + off / 512;
+        DWORD bof = off % 512;
+        if (!load(sec)) return;
+        _buf[bof]     = (uint8_t)(value & 0xFF);
+        _buf[bof + 1] = (uint8_t)((value >> 8) & 0xFF);
+        _dirty = true;
+    }
+
+    bool flush() {
+        if (!_dirty || _sector == kInvalidSec) { _dirty = false; return true; }
+        if (disk_write(_fs->pdrv, _buf, _sector, 1) != RES_OK) {
+            _dirty = false;
+            return false;
+        }
+        for (BYTE i = 1; i < _fs->n_fats; ++i) {
+            DWORD s = _sector + _fs->fsize * i;
+            disk_write(_fs->pdrv, _buf, s, 1);
+        }
+        _dirty = false;
+        // Anything FatFs had cached for our FAT copies is now stale.
+        for (BYTE i = 0; i < _fs->n_fats; ++i) {
+            fatfs_invalidate_window(_fs, _sector + _fs->fsize * i);
+        }
+        return true;
+    }
+
+    // Flush + drop our cache.  Call before any FatFs op that might
+    // touch the FAT (e.g. an output f_write that allocates a cluster).
+    void before_fatfs_op() {
+        flush();
+        _sector = kInvalidSec;
+    }
+
+private:
+    FATFS *_fs;
+    DWORD  _sector;
+    bool   _dirty;
+    uint8_t _buf[512];
+
+    bool load(DWORD sec) {
+        if (_sector == sec) return true;
+        flush();
+        fatfs_sync_if_dirty(_fs, sec);
+        if (disk_read(_fs->pdrv, _buf, sec, 1) != RES_OK) {
+            _sector = kInvalidSec;
+            return false;
+        }
+        _sector = sec;
+        return true;
+    }
+};
+
+// Sequential .img byte reader.  Walks the outer FAT16 chain one
+// cluster at a time, frees each consumed outer cluster immediately,
+// and reads the next via disk_read directly.  Bypasses FatFs entirely
+// for the data — coordinates with its window cache as needed.
+class RawImgReader {
+public:
+    RawImgReader()
+        : _fs(nullptr), _fc(nullptr), _cur_cluster(0), _cluster_loaded(false),
+          _byte_in_cluster(0), _csize_bytes(0), _img_size(0),
+          _byte_pos(0), _eof(false) {}
+
+    bool open(const PcvSource &src, FATFS *fs, OuterFatCache *fc) {
+        _fs = fs;
+        _fc = fc;
+        _csize_bytes = (uint32_t)_fs->csize * 512u;
+        _cur_cluster = src.outer_first_cluster;
+        _byte_in_cluster = 0;
+        _cluster_loaded = false;
+        _img_size = src.outer_size_bytes;
+        _byte_pos = 0;
+        _eof = false;
+        if (_cur_cluster < 2 || _cur_cluster >= 0xFFF8) {
+            _eof = true;
+            return false;
+        }
+        return true;
+    }
+
+    uint32_t read(uint8_t *out, uint32_t n) {
+        uint32_t got = 0;
+        while (got < n && !_eof) {
+            if (_byte_in_cluster >= _csize_bytes) {
+                if (!advance_outer()) break;
+            }
+            if (!ensure_loaded()) break;
+            uint32_t cluster_remaining = _csize_bytes - _byte_in_cluster;
+            uint32_t take = (n - got < cluster_remaining)
+                          ? (n - got) : cluster_remaining;
+            std::memcpy(out + got, _cluster_buf + _byte_in_cluster, take);
+            _byte_in_cluster += take;
+            _byte_pos += take;
+            got += take;
+        }
+        return got;
+    }
+
+    bool skip(uint32_t n) {
+        while (n > 0 && !_eof) {
+            if (_byte_in_cluster >= _csize_bytes) {
+                if (!advance_outer()) return false;
+            }
+            uint32_t cluster_remaining = _csize_bytes - _byte_in_cluster;
+            uint32_t take = (n < cluster_remaining) ? n : cluster_remaining;
+            _byte_in_cluster += take;
+            _byte_pos += take;
+            n -= take;
+        }
+        return n == 0;
+    }
+
+    // Free any outer clusters still in the .img's chain after the
+    // current one (we've stopped reading partway through the file).
+    void free_remaining() {
+        if (_eof) return;
+        // The current cluster is still allocated and partially read.
+        DWORD c = _cur_cluster;
+        while (c >= 2 && c < 0xFFF8) {
+            DWORD next = _fc->get(c);
+            _fc->set(c, 0);
+            c = next;
+        }
+        _eof = true;
+    }
+
+private:
+    FATFS *_fs;
+    OuterFatCache *_fc;
+    DWORD _cur_cluster;
+    bool  _cluster_loaded;
+    uint32_t _byte_in_cluster;
+    uint32_t _csize_bytes;
+    uint32_t _img_size;
+    uint32_t _byte_pos;
+    bool _eof;
+    uint8_t _cluster_buf[1024];   // matches typical ThumbyOne csize
+
+    bool ensure_loaded() {
+        if (_cluster_loaded) return true;
+        if (_cur_cluster < 2 || _cur_cluster >= 0xFFF8) {
+            _eof = true;
+            return false;
+        }
+        if (_csize_bytes > sizeof(_cluster_buf)) {
+            tsb::platform::log("[pcv] csize %u too large\n",
+                               (unsigned)_csize_bytes);
+            _eof = true;
+            return false;
+        }
+        DWORD sec_lba = _fs->database + (_cur_cluster - 2) * _fs->csize;
+        for (BYTE i = 0; i < _fs->csize; ++i) {
+            fatfs_sync_if_dirty(_fs, sec_lba + i);
+        }
+        if (disk_read(_fs->pdrv, _cluster_buf, sec_lba, _fs->csize) != RES_OK) {
+            _eof = true;
+            return false;
+        }
+        _cluster_loaded = true;
+        return true;
+    }
+
+    // Free the current outer cluster and walk to the next one in the
+    // chain.  The OuterFatCache batches the FAT writes per-sector.
+    bool advance_outer() {
+        DWORD next = _fc->get(_cur_cluster);
+        _fc->set(_cur_cluster, 0);
+        _cur_cluster = next;
+        _byte_in_cluster = 0;
+        _cluster_loaded = false;
+        if (_cur_cluster < 2 || _cur_cluster >= 0xFFF8) {
+            _eof = true;
+            return false;
+        }
+        return true;
+    }
+};
+
+// Find a file by 8.3 name inside a directory whose first cluster is
+// `parent_first_cluster`, and overwrite the first byte of its dir
+// entry with 0xE5.  Coordinates with FatFs's win cache.
+static bool clear_dir_entry(FATFS *fs, DWORD parent_first_cluster,
+                            const char *name11) {
+    if (parent_first_cluster < 2 || parent_first_cluster >= 0xFFF8) return false;
+    uint8_t buf[512];
+    DWORD cluster = parent_first_cluster;
+    while (cluster >= 2 && cluster < 0xFFF8) {
+        DWORD sec_lba = fs->database + (cluster - 2) * fs->csize;
+        for (BYTE sec_i = 0; sec_i < fs->csize; ++sec_i) {
+            DWORD sec = sec_lba + sec_i;
+            fatfs_sync_if_dirty(fs, sec);
+            if (disk_read(fs->pdrv, buf, sec, 1) != RES_OK) return false;
+            for (uint32_t e = 0; e < 16; ++e) {
+                uint8_t *p = buf + e * 32;
+                if (p[0] == 0) return false;        // end-of-dir, no match
+                if (p[0] == 0xE5) continue;
+                if ((p[11] & 0x0F) == 0x0F) continue;  // LFN entry
+                if (std::memcmp(p, name11, 11) == 0) {
+                    p[0] = 0xE5;
+                    if (disk_write(fs->pdrv, buf, sec, 1) != RES_OK) return false;
+                    fatfs_invalidate_window(fs, sec);
+                    return true;
+                }
+            }
+        }
+        // Walk to next cluster of the directory via FAT16.
+        DWORD off = cluster * 2;
+        DWORD fat_sec = fs->fatbase + off / 512;
+        DWORD fat_off = off % 512;
+        fatfs_sync_if_dirty(fs, fat_sec);
+        uint8_t fbuf[512];
+        if (disk_read(fs->pdrv, fbuf, fat_sec, 1) != RES_OK) return false;
+        cluster = (DWORD)(fbuf[fat_off] | (fbuf[fat_off + 1] << 8));
+    }
+    return false;
+}
+
+// ===========================================================================
+// PcvStream — bytes-of-the-PCV-chain stream on top of RawImgReader.
+// ===========================================================================
+//
+// One RawImgReader is active at a time (one .img).  When that .img's
+// PCV is drained, we finalize the reader (free remaining outer
+// clusters + clear the .img's dir entry) and open the next source.
 
 class PcvStream {
 public:
-    bool init(const PcvChain &ch);
+    bool init(const PcvChain &ch, FATFS *fs, OuterFatCache *fc);
 
-    // Read up to n bytes into out; returns actual bytes read (0 at EOF).
     uint32_t read(uint8_t *out, uint32_t n);
-
-    // Skip-forward.
-    bool skip(uint32_t n);
-
-    // True once every PCV in the chain has been fully consumed.
-    bool done() const { return _eof; }
-
-    // For the FILE-chunk parser to know where it is.
-    uint32_t global_pos() const { return _global_pos; }
-
-    void close();
+    bool     skip(uint32_t n);
+    bool     done() const { return _eof; }
+    void     close();
 
 private:
-    PcvChain     _ch;
-    int          _idx;             // current source index
-    FIL          _fp;               // current .img
-    bool         _fp_open;
-    ImgFatCache  _fat_cache;
-
-    uint16_t     _cur_cluster;     // current inner cluster of PCV
-    uint32_t     _bytes_left_in_cluster;
-    uint32_t     _bytes_left_in_pcv;
-    uint32_t     _global_pos;      // logical byte position across whole chain
-
-    uint8_t      _sec_buf[512];
-    int32_t      _sec_buf_sector;  // which absolute outer sector is buffered
-    uint32_t     _byte_in_sec;     // 0..511 — next byte to consume from _sec_buf
-    bool         _sec_buf_valid;
-
-    bool         _eof;
+    PcvChain        _ch;
+    int             _idx;
+    FATFS          *_fs;
+    OuterFatCache  *_fc;
+    RawImgReader    _reader;
+    bool            _reader_open;
+    uint32_t        _bytes_left_in_pcv;
+    bool            _eof;
 
     bool advance_to_next_source();
     bool ensure_byte_available();
-    int  next_byte_in_cluster();   // returns -1 on cluster exhausted
-    bool load_next_sector();
 };
 
-bool PcvStream::init(const PcvChain &ch) {
+bool PcvStream::init(const PcvChain &ch, FATFS *fs, OuterFatCache *fc) {
     _ch = ch;
+    _fs = fs;
+    _fc = fc;
     _idx = -1;
-    _fp_open = false;
+    _reader_open = false;
     _eof = false;
-    _sec_buf_valid = false;
-    _sec_buf_sector = -1;
-    _byte_in_sec = 0;
-    _global_pos = 0;
     return advance_to_next_source();
 }
 
 void PcvStream::close() {
-    if (_fp_open) {
-        f_close(&_fp);
-        _fp_open = false;
+    if (_reader_open) {
+        _reader.free_remaining();
+        _reader_open = false;
     }
 }
 
 bool PcvStream::advance_to_next_source() {
-    if (_fp_open) {
-        f_close(&_fp);
-        _fp_open = false;
-        // Stage A: unlink the .img we just finished with.
-        f_unlink(_ch.sources[_idx].img_path);
+    if (_reader_open) {
+        // We've finished this PCV — but the .img might still have
+        // outer clusters past the PCV's logical end.  Free those too
+        // before retiring the .img.
+        _reader.free_remaining();
+        // Now manually clear /scumm/.../<file>.img's dir entry.
+        const PcvSource &prev = _ch.sources[_idx];
+        DIR pd;
+        if (f_opendir(&pd, prev.parent_dir) == FR_OK) {
+            DWORD parent_sclust = pd.obj.sclust;
+            f_closedir(&pd);
+            // Make sure all our pending outer-FAT writes are on disk
+            // before we touch the directory cluster (FatFs may share
+            // its win cache between FAT and dir sectors).
+            _fc->before_fatfs_op();
+            if (!clear_dir_entry(_fs, parent_sclust, prev.basename_83)) {
+                tsb::platform::log("[pcv] dir clear fail %s\n", prev.img_path);
+            }
+        }
+        _reader_open = false;
     }
+
     _idx++;
     if (_idx >= _ch.count) { _eof = true; return false; }
     const PcvSource &s = _ch.sources[_idx];
-    if (f_open(&_fp, s.img_path, FA_READ) != FR_OK) {
-        _eof = true; return false;
+
+    if (!_reader.open(s, _fs, _fc)) {
+        tsb::platform::log("[pcv] raw open fail %s\n", s.img_path);
+        _eof = true;
+        return false;
     }
-    _fp_open = true;
-    _fat_cache.sector = -1;
-    _cur_cluster = s.inner_start_cluster;
+    _reader_open = true;
+
+    // Seek to the PCV's start byte inside the .img (skipping BPB +
+    // FAT + root + any earlier files).  RawImgReader::skip frees the
+    // outer clusters we walk past.
+    uint32_t pcv_start = (uint32_t)s.geom.data_first_sec * 512u
+                       + (uint32_t)(s.inner_start_cluster - 2)
+                         * s.geom.sectors_per_cluster * 512u;
+    if (!_reader.skip(pcv_start)) {
+        tsb::platform::log("[pcv] seek PCV start fail %s\n", s.img_path);
+        _eof = true;
+        return false;
+    }
+
     _bytes_left_in_pcv = s.inner_size;
-    _bytes_left_in_cluster = (uint32_t)s.geom.sectors_per_cluster * 512u;
-    _sec_buf_valid = false;
-    _byte_in_sec = 0;
-    // For all PCVs after the first in the chain, the first 8 bytes
-    // are an LFG! + size wrapper that the parser doesn't want — skip
-    // them silently.  The first PCV's full header (LFG! + size +
-    // next_pcv_name + count + total) is parsed by the caller, so we
-    // leave it intact.
+
+    // Continuation PCVs start with an 8-byte LFG!+size wrapper that
+    // the FILE-chunk parser doesn't expect — eat it transparently.
     if (_idx > 0) {
-        skip(8);
+        if (!skip(8)) return false;
     }
     return true;
-}
-
-bool PcvStream::load_next_sector() {
-    if (_cur_cluster < 2 || _cur_cluster >= 0xFF8) return false;
-    const PcvSource &s = _ch.sources[_idx];
-    // Which absolute outer-img sector are we at?
-    uint32_t cluster_first_sec = s.geom.data_first_sec
-                               + (uint32_t)(_cur_cluster - 2)
-                                 * s.geom.sectors_per_cluster;
-    uint32_t cluster_bytes_total = (uint32_t)s.geom.sectors_per_cluster * 512u;
-    uint32_t bytes_consumed_in_cluster = cluster_bytes_total - _bytes_left_in_cluster;
-    uint32_t sec_in_cluster = bytes_consumed_in_cluster / 512u;
-    uint32_t abs_sec = cluster_first_sec + sec_in_cluster;
-    if (!read_img_sector(&_fp, abs_sec, _sec_buf)) return false;
-    _sec_buf_sector = (int32_t)abs_sec;
-    _byte_in_sec    = bytes_consumed_in_cluster % 512u;
-    _sec_buf_valid  = true;
-    return true;
-}
-
-int PcvStream::next_byte_in_cluster() {
-    if (_bytes_left_in_cluster == 0) return -1;
-    if (!_sec_buf_valid || _byte_in_sec >= 512u) {
-        if (!load_next_sector()) return -1;
-    }
-    uint8_t b = _sec_buf[_byte_in_sec++];
-    _bytes_left_in_cluster--;
-    _bytes_left_in_pcv--;
-    if (_byte_in_sec >= 512u) _sec_buf_valid = false;
-    return b;
 }
 
 bool PcvStream::ensure_byte_available() {
-    if (_eof) return false;
-    while (true) {
-        // First gate: if the logical PCV has been fully consumed, we
-        // must advance — regardless of whether the current cluster has
-        // unread bytes left (those are filesystem residue past the
-        // file's logical end and must NOT be returned).
+    while (!_eof) {
         if (_bytes_left_in_pcv == 0) {
             if (!advance_to_next_source()) return false;
             continue;
         }
-        // We have PCV bytes to give.  If the current cluster still
-        // has byte budget, we're good.
-        if (_bytes_left_in_cluster > 0) return true;
-        // Cluster exhausted but PCV isn't — step the inner FAT12 chain.
-        const PcvSource &s = _ch.sources[_idx];
-        uint16_t next_cl = fat12_next(&_fp, s.geom, _fat_cache, _cur_cluster);
-        if (next_cl < 2 || next_cl >= 0xFF8) {
-            // Inner chain ended early — surrender this PCV and move on.
-            if (!advance_to_next_source()) return false;
-            continue;
-        }
-        _cur_cluster = next_cl;
-        // Take the full cluster's worth of byte budget here; the
-        // _bytes_left_in_pcv gate above guarantees we stop reading at
-        // the right place even when the file's logical end falls
-        // partway through this cluster.
-        _bytes_left_in_cluster = (uint32_t)s.geom.sectors_per_cluster * 512u;
-        _sec_buf_valid = false;
+        return true;
     }
+    return false;
 }
 
 uint32_t PcvStream::read(uint8_t *out, uint32_t n) {
     uint32_t got = 0;
     while (got < n) {
         if (!ensure_byte_available()) break;
-        int b = next_byte_in_cluster();
-        if (b < 0) break;
-        out[got++] = (uint8_t)b;
-        _global_pos++;
+        uint32_t want = n - got;
+        if (want > _bytes_left_in_pcv) want = _bytes_left_in_pcv;
+        uint32_t r = _reader.read(out + got, want);
+        if (r == 0) break;
+        got += r;
+        _bytes_left_in_pcv -= r;
     }
     return got;
 }
 
 bool PcvStream::skip(uint32_t n) {
-    uint8_t scratch[64];
     while (n > 0) {
-        uint32_t take = n < sizeof(scratch) ? n : sizeof(scratch);
-        uint32_t got  = read(scratch, take);
-        if (got == 0) return false;
-        n -= got;
+        if (!ensure_byte_available()) return false;
+        uint32_t take = (n < _bytes_left_in_pcv) ? n : _bytes_left_in_pcv;
+        if (!_reader.skip(take)) return false;
+        _bytes_left_in_pcv -= take;
+        n -= take;
     }
     return true;
 }
@@ -477,15 +780,14 @@ bool PcvStream::skip(uint32_t n) {
 // ===========================================================================
 
 struct FileChunkHeader {
-    char     name[16];          // null-terminated, up to 11 chars
-    uint32_t chunk_size;        // size of the chunk content (after the 8 header bytes)
+    char     name[16];
+    uint32_t chunk_size;
     uint32_t unpacked_size;
     uint8_t  stamp[3];
     uint16_t flags;
     uint32_t reserved;
 };
 
-// Returns false at end-of-chain (no more FILE chunks).
 static bool read_file_chunk_header(PcvStream &ps, FileChunkHeader *out) {
     uint8_t hdr[8];
     uint32_t got = ps.read(hdr, 8);
@@ -495,16 +797,10 @@ static bool read_file_chunk_header(PcvStream &ps, FileChunkHeader *out) {
                     | ((uint32_t)hdr[5] << 8)
                     | ((uint32_t)hdr[6] << 16)
                     | ((uint32_t)hdr[7] << 24);
-
-    // Read 11-byte fixed filename field + 13 bytes of metadata
     uint8_t meta[24];
     if (ps.read(meta, 24) != 24) return false;
     std::memcpy(out->name, meta, 11);
     out->name[11] = 0;
-    // Trim trailing residue past first NUL
-    for (int i = 0; i < 11; ++i) {
-        if (out->name[i] == 0) { out->name[i] = 0; break; }
-    }
     std::memcpy(out->stamp, meta + 11, 3);
     out->unpacked_size = (uint32_t)meta[14]
                        | ((uint32_t)meta[15] << 8)
@@ -518,20 +814,17 @@ static bool read_file_chunk_header(PcvStream &ps, FileChunkHeader *out) {
     return true;
 }
 
-// Look up the descriptor's xor byte for a given inner filename (case-insensitive).
-// Returns 0 if not in the descriptor (means: skip / extract plain).
 static uint8_t descriptor_xor_for(const GameDescriptor &gd, const char *name) {
     if (!gd.files) return 0;
     for (const GameFile *gf = gd.files; gf->name; ++gf) {
         if (strcasecmp(gf->name, name) == 0) return gf->xor_byte;
     }
-    return 0xFF;   // 0xFF sentinel = "file unknown" (we won't write it)
+    return 0xFF;
 }
 
-// Streaming source / sink contexts for DclDecoder.
 struct DclSrc {
     PcvStream *ps;
-    uint32_t   left;     // dcl_data byte budget within this FILE chunk
+    uint32_t   left;
 };
 static int dcl_src_get(void *u) {
     DclSrc *s = (DclSrc *)u;
@@ -543,21 +836,24 @@ static int dcl_src_get(void *u) {
 }
 
 struct DclSink {
-    FIL        *out_fp;
-    uint8_t     xor_byte;
-    uint8_t     buf[512];
-    uint32_t    pos;
-    bool        err;
-    // Progress reporting state — DCL is slow enough on flash that
-    // we need per-percent UI updates or the install looks frozen.
-    uint32_t    total_size;
-    uint32_t    written;
-    int         last_pct;
-    const char *display_name;
-    const char *current_file;
+    FIL           *out_fp;
+    uint8_t        xor_byte;
+    uint8_t        buf[512];
+    uint32_t       pos;
+    bool           err;
+    uint32_t       total_size;
+    uint32_t       written;
+    int            last_pct;
+    const char    *display_name;
+    const char    *current_file;
+    OuterFatCache *fc;
 };
 static bool flush_dcl_sink(DclSink *s) {
     if (s->pos == 0) return true;
+    // f_write may allocate a new cluster for the output, modifying
+    // FAT — make sure our outer-FAT cache is committed and dropped
+    // first so we don't race FatFs's win.
+    s->fc->before_fatfs_op();
     UINT bw = 0;
     if (f_write(s->out_fp, s->buf, s->pos, &bw) != FR_OK || bw != s->pos) {
         s->err = true;
@@ -571,9 +867,6 @@ static bool dcl_sink_put(uint8_t b, void *u) {
     if (s->err) return false;
     s->buf[s->pos++] = (uint8_t)(b ^ s->xor_byte);
     s->written++;
-    // Throttle UI paints to one per percent — each paint is a
-    // full-frame LCD blit + DMA wait (~80 ms), so painting per byte
-    // would dominate install time.
     if (s->total_size > 0) {
         int pct = (int)((s->written * 100u) / s->total_size);
         if (pct != s->last_pct) {
@@ -588,34 +881,27 @@ static bool dcl_sink_put(uint8_t b, void *u) {
     return true;
 }
 
-// Decompress one FILE chunk's DCL stream into /scumm/<gd.subdir>/<name>.
-// Skips files that aren't listed in the descriptor (e.g. MONKEY.EXE).
-// Returns true on success.
 static bool extract_one(PcvStream &ps, const FileChunkHeader &fh,
-                        const GameDescriptor &gd, uint8_t *dcl_dict) {
-    // The chunk_size covers everything after "FILE"+chunk_size header,
-    // including the 24-byte inner header we just read.  DCL bytes
-    // remaining = chunk_size - 24.
+                        const GameDescriptor &gd, uint8_t *dcl_dict,
+                        OuterFatCache *fc) {
     uint32_t dcl_left = fh.chunk_size - 24;
 
-    // Skip files we don't recognise
     uint8_t xor_byte = descriptor_xor_for(gd, fh.name);
     if (xor_byte == 0xFF) {
-        // Not in descriptor — skip its DCL data entirely
         if (!ps.skip(dcl_left)) return false;
         return true;
     }
 
-    // Open destination
     char dst[64];
     if (std::snprintf(dst, sizeof(dst), "/scumm/%s/%s", gd.subdir, fh.name)
             >= (int)sizeof(dst)) return false;
-    // Ensure subdir
     char sub[40];
     std::snprintf(sub, sizeof(sub), "/scumm/%s", gd.subdir);
-    f_mkdir(sub);   // ignore FR_EXIST
+    fc->before_fatfs_op();
+    f_mkdir(sub);
 
     FIL outfp;
+    fc->before_fatfs_op();
     if (f_open(&outfp, dst, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return false;
 
     tsb::platform::preload_progress(gd.display_name, fh.name, 0);
@@ -623,21 +909,21 @@ static bool extract_one(PcvStream &ps, const FileChunkHeader &fh,
     DclSrc  src  = { &ps, dcl_left };
     DclSink sink = { &outfp, xor_byte, {}, 0, false,
                      fh.unpacked_size, 0, -1,
-                     gd.display_name, fh.name };
+                     gd.display_name, fh.name, fc };
 
     bool ok = tsb::DclDecoder::decode(dcl_src_get, &src,
                                       dcl_sink_put, &sink,
                                       dcl_dict,
                                       fh.unpacked_size);
     if (!sink.err) flush_dcl_sink(&sink);
+    fc->before_fatfs_op();
     f_close(&outfp);
     if (!ok || sink.err) {
         tsb::platform::log("[pcv] extract fail %s\n", fh.name);
+        fc->before_fatfs_op();
         f_unlink(dst);
         return false;
     }
-    // DCL may have left bytes unread inside the chunk (padding after EOS).
-    // Skip up to the next FILE chunk.
     if (src.left > 0) {
         if (!ps.skip(src.left)) return false;
     }
@@ -648,15 +934,15 @@ static bool extract_one(PcvStream &ps, const FileChunkHeader &fh,
 // Top-level: install one PCV chain
 // ===========================================================================
 
-static bool install_chain(const PcvChain &ch) {
+static bool install_chain(const PcvChain &ch, FATFS *fs) {
     const GameDescriptor &gd = *ch.gd;
     tsb::platform::log("[pcv] install %s (%d disks)\n", gd.subdir, ch.count);
 
-    PcvStream ps;
-    if (!ps.init(ch)) return false;
+    OuterFatCache fc(fs);
 
-    // Parse PCV-A header — 8 bytes LFG! + size + 20 bytes (next_pcv_name [14],
-    // count [2], total_size [4]).  We only need to skip them.
+    PcvStream ps;
+    if (!ps.init(ch, fs, &fc)) return false;
+
     uint8_t hdr[28];
     if (ps.read(hdr, 28) != 28) { ps.close(); return false; }
     if (std::memcmp(hdr, "LFG!", 4) != 0) {
@@ -671,11 +957,12 @@ static bool install_chain(const PcvChain &ch) {
     bool ok = true;
     FileChunkHeader fh;
     while (read_file_chunk_header(ps, &fh)) {
-        if (!extract_one(ps, fh, gd, dcl_dict)) { ok = false; break; }
+        if (!extract_one(ps, fh, gd, dcl_dict, &fc)) { ok = false; break; }
     }
 
     std::free(dcl_dict);
     ps.close();
+    fc.flush();
     return ok;
 }
 
@@ -686,13 +973,16 @@ static bool install_chain(const PcvChain &ch) {
 // ===========================================================================
 
 bool install_pcv_imgs() {
+    FATFS *fs = tsb::platform_pico::get_fatfs();
+    if (!fs) return false;
+
     PcvChain chains[4];
     int n = 0;
     if (!discover_chains(chains, 4, &n)) return false;
 
     bool any = false;
     for (int i = 0; i < n; ++i) {
-        if (install_chain(chains[i])) any = true;
+        if (install_chain(chains[i], fs)) any = true;
     }
     return any;
 }

@@ -1348,4 +1348,11 @@ const char *game_subdir() {
     return tsb::g_current_game ? tsb::g_current_game->subdir : "";
 }
 
+#ifdef TSB_DATA_FATFS
+// Expose the mounted shared-FAT volume so pcv_install can do raw
+// FAT16 / directory-entry manipulation when it needs to free
+// outer-cluster space mid-install.  Returns null before init_all().
+FATFS *get_fatfs() { return g_fs_ok ? &g_fs : nullptr; }
+#endif
+
 }  // namespace tsb::platform_pico
