@@ -86,26 +86,35 @@ bool write_marker(const char *subdir, const GameDescriptor &gd) {
     return ok;
 }
 
-// Cheap "this file is already decrypted" sniff so we can safely
-// migrate users who hand-decrypted with the old python tool and
-// dropped files into /scumm/<sub>/ before the .thumbyscummby marker
-// existed.  Every LucasArts SCUMM chunk header starts with an
-// uppercase ASCII tag ('LE', 'FO', 'LF', 'OB', etc.) — plain bytes
-// land in 'A'..'Z'.  XOR'd-by-0x69 bytes for those tags land in the
-// 0x00..0x40 punctuation range and never look like uppercase letters.
-// A two-byte test is robust enough; if both first bytes are A..Z we
-// treat the file as plain and skip the XOR pass.
+// "Already decrypted" sniff for safe migration of users who
+// hand-decrypted (tools/decrypt_scumm_data.py) before the .thumbyscummby
+// marker existed.  LucasArts chunk headers always contain uppercase
+// ASCII tags within the first 8 bytes:
+//   v4 SMALL_HEADER LEC: uint32 size + 'LE'/'FO'/'OB' at offset 4-5
+//   v5 HD .000/.001:     'LECF' at offset 0-3 (big-endian tag)
+// Plain bytes in those positions land in 'A'..'Z'.  XOR'd-by-0x69
+// turns those same letters into 0x25..0x33 punctuation, so a
+// decrypted file is guaranteed to expose ≥2 upper-ASCII letters
+// in the first 8 bytes while an encrypted file exposes 0.
+//
+// The previous version only looked at bytes 0-1 — but in v4 .LEC
+// those are the LOW 16 bits of the file size (e.g. 0x4A 0xC6 for
+// DISK01.LEC), so the test missed already-plain v4 files and the
+// XOR pass *re-encrypted* them.
 bool looks_already_plain(const char *path) {
     FIL fp;
     if (f_open(&fp, path, FA_READ) != FR_OK) return false;
-    uint8_t buf[2] = {0, 0};
+    uint8_t buf[8] = {0};
     UINT br = 0;
     bool ok = (f_read(&fp, buf, sizeof(buf), &br) == FR_OK)
            && br == sizeof(buf);
     f_close(&fp);
     if (!ok) return false;
-    auto upper = [](uint8_t c) { return c >= 'A' && c <= 'Z'; };
-    return upper(buf[0]) && upper(buf[1]);
+    int letters = 0;
+    for (int i = 0; i < 8; ++i) {
+        if (buf[i] >= 'A' && buf[i] <= 'Z') ++letters;
+    }
+    return letters >= 2;
 }
 
 // XOR-decrypt a file in place.  Open for r/w, read a chunk, XOR each
@@ -123,9 +132,9 @@ bool decrypt_in_place(const char *path,
                       int file_count) {
     if (xor_byte == 0) return true;
     if (looks_already_plain(path)) {
-        tsb::platform::log("[preload] skip %s\n", short_name);
-        // Still paint progress so the user sees the bar advance even
-        // when the file is a fast-path skip.
+        // Already-decrypted fast path — paint progress so the bar
+        // still advances but stay out of the log; this is the common
+        // case once the install has run once.
         const int overall_pct =
             ((file_index + 1) * 100) / (file_count > 0 ? file_count : 1);
         tsb::platform::preload_progress(display_name, short_name,
@@ -560,8 +569,6 @@ bool run_one(const GameDescriptor &gd) {
 
     if (!required_files_present(gd)) return false;
 
-    tsb::platform::log("[preload] start %s\n", gd.subdir);
-
     // Count files that actually need a decrypt pass (xor_byte != 0)
     // so progress percentage tracks real work, not 8 helper-LFL
     // no-ops.
@@ -605,8 +612,6 @@ bool run_one(const GameDescriptor &gd) {
         tsb::platform::log("[preload] mark fail\n");
         return false;
     }
-
-    tsb::platform::log("[preload] done %s\n", gd.subdir);
     return true;
 }
 
