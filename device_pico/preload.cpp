@@ -133,13 +133,14 @@ bool decrypt_in_place(const char *path,
                       int file_count) {
     if (xor_byte == 0) return true;
     if (looks_already_plain(path)) {
-        // Already-decrypted fast path — paint progress so the bar
-        // still advances but stay out of the log; this is the common
-        // case once the install has run once.
-        const int overall_pct =
-            ((file_index + 1) * 100) / (file_count > 0 ? file_count : 1);
-        tsb::platform::preload_progress(display_name, short_name,
-                                        overall_pct);
+        // Already-decrypted fast path — silent, no UI update.  This
+        // is the common case after either a manual decrypt-on-host
+        // workflow or a PCV install that already produced plain
+        // bytes (Stage A flow): if we painted progress here the user
+        // would see a confusing "second pass" right after the
+        // install finishes.
+        (void)display_name; (void)short_name;
+        (void)file_index;   (void)file_count;
         return true;
     }
 
