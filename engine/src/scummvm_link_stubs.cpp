@@ -146,10 +146,12 @@ namespace Common {
 
 // Common::File — backed by tsb::platform::data_* chunk readers.  scummvm
 // opens game files by name; we resolve them via platform helpers.
+//   v3 LFL:           00.LFL (master) + NN.LFL per-room (Indy 3 EGA)
 //   v4 floppy layout: 000.LFL / DISK01..04.LEC / 901..904.LFL
 //   v5 HD-installed:  <BASE>.000 (index) + <BASE>.001 (data)  e.g. ATLANTIS.*
 // Suffix-based lookup handles v5 generically for any base name; exact
-// matches handle the v4 floppy file names.
+// matches handle the v4 floppy file names; size+digit pattern matches
+// v3's two-digit room files.
 static tsb::Span resolve_game_file(const String &name) {
     tsb::Span s{};
     if      (name.hasSuffixIgnoreCase(".000"))   s = tsb::platform::data_master_index();
@@ -166,6 +168,15 @@ static tsb::Span resolve_game_file(const String &name) {
     else if (name.equalsIgnoreCase("902.LFL"))    s = tsb::platform::data_helper(902);
     else if (name.equalsIgnoreCase("903.LFL"))    s = tsb::platform::data_helper(903);
     else if (name.equalsIgnoreCase("904.LFL"))    s = tsb::platform::data_helper(904);
+    // V3 per-room: NN.LFL — exactly 6 chars, 2 leading digits.
+    // (000.LFL / 901.LFL / etc. are 7 chars so they fall through
+    // the equalsIgnoreCase branches above before reaching here.)
+    else if (name.size() == 6 && name.hasSuffixIgnoreCase(".LFL") &&
+             name[0] >= '0' && name[0] <= '9' &&
+             name[1] >= '0' && name[1] <= '9') {
+        int room = (name[0] - '0') * 10 + (name[1] - '0');
+        s = tsb::platform::data_v3_room(room);
+    }
     return s;
 }
 

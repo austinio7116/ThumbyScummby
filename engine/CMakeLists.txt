@@ -65,6 +65,7 @@ add_library(thumbyscummby_engine STATIC
     src/ks_check.cpp       # Korean Hangul Jongsung checker
     src/verbs.cpp          # verb panel
     src/script.cpp         # VM core
+    src/script_v3.cpp      # v3 opcode table + o3_* (Indy 3 EGA)
     src/script_v4.cpp      # v4 saveLoadVars
     src/script_v5.cpp      # ~80 v5 opcodes
     src/scumm.cpp          # ScummEngine::init / go / setupScumm
@@ -76,6 +77,7 @@ add_library(thumbyscummby_engine STATIC
     src/charset-fontdata.cpp  # Built-in font data
     src/bomp.cpp           # decompressBomp / drawBomp
     src/resource.cpp       # ScummEngine::readIndex etc + ResourceManager
+    src/resource_v3.cpp    # v3 readRoomsOffsets + loadCharset (Indy 3 EGA)
     src/resource_v4.cpp    # ScummEngine_v4::readIndexFile
     # OLD lines below
     # src/charset.cpp.old    # needs Graphics::Font + MacGui::getFontByScummId

@@ -27,6 +27,12 @@ game data is included — you supply your own legitimately purchased install
 disks; the build script extracts them and embeds the resource files into the
 firmware image.
 
+<p align="center">
+  <img src="docs/screenshots/scumm-mi1-boot.jpg" width="260" alt="Monkey Island 1 title splash">
+  <img src="docs/screenshots/scumm-mi1-bar.jpg"  width="260" alt="MI1 — three pirates at the Scumm Bar">
+  <img src="docs/screenshots/scumm-mi1-underwater.jpg" width="260" alt="MI1 — underwater Pick Up cursor">
+</p>
+
 ---
 
 ## Player Guide
@@ -78,6 +84,12 @@ external storage is involved.
 | **MENU hold ~600 ms** | Open the in-game menu (SAVE / LOAD / VOLUME / TEXT SIZE / SPCH FONT / CANCEL). |
 | **LB + RB held together** | ESC — skip a cutscene, dismiss a banner. |
 
+<p align="center">
+  <img src="docs/screenshots/scumm-mi1-dialog.jpg" width="260" alt="Dialog response picker — pirate insult menu">
+  <img src="docs/screenshots/scumm-menu.jpg"       width="260" alt="In-game menu — save, load, volume, text size, speech font, log, lobby">
+  <img src="docs/screenshots/scumm-saveload.jpg"   width="260" alt="Save / load — 4 slots with per-slot 64×64 screenshot thumbnails">
+</p>
+
 The menu opens any time during play — volume, text size, and font are
 always reachable, including mid-cutscene.  Inside the menu only the
 two storage rows are conditional:
@@ -112,6 +124,10 @@ Esc = ESC.
 - **Speech text scale slider.**  Step the dialogue text from 75% to 100% of
   source size in 5% increments.  Default is 75%, which matches the
   scene-blit downsample; 100% is more legible at the cost of more wrapping.
+
+  <p align="center">
+    <img src="docs/screenshots/scumm-textsize.jpg" width="360" alt="TEXT SIZE slider — L/R adjust, A/B accept">
+  </p>
 - **Speech font toggle.**  Switch the dialogue font between the original
   SCUMM `CHAR` resource (faithful, with characteristic 8 px serifs) and a
   small clean LucasArts-style overlay font shipped with the project.  The

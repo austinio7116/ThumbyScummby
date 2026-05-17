@@ -17,6 +17,7 @@ extern "C" {
 #include "pico/stdlib.h"
 #include "hardware/timer.h"
 #include "hardware/clocks.h"
+#include "hardware/structs/qmi.h"
 }
 
 #include <stdarg.h>
@@ -122,8 +123,18 @@ static void parse_blob() {
 // slot_layout.h / thumbyone_fs.h / thumbyone_handoff.h are included
 // at file scope above so their C typedefs stay outside any
 // namespace.
+//
+// The shared FAT lives at THUMBYONE_FAT_OFFSET physical, but
+// scumm_remap_atrans_continuous() reconfigures ATRANS[0..3] so the
+// slot's 16 MB virtual window is anchored at its slot_phys_base.
+// Return the SLOT-RELATIVE virtual address of the FAT so the
+// engine's pointer+offset reads stay inside that continuous window
+// for files that cross the 4 MB virtual boundary (atlantis.001 is
+// ~9 MB).
 static inline const uint8_t *tsb_fat_base(void) {
-    return (const uint8_t *)THUMBYONE_XIP(THUMBYONE_FAT_OFFSET);
+    uint32_t slot_phys = (qmi_hw->atrans[0] & 0xFFFu) * 4096u;
+    return (const uint8_t *)XIP_BASE
+           + (THUMBYONE_FAT_OFFSET - slot_phys);
 }
 #else
 extern "C" {
@@ -143,31 +154,102 @@ static FileSlot g_master;                  // 000.LFL or <base>.000
 static FileSlot g_disk[4];                 // DISK01-04.LEC or <base>.001..004
 static FileSlot g_helper[4];               // 901-904.LFL
 
+// V3 LFL per-room table — Indy 3 EGA uses NN.LFL files where NN is
+// 0..63 (most are gaps; only ~30 rooms have actual data).
+// g_v3_rooms[0] is the master index (00.LFL).  Sized to 64 since
+// Indy 3's max room ID is below 60 with plenty of gaps in between.
+#define V3_ROOM_COUNT 64
+static FileSlot g_v3_rooms[V3_ROOM_COUNT];
+
 static FATFS    g_fs;
 static bool     g_fs_ok = false;       // FAT mounted AND a game detected
 static bool     g_fs_mounted = false;  // FAT mounted (no game-presence claim)
 
-// Open a file, look up its first cluster, compute the absolute flash
-// pointer.  No bytes are read or copied — the engine subsequently
-// dereferences the XIP pointer through the QSPI cache, same as the
-// TSDB / .incbin path.
+// Append one diagnostic line to /scumm/_boot.log.  Reached after a
+// hang by power-cycling into the lobby (which exposes the FAT as a
+// USB mass-storage device) and reading the file from the host.  No
+// new statics — the FIL goes on the stack and gets closed
+// immediately so a hang in the engine doesn't leave the file open.
+static void boot_log(const char *fmt, ...) {
+    FIL lf;
+    if (f_open(&lf, "/scumm/_boot.log",
+               FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
+        return;
+    }
+    char line[96];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n < 0) n = 0;
+    if (n > (int)sizeof(line) - 2) n = sizeof(line) - 2;
+    line[n++] = '\n';
+    UINT bw;
+    f_write(&lf, line, (UINT)n, &bw);
+    f_sync(&lf);
+    f_close(&lf);
+}
+
+// Walk the FAT cluster chain via f_lseek's side effect on fp->clust;
+// returns the number of non-sequential jumps (0 == fully
+// contiguous).  Called only for files we're about to expose to the
+// engine as a flat XIP blob — fragmentation there reads garbage
+// after the first jump and the engine traps before painting.
+static int count_fragmentation(FIL *fp) {
+    if (fp->obj.sclust < 2) return 0;
+    uint32_t cluster_bytes = (uint32_t)g_fs.csize * 512u;
+    if (cluster_bytes == 0) return 0;
+    uint32_t total = (uint32_t)((fp->obj.objsize + cluster_bytes - 1)
+                                 / cluster_bytes);
+    if (total <= 1) return 0;
+    DWORD first = fp->obj.sclust;
+    int gaps = 0;
+    for (uint32_t k = 1; k < total; ++k) {
+        if (f_lseek(fp, (FSIZE_t)k * cluster_bytes) != FR_OK) {
+            return -1;
+        }
+        if (fp->clust != first + k) gaps++;
+    }
+    // Reset the file pointer back to 0 for any subsequent reads.
+    (void)f_lseek(fp, 0);
+    return gaps;
+}
+
+// Open a file, look up its first cluster, compute the SLOT-RELATIVE
+// XIP pointer.  No bytes are read or copied — the engine
+// subsequently dereferences the pointer through the QSPI cache.
 //
 // Assumes the file is physically contiguous on the FAT volume.  For
 // build-time-baked images (mtools on a fresh empty volume) this is
-// always true.  When MSC writes start in step 3+, the preload-time
-// defrag pass (step 7c) keeps this invariant.
+// always true.  PCV install + MSC writes can fragment though, so
+// every resolve runs the contiguity verifier and logs gaps to
+// /scumm/_boot.log.
 static bool resolve_xip(const char *path, FileSlot *out) {
     FIL f;
     FRESULT r = f_open(&f, path, FA_READ);
-    if (r != FR_OK) return false;
+    if (r != FR_OK) {
+        boot_log("OPEN-FAIL %s rc=%d", path, (int)r);
+        return false;
+    }
     FSIZE_t sz = f_size(&f);
     DWORD   sc = f.obj.sclust;
+    int     gaps = count_fragmentation(&f);
     f_close(&f);
-    if (sz == 0 || sc < 2) return false;
+    if (sz == 0 || sc < 2) {
+        boot_log("EMPTY %s sz=%lu sc=%lu",
+                 path, (unsigned long)sz, (unsigned long)sc);
+        return false;
+    }
     // cluster_to_lba: data_base + (sclust - 2) * sectors_per_cluster
     LBA_t lba = g_fs.database + (LBA_t)(sc - 2) * g_fs.csize;
     out->data = tsb_fat_base() + (size_t)lba * 512u;
     out->size = (uint32_t)sz;
+    boot_log("XIP %s sc=%lu sz=%lu frag=%d ptr=%p",
+             path,
+             (unsigned long)sc,
+             (unsigned long)sz,
+             gaps,
+             (const void *)out->data);
     return true;
 }
 
@@ -205,7 +287,19 @@ static bool try_descriptor(const tsb::GameDescriptor &gd) {
         return true;
     }
 
-    // V3_LFL not yet wired through link-stubs file resolver — skip.
+    if (gd.variant == tsb::ContainerVariant::V3_LFL) {
+        // Indy 3 EGA: 00.LFL is the master directory; room files
+        // 01.LFL..63.LFL follow.  Many rooms are intentional gaps
+        // — only 00.LFL is treated as required.
+        snprintf(path, sizeof(path), "/scumm/%s/00.LFL", subdir);
+        if (!resolve_xip(path, &g_v3_rooms[0])) return false;
+        for (int n = 1; n < V3_ROOM_COUNT; ++n) {
+            snprintf(path, sizeof(path), "/scumm/%s/%02d.LFL", subdir, n);
+            (void)resolve_xip(path, &g_v3_rooms[n]);
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -223,23 +317,53 @@ static void parse_blob() {
     if (r != FR_OK) { g_fs_mounted = false; return; }
     g_fs_mounted = true;
 
+    // Truncate /scumm/_boot.log so each launch starts fresh, then
+    // log the ATRANS state so the host can confirm slot-relative
+    // pointer math matches their expectation.
+    {
+        FIL lf;
+        if (f_open(&lf, "/scumm/_boot.log",
+                   FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+            f_close(&lf);
+        }
+        uint32_t a0 = qmi_hw->atrans[0];
+        uint32_t a1 = qmi_hw->atrans[1];
+        uint32_t a2 = qmi_hw->atrans[2];
+        uint32_t a3 = qmi_hw->atrans[3];
+        boot_log("BOOT atrans=%08lx,%08lx,%08lx,%08lx",
+                 (unsigned long)a0, (unsigned long)a1,
+                 (unsigned long)a2, (unsigned long)a3);
+        boot_log("MOUNT csize=%u database=%lu",
+                 (unsigned)g_fs.csize,
+                 (unsigned long)g_fs.database);
+    }
+
     // Standalone builds pre-set g_current_game from TSB_GAME_X — try
     // that descriptor first and fail closed if it doesn't match.
     // Slot builds leave it null and we walk the table to auto-detect.
     if (tsb::g_current_game) {
+        boot_log("DESC pinned subdir=%s",
+                 tsb::g_current_game->subdir ? tsb::g_current_game->subdir : "?");
         if (try_descriptor(*tsb::g_current_game)) {
             g_fs_ok = true;
+            boot_log("DESC pinned OK");
+        } else {
+            boot_log("DESC pinned FAIL");
         }
         return;
     }
 
     for (int i = 0; i < tsb::kGameTableCount; ++i) {
+        boot_log("DESC try %s", tsb::kGameTable[i].subdir
+                                ? tsb::kGameTable[i].subdir : "?");
         if (try_descriptor(tsb::kGameTable[i])) {
             tsb::g_current_game = &tsb::kGameTable[i];
             g_fs_ok = true;
+            boot_log("DESC pick %s", tsb::kGameTable[i].subdir);
             return;
         }
     }
+    boot_log("DESC none");
 }
 
 #endif  // TSB_DATA_FATFS
@@ -344,6 +468,13 @@ Span data_helper(int id) {
     return Span{tsb_data_blob + g_entries[idx].offset, g_entries[idx].size};
 }
 
+Span data_v3_room(int) {
+    // V3 install workflow is FAT-only; TSDB / .incbin'd FAT builds
+    // don't ship v3 games.  Return empty so the engine reports a
+    // missing file (caught by descriptor_installed during scan).
+    return Span{nullptr, 0};
+}
+
 #else  // TSB_DATA_FATFS
 
 Span data_master_index() {
@@ -364,6 +495,14 @@ Span data_helper(int id) {
     using namespace tsb::platform_pico;
     if (!g_fs_ok || id < 901 || id > 904) return Span{nullptr, 0};
     const FileSlot &s = g_helper[id - 901];
+    if (!s.data) return Span{nullptr, 0};
+    return Span{s.data, s.size};
+}
+
+Span data_v3_room(int room) {
+    using namespace tsb::platform_pico;
+    if (!g_fs_ok || room < 0 || room >= V3_ROOM_COUNT) return Span{nullptr, 0};
+    const FileSlot &s = g_v3_rooms[room];
     if (!s.data) return Span{nullptr, 0};
     return Span{s.data, s.size};
 }
@@ -1321,7 +1460,55 @@ void lcd_dim_box(int x, int y, int w, int h) {
 // ---------------------------------------------------------------------------
 namespace tsb::platform_pico {
 
+// Reconfigure ATRANS[1..3] for the SCUMM slot's specific access
+// pattern: large game-data files mmap'd from the shared FAT into
+// XIP, indexed by a single base pointer + offset across the entire
+// 16 MB window.
+//
+// The common thumbyone_slot_init sets ATRANS[1..3] to identity over
+// physical 4..16 MB.  For most slots that's fine — DOOM walks the
+// full XIP window looking for its WAD, NES/P8/MPY read FAT files
+// via the disk_read indirection that uses thumbyone_fat_xip_addr's
+// runtime path.  But ScummVM reads game resources as raw memory
+// (Common::MemoryReadStream over a flash pointer) which only works
+// if the pointer arithmetic stays continuous — and identity
+// ATRANS[1..3] breaks continuity for any slot whose own partition
+// lives in 0..4 MB (scumm-only, no-doom-no-md, etc.), because
+// ATRANS[0]'s window then maps virtual 0..4 MB to a 4 MB strip
+// starting at the slot's flash offset (not at zero), while
+// ATRANS[1..3] still map their windows to absolute physical
+// addresses → a step discontinuity at the virtual-4-MB boundary
+// that puts engine reads several hundred KB out of place.
+//
+// Re-anchor ATRANS[1..3] to extend the slot-relative window into
+// virtual 4..16 MB.  Each slot's window now maps virtual N*4MB →
+// physical (slot_base + N*4MB), so the engine can index any flash
+// byte from virtual 0x10000000 through 0x10FFFFFF (wrapping past
+// 16 MB) with a single pointer + offset.  Used by data_master_index
+// / data_disk / data_v3_room — every engine-side file pointer goes
+// through resolve_xip which already computes its base from the
+// shared-FAT physical offset.
+//
+// Other slots are unaffected: the common init runs first (still
+// sets identity), this override only fires inside the SCUMM slot's
+// init_all.
+static void scumm_remap_atrans_continuous(void) {
+    uint32_t a0       = qmi_hw->atrans[0];
+    uint32_t slot_4kb = a0 & 0xFFFu;     // physical_base / 4 KB
+    qmi_hw->atrans[1] = (0x400u << 16) | ((slot_4kb + 0x400u) & 0xFFFu);
+    qmi_hw->atrans[2] = (0x400u << 16) | ((slot_4kb + 0x800u) & 0xFFFu);
+    qmi_hw->atrans[3] = (0x400u << 16) | ((slot_4kb + 0xC00u) & 0xFFFu);
+    __asm__ volatile("dsb" ::: "memory");
+}
+
 void init_all() {
+#ifdef TSB_THUMBYONE_SLOT
+    // Re-anchor ATRANS[1..3] before any FAT access — parse_blob
+    // mounts the volume + reads sector 0 via the new XIP pointers
+    // resolve_xip hands the engine later, so the continuous-window
+    // setup must be in place first.
+    scumm_remap_atrans_continuous();
+#endif
     parse_blob();
     lcd_init();
     buttons_init();

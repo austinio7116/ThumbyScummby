@@ -39,6 +39,13 @@ Span data_disk(int disk_id);       // DISK0n.LEC (decrypted)
 // Get a helper LFL. id is 901..904.
 Span data_helper(int id);          // 9xx.LFL (decrypted)
 
+// V3 LFL per-room (Indy 3 EGA): room 0 = 00.LFL (master index),
+// rooms 1..N = NN.LFL (per-room resource files).  Returns empty
+// Span for rooms that aren't present on the FAT.  Implemented only
+// in slot-mode FATFS builds — standalone TSDB / .incbin'd FAT
+// builds return empty Span (v3 install workflow is FAT-only).
+Span data_v3_room(int room);       // NN.LFL (decrypted)
+
 // ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------

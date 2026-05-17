@@ -6,6 +6,7 @@
 
 #include "scummvm_compat.h"
 #include "scumm/scumm.h"
+#include "scumm/scumm_v3.h"
 #include "scumm/scumm_v4.h"
 #include "scumm/scumm_v5.h"
 #include "scumm/detection.h"
@@ -69,10 +70,14 @@ static ScummEngine *create_mi2(::OSystem *osys) {
 
 // ---------------- INDY3 — Indiana Jones and the Last Crusade EGA (v3) -----
 //
-// v3 engine class; old LFL layout.  Not yet validated end-to-end —
-// engine compiles, but file-resolver in scummvm_link_stubs.cpp lacks
-// NN.LFL entries.  Listed here so the picker shows the slot; selecting
-// it won't run a game until C3/picker work adds v3 file support.
+// v3 engine class for the EGA floppy release.  Uses the per-room LFL
+// layout (00.LFL master + NN.LFL room files) wired through
+// resolve_game_file in scummvm_link_stubs.cpp + the V3_LFL branch of
+// platform_pico's try_descriptor.  GF_USE_KEY triggers ScummVM's
+// 0xFF XOR on resource reads — files in /scumm/indy3/ must be
+// pre-decrypted by the preload pass (xor_byte 0xFF in kFilesIndy3
+// below) since the device build forces setEnc to no-op (see
+// scumm/file.h's THUMBY-PORT override).
 static ScummEngine *create_indy3(::OSystem *osys) {
     DetectorResult dr = {};
     dr.game.gameid       = "indy3";
@@ -87,7 +92,7 @@ static ScummEngine *create_indy3(::OSystem *osys) {
     dr.language          = Common::EN_ANY;
     dr.extra             = "";
     dr.md5               = "";  // unvalidated
-    return new ScummEngine_v4(osys, dr);  // v3 inherits from v4 chain
+    return new ScummEngine_v3(osys, dr);
 }
 
 // ---------------- INDY4 — Fate of Atlantis Floppy DOS (v5 HD layout) ------
@@ -138,11 +143,49 @@ static const GameFile kFilesMI2[] = {
     { nullptr,       0,    false },
 };
 
+// V3 LFL files for Indy 3 EGA.  Encryption byte is 0xFF (ScummVM's
+// canonical v3 XOR key) — preload decrypts each present file in
+// place on first boot.  Only 00.LFL (the master index) is marked
+// required so the descriptor reports as installed even when the
+// original floppies ship sparse room sets (rooms 5, 10, 11, etc.
+// are intentional gaps in Indy 3 EGA).  Rooms 1..62 cover all the
+// per-room files ScummVM might call openResourceFile on at runtime;
+// missing ones drop through the resolver's empty-Span path.
 static const GameFile kFilesIndy3[] = {
-    // V3_LFL is not yet wired through the engine's file resolver, so
-    // listing the per-room NN.LFL files here is premature; the entry
-    // is here so future preload + picker work has a clear schema.
-    { nullptr, 0, false },
+    { "00.LFL", 0xFF, true  },
+    { "01.LFL", 0xFF, false }, { "02.LFL", 0xFF, false },
+    { "03.LFL", 0xFF, false }, { "04.LFL", 0xFF, false },
+    { "05.LFL", 0xFF, false }, { "06.LFL", 0xFF, false },
+    { "07.LFL", 0xFF, false }, { "08.LFL", 0xFF, false },
+    { "09.LFL", 0xFF, false }, { "10.LFL", 0xFF, false },
+    { "11.LFL", 0xFF, false }, { "12.LFL", 0xFF, false },
+    { "13.LFL", 0xFF, false }, { "14.LFL", 0xFF, false },
+    { "15.LFL", 0xFF, false }, { "16.LFL", 0xFF, false },
+    { "17.LFL", 0xFF, false }, { "18.LFL", 0xFF, false },
+    { "19.LFL", 0xFF, false }, { "20.LFL", 0xFF, false },
+    { "21.LFL", 0xFF, false }, { "22.LFL", 0xFF, false },
+    { "23.LFL", 0xFF, false }, { "24.LFL", 0xFF, false },
+    { "25.LFL", 0xFF, false }, { "26.LFL", 0xFF, false },
+    { "27.LFL", 0xFF, false }, { "28.LFL", 0xFF, false },
+    { "29.LFL", 0xFF, false }, { "30.LFL", 0xFF, false },
+    { "31.LFL", 0xFF, false }, { "32.LFL", 0xFF, false },
+    { "33.LFL", 0xFF, false }, { "34.LFL", 0xFF, false },
+    { "35.LFL", 0xFF, false }, { "36.LFL", 0xFF, false },
+    { "37.LFL", 0xFF, false }, { "38.LFL", 0xFF, false },
+    { "39.LFL", 0xFF, false }, { "40.LFL", 0xFF, false },
+    { "41.LFL", 0xFF, false }, { "42.LFL", 0xFF, false },
+    { "43.LFL", 0xFF, false }, { "44.LFL", 0xFF, false },
+    { "45.LFL", 0xFF, false }, { "46.LFL", 0xFF, false },
+    { "47.LFL", 0xFF, false }, { "48.LFL", 0xFF, false },
+    { "49.LFL", 0xFF, false }, { "50.LFL", 0xFF, false },
+    { "51.LFL", 0xFF, false }, { "52.LFL", 0xFF, false },
+    { "53.LFL", 0xFF, false }, { "54.LFL", 0xFF, false },
+    { "55.LFL", 0xFF, false }, { "56.LFL", 0xFF, false },
+    { "57.LFL", 0xFF, false }, { "58.LFL", 0xFF, false },
+    { "59.LFL", 0xFF, false }, { "60.LFL", 0xFF, false },
+    { "61.LFL", 0xFF, false }, { "62.LFL", 0xFF, false },
+    { "63.LFL", 0xFF, false },
+    { nullptr,  0,    false },
 };
 
 static const GameFile kFilesIndy4[] = {
