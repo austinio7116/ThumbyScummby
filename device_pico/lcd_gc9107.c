@@ -12,6 +12,17 @@
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
 
+#ifdef TSB_THUMBYONE_SLOT
+/* Shared PIO-PWM backlight + persisted brightness from the cross-slot
+ * settings sector. We MUST own GP7 via PIO here — driving it as a
+ * plain SIO pin (the standalone path below) re-claims the function
+ * select and breaks the picker's already-configured PWM, so the
+ * brightness slider stops working as soon as the engine starts a
+ * game. NES / P8 / MPY use this same pattern. */
+#include "thumbyone_backlight.h"
+#include "thumbyone_settings.h"
+#endif
+
 #define LCD_SPI            spi0
 #define LCD_SPI_HZ         (80 * 1000 * 1000)
 
@@ -63,8 +74,19 @@ void lcd_init(void) {
     gpio_init(PIN_DC);  gpio_set_dir(PIN_DC,  GPIO_OUT); gpio_put(PIN_DC,  1);
     gpio_init(PIN_RST); gpio_set_dir(PIN_RST, GPIO_OUT); gpio_put(PIN_RST, 1);
 
-    /* Backlight off during panel init. */
+    /* Backlight off during panel init.
+     *
+     * Standalone build drives GP7 as plain SIO and toggles it 0/1
+     * around the panel-init blackout. Slot mode keeps GP7 owned by
+     * the shared PIO-PWM module instead (init lazily); _set(0) here
+     * forces the duty floor (≈10%) which is dim enough to hide the
+     * panel-init flicker without re-claiming the pin as SIO. */
+#ifndef TSB_THUMBYONE_SLOT
     gpio_init(PIN_BL);  gpio_set_dir(PIN_BL,  GPIO_OUT); gpio_put(PIN_BL,  0);
+#else
+    thumbyone_backlight_init();
+    thumbyone_backlight_set(0);   /* clamps to BACKLIGHT_FLOOR internally */
+#endif
 
     /* Hardware reset pulse */
     sleep_ms(5);
@@ -121,8 +143,12 @@ void lcd_init(void) {
     channel_config_set_transfer_data_size(&dma_cfg, DMA_SIZE_16);
     channel_config_set_dreq(&dma_cfg, DREQ_SPI0_TX);
 
-    /* Backlight on */
+    /* Backlight on at the user's persisted brightness. */
+#ifndef TSB_THUMBYONE_SLOT
     gpio_put(PIN_BL, 1);
+#else
+    thumbyone_backlight_set(thumbyone_settings_load_brightness());
+#endif
 }
 
 void lcd_wait_idle(void) {
@@ -148,5 +174,10 @@ void lcd_present(const uint16_t *fb_rgb565) {
 }
 
 void lcd_backlight(int on) {
+#ifndef TSB_THUMBYONE_SLOT
     gpio_put(PIN_BL, on ? 1 : 0);
+#else
+    if (on) thumbyone_backlight_set(thumbyone_settings_load_brightness());
+    else    thumbyone_backlight_set(0);
+#endif
 }

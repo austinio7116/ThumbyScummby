@@ -50,6 +50,7 @@ int nes_font_width_2x(const char *text);
 #include "thumbyone_battery.h"
 #include "thumbyone_fs_stats.h"
 #include "thumbyone_backlight.h"
+#include "thumbyone_led.h"
 #include "thumbyone_settings.h"
 #include "slot_layout.h"  // THUMBYONE_SLOT_SCUMM
 #include "scumm_thumbs.h" // baked-in 64x64 4-bit indexed game art
@@ -804,6 +805,7 @@ extern "C" int scumm_picker_run(void) {
                     if (g_menu_bri > 0) {
                         g_menu_bri -= 5;
                         thumbyone_backlight_set(g_menu_bri);
+                        thumbyone_led_refresh();
                         render_menu(sel);
                     }
                 }
@@ -811,6 +813,7 @@ extern "C" int scumm_picker_run(void) {
                     if (g_menu_bri < 100) {
                         g_menu_bri += 5;
                         thumbyone_backlight_set(g_menu_bri);
+                        thumbyone_led_refresh();
                         render_menu(sel);
                     }
                 }

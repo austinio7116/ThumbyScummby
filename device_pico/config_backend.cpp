@@ -14,16 +14,46 @@
 
 #include <cstring>
 
+#ifdef TSB_THUMBYONE_SLOT
+#include "thumbyone_settings.h"
+#include "slot_layout.h"
+#endif
+
 namespace tsb {
 namespace config_backend {
 
 namespace {
 
-// 16 MB flash, save region is the top 64 KB starting at 0x00FF0000.
-// Place the config sector immediately below: 0x00FEF000 (4 KB).
-constexpr uint32_t kFlashSectorOffset = 16u * 1024u * 1024u - 64u * 1024u
-                                        - FLASH_SECTOR_SIZE;
-constexpr uintptr_t kFlashXipBase     = 0x10000000u;
+// Two flavours of "offset" because slot mode rebases the XIP window
+// via ATRANS:
+//
+//  - kFlashSectorPhysOff is the ABSOLUTE physical flash offset, used
+//    by flash_range_erase / flash_range_program (the ROM API takes
+//    physical offsets, not virtual).
+//  - kFlashSectorXipOff is the SLOT-RELATIVE offset, used to build
+//    the XIP read pointer `kFlashXipBase + xip_off`.  ATRANS[0] in
+//    slot mode maps virtual 0x10000000.. to physical slot_base..,
+//    so the right virtual address is slot_base-relative, NOT
+//    absolute.  In standalone there's no ATRANS rebase so the two
+//    values coincide.
+//
+// Standalone: top 64 KB is the save region (save_backend.cpp); the
+// config sector sits one sector below it.
+// Slot mode:  the standalone offset (16 MB - 68 KB) lands inside
+// ThumbyOne's shared FAT volume — writes there would erase a 4 KB
+// strip of file data.  Park the sector inside this slot's own
+// partition instead: one sector below this slot's high water mark.
+// SCUMM's binary is well below that (~530 KB into a 640 KB
+// partition) so the last sector is in unused headroom.
+#ifdef TSB_THUMBYONE_SLOT
+constexpr uint32_t kFlashSectorXipOff  = THUMBYONE_SCUMM_SIZE - FLASH_SECTOR_SIZE;
+constexpr uint32_t kFlashSectorPhysOff = THUMBYONE_SCUMM_OFFSET + kFlashSectorXipOff;
+#else
+constexpr uint32_t kFlashSectorXipOff  = 16u * 1024u * 1024u - 64u * 1024u
+                                         - FLASH_SECTOR_SIZE;
+constexpr uint32_t kFlashSectorPhysOff = kFlashSectorXipOff;
+#endif
+constexpr uintptr_t kFlashXipBase      = 0x10000000u;
 
 constexpr uint32_t kCfgMagic   = 0x47464354u;  // 'TCFG' (little-endian)
 constexpr uint16_t kCfgVersion = 1;
@@ -45,7 +75,7 @@ struct __attribute__((packed)) ConfigBlob {
 static_assert(sizeof(ConfigBlob) == 64, "config blob must be 64 bytes");
 
 const ConfigBlob *xip_blob() {
-	return reinterpret_cast<const ConfigBlob *>(kFlashXipBase + kFlashSectorOffset);
+	return reinterpret_cast<const ConfigBlob *>(kFlashXipBase + kFlashSectorXipOff);
 }
 
 // Read the current blob into 'out'.  Returns true if it's valid (magic +
@@ -69,8 +99,8 @@ void write_blob(const ConfigBlob &blob) {
 	std::memcpy(page, &blob, sizeof(blob));
 
 	uint32_t flags = save_and_disable_interrupts();
-	flash_range_erase  (kFlashSectorOffset, FLASH_SECTOR_SIZE);
-	flash_range_program(kFlashSectorOffset, page, FLASH_PAGE_SIZE);
+	flash_range_erase  (kFlashSectorPhysOff, FLASH_SECTOR_SIZE);
+	flash_range_program(kFlashSectorPhysOff, page, FLASH_PAGE_SIZE);
 	restore_interrupts(flags);
 }
 
@@ -78,6 +108,15 @@ void write_blob(const ConfigBlob &blob) {
 
 bool load_volume(int *out_level) {
 	if (!out_level) return false;
+#ifdef TSB_THUMBYONE_SLOT
+	// Shared 0..20 byte in the cross-slot settings mirror — every
+	// slot + the lobby read/write the same value, so changes in the
+	// lobby volume slider take effect on the next SCUMM launch and
+	// vice versa.  kAudioMixVolumeMax (20) matches the shared
+	// store's range exactly, no scaling needed.
+	*out_level = (int)thumbyone_settings_load_volume();
+	return true;
+#else
 	const ConfigBlob *blob = xip_blob();
 	if (blob->magic   != kCfgMagic)   return false;
 	if (blob->version != kCfgVersion) return false;
@@ -86,12 +125,17 @@ bool load_volume(int *out_level) {
 	if (v > kAudioMixVolumeMax) v = kAudioMixVolumeMax;
 	*out_level = v;
 	return true;
+#endif
 }
 
 void save_volume(int level) {
 	if (level < 0) level = 0;
 	if (level > kAudioMixVolumeMax) level = kAudioMixVolumeMax;
-
+#ifdef TSB_THUMBYONE_SLOT
+	// Save to the shared mirror — read-modify-write inside
+	// thumbyone_settings_save_volume preserves the brightness byte.
+	thumbyone_settings_save_volume((uint8_t)level);
+#else
 	ConfigBlob blob;
 	const bool had = read_current(&blob);
 	blob.magic   = kCfgMagic;
@@ -102,6 +146,7 @@ void save_volume(int level) {
 		blob.use_mi_font    = kUnsetByte;
 	}
 	write_blob(blob);
+#endif
 }
 
 bool load_text_scale_pct(int *out_pct) {
