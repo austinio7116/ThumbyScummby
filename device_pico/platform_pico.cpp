@@ -170,7 +170,7 @@ static bool     g_fs_mounted = false;  // FAT mounted (no game-presence claim)
 // USB mass-storage device) and reading the file from the host.  No
 // new statics — the FIL goes on the stack and gets closed
 // immediately so a hang in the engine doesn't leave the file open.
-static void boot_log(const char *fmt, ...) {
+void boot_log(const char *fmt, ...) {       /* non-static: pcv_install.cpp logs install diagnostics here too */
     FIL lf;
     if (f_open(&lf, "/scumm/_boot.log",
                FA_WRITE | FA_OPEN_APPEND) != FR_OK) {

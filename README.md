@@ -768,3 +768,16 @@ their own legitimately-purchased install disks for *Monkey Island* and/or
   algorithm spelunking, and the only reason a port like this is possible.
 - The DOSBox project — OPL2 emulator.
 - TinyCircuits — Thumby Color hardware.
+
+---
+
+## Changelog
+
+### Next release — supports ThumbyOne 1.28's new shared drive
+
+- **Installing a game from its floppy `.img` disks works on ThumbyOne
+  1.28's new 4 KB-cluster (FAT12) shared drive.** The `.img` installer
+  reads the new layout, and its working buffer is sized for the larger
+  4 KB clusters. Drop the LucasArts `.img` floppies into `/scumm/` and
+  the device extracts the game in place on first boot; the install
+  writes its progress to `/scumm/_boot.log` if you need to check on one.

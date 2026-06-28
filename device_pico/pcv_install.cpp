@@ -41,12 +41,25 @@ extern "C" {
 // volume so we can do raw FAT16 / dir-entry manipulation.
 namespace tsb { namespace platform_pico {
 FATFS *get_fatfs();
+/* append a line to /scumm/_boot.log (the visible boot log) — surfaces
+ * PCV-install diagnostics where they can actually be read. */
+void boot_log(const char *fmt, ...);
 }}
+using tsb::platform_pico::boot_log;
 
 namespace tsb {
 namespace preload {
 
 namespace {
+
+// End-of-chain / invalid-cluster test for the OUTER (shared ThumbyOne) volume.
+// It is FAT12 at 4 KB clusters (lighter >8 MB presets can still be FAT16), so
+// the outer-chain walk + cluster-free below must use the right marker threshold:
+// FAT12 reserves 0x0FF8.. as EOC, FAT16 0xFFF8.. — using the FAT16 value on a
+// FAT12 volume would follow a 0x0FF8-0x0FFF EOC as if it were a real cluster.
+static inline bool outer_eoc(FATFS *fs, DWORD v) {
+    return (fs->fs_type == FS_FAT12) ? (v >= 0x0FF8u) : (v >= 0xFFF8u);
+}
 
 // ===========================================================================
 // FAT12 helpers — operating on a single outer .img file via FatFs f_read.
@@ -279,7 +292,8 @@ static bool probe_img(const char *path, PcvSource *out,
     FIL fp;
     if (f_open(&fp, path, FA_READ) != FR_OK) return false;
     ImgGeometry g;
-    if (!parse_geometry(&fp, &g)) { f_close(&fp); return false; }
+    if (!parse_geometry(&fp, &g)) { boot_log("PCV geom-fail (boot-sector read)"); f_close(&fp); return false; }
+    boot_log("PCV geom spc=%u nf=%u root=%u spf=%u", g.sectors_per_cluster, g.num_fats, g.root_entries, g.sectors_per_fat);
 
     bool found = false;
     walk_img_root(&fp, g, [&](const char *name11, uint16_t sc,
@@ -298,6 +312,7 @@ static bool probe_img(const char *path, PcvSource *out,
         return false;
     });
 
+    boot_log("PCV pcv10-file=%s", found ? "FOUND" : "missing");
     if (found) {
         InnerChainStats st = walk_inner_chain(&fp, g, out->inner_start_cluster,
                                               out->inner_size);
@@ -305,6 +320,7 @@ static bool probe_img(const char *path, PcvSource *out,
             tsb::platform::log("[pcv] non-seq %s at %u->%u\n",
                                out->inner_name,
                                (unsigned)st.bad_from, (unsigned)st.bad_to);
+            boot_log("PCV inner non-seq %u->%u", (unsigned)st.bad_from, (unsigned)st.bad_to);
             found = false;
         } else {
             out->outer_first_cluster = fp.obj.sclust;
@@ -353,7 +369,9 @@ static bool discover_chains(PcvChain *chains, int max_chains, int *n_chains) {
                     >= (int)sizeof(fullpath)) continue;
             PcvSource src{};
             const GameDescriptor *gd = nullptr;
-            if (probe_img(fullpath, &src, &gd)) {
+            bool ok = probe_img(fullpath, &src, &gd);
+            boot_log("PCV probe %s -> %s", fi.fname, (ok && gd) ? gd->subdir : "(none)");
+            if (ok) {
                 insert_into_chain(gd, src);
             }
         }
@@ -431,22 +449,37 @@ public:
 
     ~OuterFatCache() { flush(); }
 
+    // Read/write one FAT entry (FAT12 12-bit or FAT16 16-bit) on the shared
+    // volume. A FAT12 entry's 1.5 bytes can straddle the 512-byte sector
+    // boundary, so go byte-at-a-time through load() (the 1-sector cache
+    // reloads/flushes as needed — rare, only at sector edges).
     DWORD get(DWORD cluster) {
-        DWORD off = cluster * 2;
-        DWORD sec = _fs->fatbase + off / 512;
-        DWORD bof = off % 512;
-        if (!load(sec)) return 0xFFFF;
-        return (DWORD)(_buf[bof] | (_buf[bof + 1] << 8));
+        bool  is12 = (_fs->fs_type == FS_FAT12);
+        DWORD off  = is12 ? (cluster + (cluster >> 1)) : (cluster * 2);
+        int b0 = read_byte(off), b1 = read_byte(off + 1);
+        if (b0 < 0 || b1 < 0) return is12 ? 0x0FFFu : 0xFFFFu;
+        DWORD v = (DWORD)b0 | ((DWORD)b1 << 8);
+        if (is12) v = (cluster & 1) ? (v >> 4) : (v & 0x0FFFu);
+        return v;
     }
 
     void set(DWORD cluster, DWORD value) {
-        DWORD off = cluster * 2;
-        DWORD sec = _fs->fatbase + off / 512;
-        DWORD bof = off % 512;
-        if (!load(sec)) return;
-        _buf[bof]     = (uint8_t)(value & 0xFF);
-        _buf[bof + 1] = (uint8_t)((value >> 8) & 0xFF);
-        _dirty = true;
+        bool  is12 = (_fs->fs_type == FS_FAT12);
+        DWORD off  = is12 ? (cluster + (cluster >> 1)) : (cluster * 2);
+        if (is12) {
+            if (cluster & 1) {                  // high 12 bits: hi nibble of [off] + all of [off+1]
+                int lo = read_byte(off); if (lo < 0) return;
+                write_byte(off,     (uint8_t)(((unsigned)lo & 0x0F) | ((value << 4) & 0xF0)));
+                write_byte(off + 1, (uint8_t)((value >> 4) & 0xFF));
+            } else {                            // low 12 bits: all of [off] + lo nibble of [off+1]
+                write_byte(off,     (uint8_t)(value & 0xFF));
+                int hi = read_byte(off + 1); if (hi < 0) return;
+                write_byte(off + 1, (uint8_t)(((unsigned)hi & 0xF0) | ((value >> 8) & 0x0F)));
+            }
+        } else {
+            write_byte(off,     (uint8_t)(value & 0xFF));
+            write_byte(off + 1, (uint8_t)((value >> 8) & 0xFF));
+        }
     }
 
     bool flush() {
@@ -479,6 +512,17 @@ private:
     DWORD  _sector;
     bool   _dirty;
     uint8_t _buf[512];
+
+    // One FAT byte at an absolute byte offset, via the 1-sector cache.
+    int read_byte(DWORD byteoff) {
+        if (!load(_fs->fatbase + byteoff / 512)) return -1;
+        return _buf[byteoff % 512];
+    }
+    void write_byte(DWORD byteoff, uint8_t val) {
+        if (!load(_fs->fatbase + byteoff / 512)) return;
+        _buf[byteoff % 512] = val;
+        _dirty = true;
+    }
 
     bool load(DWORD sec) {
         if (_sector == sec) return true;
@@ -514,7 +558,7 @@ public:
         _img_size = src.outer_size_bytes;
         _byte_pos = 0;
         _eof = false;
-        if (_cur_cluster < 2 || _cur_cluster >= 0xFFF8) {
+        if (_cur_cluster < 2 || outer_eoc(_fs, _cur_cluster)) {
             _eof = true;
             return false;
         }
@@ -559,7 +603,7 @@ public:
         if (_eof) return;
         // The current cluster is still allocated and partially read.
         DWORD c = _cur_cluster;
-        while (c >= 2 && c < 0xFFF8) {
+        while (c >= 2 && !outer_eoc(_fs, c)) {
             DWORD next = _fc->get(c);
             _fc->set(c, 0);
             c = next;
@@ -577,11 +621,15 @@ private:
     uint32_t _img_size;
     uint32_t _byte_pos;
     bool _eof;
-    uint8_t _cluster_buf[1024];   // matches typical ThumbyOne csize
+    // One whole cluster: the shared FAT uses 4 KB clusters (csize=8) since the
+    // FAT12 migration (was 1 KB). STATIC (not a per-object member) so this 4 KB
+    // lives in BSS, not on the small boot stack — only one reader is active at a
+    // time (see the PcvStream note), so a single shared buffer is safe.
+    static uint8_t _cluster_buf[4096];
 
     bool ensure_loaded() {
         if (_cluster_loaded) return true;
-        if (_cur_cluster < 2 || _cur_cluster >= 0xFFF8) {
+        if (_cur_cluster < 2 || outer_eoc(_fs, _cur_cluster)) {
             _eof = true;
             return false;
         }
@@ -611,23 +659,24 @@ private:
         _cur_cluster = next;
         _byte_in_cluster = 0;
         _cluster_loaded = false;
-        if (_cur_cluster < 2 || _cur_cluster >= 0xFFF8) {
+        if (_cur_cluster < 2 || outer_eoc(_fs, _cur_cluster)) {
             _eof = true;
             return false;
         }
         return true;
     }
 };
+uint8_t RawImgReader::_cluster_buf[4096];   // single shared cluster buffer (BSS, not stack)
 
 // Find a file by 8.3 name inside a directory whose first cluster is
 // `parent_first_cluster`, and overwrite the first byte of its dir
 // entry with 0xE5.  Coordinates with FatFs's win cache.
 static bool clear_dir_entry(FATFS *fs, DWORD parent_first_cluster,
                             const char *name11) {
-    if (parent_first_cluster < 2 || parent_first_cluster >= 0xFFF8) return false;
+    if (parent_first_cluster < 2 || outer_eoc(fs, parent_first_cluster)) return false;
     uint8_t buf[512];
     DWORD cluster = parent_first_cluster;
-    while (cluster >= 2 && cluster < 0xFFF8) {
+    while (cluster >= 2 && !outer_eoc(fs, cluster)) {
         DWORD sec_lba = fs->database + (cluster - 2) * fs->csize;
         for (BYTE sec_i = 0; sec_i < fs->csize; ++sec_i) {
             DWORD sec = sec_lba + sec_i;
@@ -646,14 +695,22 @@ static bool clear_dir_entry(FATFS *fs, DWORD parent_first_cluster,
                 }
             }
         }
-        // Walk to next cluster of the directory via FAT16.
-        DWORD off = cluster * 2;
-        DWORD fat_sec = fs->fatbase + off / 512;
-        DWORD fat_off = off % 512;
-        fatfs_sync_if_dirty(fs, fat_sec);
+        // Walk to next cluster of the directory (FAT12 or FAT16). A FAT12
+        // entry's two bytes can straddle a sector, so read each byte's sector.
+        bool  is12 = (fs->fs_type == FS_FAT12);
+        DWORD off  = is12 ? (cluster + (cluster >> 1)) : (cluster * 2);
         uint8_t fbuf[512];
-        if (disk_read(fs->pdrv, fbuf, fat_sec, 1) != RES_OK) return false;
-        cluster = (DWORD)(fbuf[fat_off] | (fbuf[fat_off + 1] << 8));
+        DWORD fb[2];
+        for (int k = 0; k < 2; ++k) {
+            DWORD bb   = off + (DWORD)k;
+            DWORD fsec = fs->fatbase + bb / 512;
+            fatfs_sync_if_dirty(fs, fsec);
+            if (disk_read(fs->pdrv, fbuf, fsec, 1) != RES_OK) return false;
+            fb[k] = fbuf[bb % 512];
+        }
+        DWORD nv = fb[0] | (fb[1] << 8);
+        if (is12) nv = (cluster & 1) ? (nv >> 4) : (nv & 0x0FFFu);
+        cluster = nv;
     }
     return false;
 }
@@ -1008,28 +1065,34 @@ static bool extract_one(PcvStream &ps, const FileChunkHeader &fh,
 static bool install_chain(const PcvChain &ch, FATFS *fs) {
     const GameDescriptor &gd = *ch.gd;
     tsb::platform::log("[pcv] install %s (%d disks)\n", gd.subdir, ch.count);
+    boot_log("PCV install %s disks=%d", gd.subdir, ch.count);
 
     OuterFatCache fc(fs);
 
     PcvStream ps;
-    if (!ps.init(ch, fs, &fc)) return false;
+    if (!ps.init(ch, fs, &fc)) { boot_log("PCV s:init-FAIL"); return false; }
+    boot_log("PCV s:init-ok");
 
     uint8_t hdr[28];
-    if (ps.read(hdr, 28) != 28) { ps.close(); return false; }
+    if (ps.read(hdr, 28) != 28) { boot_log("PCV s:hdr-read-FAIL"); ps.close(); return false; }
     if (std::memcmp(hdr, "LFG!", 4) != 0) {
         tsb::platform::log("[pcv] bad LFG! magic\n");
+        boot_log("PCV s:bad-LFG-magic");
         ps.close();
         return false;
     }
+    boot_log("PCV s:lfg-ok");
 
     uint8_t *dcl_dict = (uint8_t *)std::malloc(4096);
-    if (!dcl_dict) { ps.close(); return false; }
+    if (!dcl_dict) { boot_log("PCV s:dict-malloc-FAIL"); ps.close(); return false; }
 
     bool ok = true;
     FileChunkHeader fh;
     while (read_file_chunk_header(ps, &fh)) {
-        if (!extract_one(ps, fh, gd, dcl_dict, &fc)) { ok = false; break; }
+        boot_log("PCV file %s", fh.name);                 /* logged BEFORE extract: a crash leaves this as the last line */
+        if (!extract_one(ps, fh, gd, dcl_dict, &fc)) { boot_log("PCV extract-FAIL %s", fh.name); ok = false; break; }
     }
+    boot_log("PCV s:loop-done ok=%d", ok);
 
     std::free(dcl_dict);
     ps.close();
@@ -1049,11 +1112,14 @@ bool install_pcv_imgs() {
 
     PcvChain chains[4];
     int n = 0;
-    if (!discover_chains(chains, 4, &n)) return false;
+    if (!discover_chains(chains, 4, &n)) { boot_log("PCV discover: none"); return false; }
+    boot_log("PCV chains=%d", n);
 
     bool any = false;
     for (int i = 0; i < n; ++i) {
-        if (install_chain(chains[i], fs)) any = true;
+        bool r = install_chain(chains[i], fs);
+        boot_log("PCV chain %s -> %s", chains[i].gd->subdir, r ? "OK" : "FAIL");
+        if (r) any = true;
     }
     return any;
 }
